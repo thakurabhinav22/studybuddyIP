@@ -1,3 +1,4 @@
+// firebase.js  (keep in parent folder as you had)
 import { initializeApp, getApps } from "firebase/app";
 import { getAuth, GoogleAuthProvider } from "firebase/auth";
 import { getDatabase } from "firebase/database";
@@ -9,11 +10,6 @@ const firebaseConfig = {
   storageBucket: "studybuddytcet.firebasestorage.app",
   messagingSenderId: "603759519713",
   appId: "1:603759519713:web:544660c31f2af12c8c54a0",
-  // ✅ Realtime DB URL — must match your Firebase console region exactly
-  // Go to Firebase Console → Realtime Database → copy the URL shown there
-  // It will be ONE of these formats:
-  //   https://studybuddytcet-default-rtdb.firebaseio.com          (us-central1)
-  //   https://studybuddytcet-default-rtdb.asia-southeast1.firebasedatabase.app  (asia)
   databaseURL: "https://studybuddytcet-default-rtdb.firebaseio.com/",
 };
 

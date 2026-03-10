@@ -1,0 +1,840 @@
+"use client";
+
+import { useState, useEffect, useRef } from "react";
+import { useRouter } from "next/navigation";
+import { initializeApp, getApps } from "firebase/app";
+import { getAuth, onAuthStateChanged, signOut } from "firebase/auth";
+import { getDatabase, ref, onValue, set } from "firebase/database";
+
+/* ── Firebase ── */
+const firebaseConfig = {
+  apiKey: "AIzaSyBwMv_hfByidn1IVp9o4FN4WmvCpcST0hU",
+  authDomain: "studybuddytcet.firebaseapp.com",
+  projectId: "studybuddytcet",
+  storageBucket: "studybuddytcet.firebasestorage.app",
+  messagingSenderId: "603759519713",
+  appId: "1:603759519713:web:544660c31f2af12c8c54a0",
+  databaseURL: "https://studybuddytcet-default-rtdb.firebaseio.com/",
+};
+const app  = getApps().length === 0 ? initializeApp(firebaseConfig) : getApps()[0];
+const auth = getAuth(app);
+const db   = getDatabase(app);
+
+/* ── Time-based greeting messages ── */
+const TIME_GREETINGS = {
+  dawn:      { icon: "🌅", title: "The world wakes up with you.", sub: "Early birds catch more than worms — they catch clarity.",       color: "#f97316" },
+  morning:   { icon: "☀️", title: "Morning light, sharp mind.",  sub: "A fresh day to learn something extraordinary.",                  color: "#eab308" },
+  afternoon: { icon: "🌤️", title: "Keep the momentum going.",   sub: "Afternoon energy is a gift — don't let it drift away.",          color: "#22c55e" },
+  evening:   { icon: "🌇", title: "The golden hour is yours.",   sub: "Wind down, reflect, and let knowledge settle in.",               color: "#f59e0b" },
+  night:     { icon: "🌙", title: "Night has a quiet magic.",    sub: "The stars are out. Your focus is unmatched right now.",           color: "#818cf8" },
+  midnight:  { icon: "✨", title: "The world sleeps. You glow.", sub: "Midnight scholars write their own history. Stay the course.",    color: "#a78bfa" },
+};
+
+function getTimeOfDay() {
+  const h = new Date().getHours();
+  if (h >= 4  && h < 6)  return "dawn";
+  if (h >= 6  && h < 12) return "morning";
+  if (h >= 12 && h < 17) return "afternoon";
+  if (h >= 17 && h < 20) return "evening";
+  if (h >= 20 && h < 24) return "night";
+  return "midnight";
+}
+
+/* ── Greeting Popup ── */
+function GreetingPopup({ isDark, firstName, onClose }) {
+  const tod = getTimeOfDay();
+  const msg = TIME_GREETINGS[tod];
+  const [visible, setVisible] = useState(false);
+
+  useEffect(() => {
+    requestAnimationFrame(() => setVisible(true));
+    const t = setTimeout(() => { setVisible(false); setTimeout(onClose, 400); }, 5000);
+    return () => clearTimeout(t);
+  }, [onClose]);
+
+  return (
+    <div style={{
+      position: "fixed", bottom: "24px", left: "50%", transform: `translateX(-50%) translateY(${visible ? "0" : "20px"})`,
+      zIndex: 9999, opacity: visible ? 1 : 0, transition: "all 0.4s cubic-bezier(0.34,1.56,0.64,1)",
+      pointerEvents: visible ? "auto" : "none",
+    }}>
+      <div style={{
+        display: "flex", alignItems: "center", gap: "16px",
+        padding: "16px 24px", borderRadius: "20px",
+        background: isDark ? "rgba(10,18,32,0.95)" : "rgba(255,255,255,0.97)",
+        border: `1px solid ${msg.color}40`,
+        boxShadow: `0 20px 60px rgba(0,0,0,0.3), 0 0 0 1px ${msg.color}20, inset 0 1px 0 rgba(255,255,255,0.1)`,
+        backdropFilter: "blur(20px)", WebkitBackdropFilter: "blur(20px)",
+        maxWidth: "420px", minWidth: "320px",
+      }}>
+        <div style={{
+          width: "48px", height: "48px", borderRadius: "14px", flexShrink: 0,
+          background: `${msg.color}18`, border: `1px solid ${msg.color}30`,
+          display: "flex", alignItems: "center", justifyContent: "center", fontSize: "24px",
+        }}>{msg.icon}</div>
+        <div style={{ flex: 1 }}>
+          <p style={{ fontSize: "14px", fontWeight: 800, color: isDark ? "#f1f5f9" : "#0f172a", margin: 0, lineHeight: 1.3 }}>
+            {firstName ? `${firstName}, ${msg.title.toLowerCase()}` : msg.title}
+          </p>
+          <p style={{ fontSize: "11px", color: isDark ? "#64748b" : "#94a3b8", fontWeight: 500, margin: "4px 0 0", lineHeight: 1.4 }}>
+            {msg.sub}
+          </p>
+        </div>
+        <button onClick={() => { setVisible(false); setTimeout(onClose, 400); }}
+          style={{ background: "none", border: "none", cursor: "pointer", padding: "4px", color: isDark ? "#475569" : "#cbd5e1", flexShrink: 0 }}>
+          <span style={{ fontFamily: "'Material Symbols Outlined'", fontSize: "18px", lineHeight: 1 }}>close</span>
+        </button>
+        {/* Progress bar */}
+        <div style={{ position: "absolute", bottom: 0, left: 0, height: "3px", width: "100%", borderRadius: "0 0 20px 20px", overflow: "hidden" }}>
+          <div style={{ height: "100%", background: msg.color, animation: "greetTimer 5s linear forwards", borderRadius: "0 0 20px 20px" }} />
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ── Notification Popup ── */
+const MOCK_NOTIFICATIONS = [
+  { id: 1, icon: "quiz",           title: "Test Reminder",        body: "Your DSA quiz is scheduled for tomorrow at 10 AM.", time: "2m ago",  unread: true,  color: "#f59e0b" },
+  { id: 2, icon: "auto_stories",   title: "New Notes Available",  body: "CN Module 4 notes have been uploaded by your peer.", time: "1h ago",  unread: true,  color: "#22c55e" },
+  { id: 3, icon: "emoji_events",   title: "Streak Milestone!",    body: "You've maintained a 7-day study streak. Keep going!", time: "3h ago",  unread: false, color: "#818cf8" },
+  { id: 4, icon: "psychology",     title: "Neural AI is ready",   body: "Your last AI session summary has been saved.", time: "1d ago",  unread: false, color: "#00FF00" },
+];
+
+function NotificationPanel({ isDark, onClose, panelRef }) {
+  const [notes, setNotes] = useState(MOCK_NOTIFICATIONS);
+  const bg    = isDark ? "rgba(8,14,26,0.98)"  : "rgba(255,255,255,0.98)";
+  const text1 = isDark ? "#f1f5f9"             : "#0f172a";
+  const text2 = isDark ? "#64748b"             : "#94a3b8";
+  const bdr   = isDark ? "rgba(0,255,0,0.1)"   : "rgba(0,200,0,0.1)";
+  const item  = isDark ? "rgba(255,255,255,0.03)" : "rgba(0,0,0,0.015)";
+  const unreadCount = notes.filter(n => n.unread).length;
+
+  return (
+    <div ref={panelRef} style={{
+      position: "absolute", top: "calc(100% + 12px)", right: 0,
+      width: "360px", background: bg, border: `1px solid ${bdr}`,
+      borderRadius: "20px", boxShadow: `0 24px 60px rgba(0,0,0,0.25), 0 0 0 1px rgba(0,255,0,0.05)`,
+      backdropFilter: "blur(20px)", WebkitBackdropFilter: "blur(20px)",
+      zIndex: 500, overflow: "hidden",
+      animation: "slideDown 0.25s cubic-bezier(0.34,1.56,0.64,1)",
+    }}>
+      {/* Header */}
+      <div style={{ padding: "20px 20px 16px", borderBottom: `1px solid ${bdr}`, display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+        <div>
+          <p style={{ fontSize: "15px", fontWeight: 900, color: text1, margin: 0 }}>Notifications</p>
+          {unreadCount > 0 && <p style={{ fontSize: "11px", color: "#00AA00", fontWeight: 700, margin: "2px 0 0" }}>{unreadCount} unread</p>}
+        </div>
+        <div style={{ display: "flex", gap: "8px" }}>
+          {unreadCount > 0 && (
+            <button onClick={() => setNotes(n => n.map(x => ({ ...x, unread: false })))}
+              style={{ fontSize: "11px", fontWeight: 800, color: "#00AA00", background: "rgba(0,200,0,0.08)", border: "1px solid rgba(0,200,0,0.15)", borderRadius: "9999px", padding: "4px 12px", cursor: "pointer", fontFamily: "'Inter',sans-serif" }}>
+              Mark all read
+            </button>
+          )}
+          <button onClick={onClose}
+            style={{ background: isDark ? "rgba(255,255,255,0.06)" : "rgba(0,0,0,0.05)", border: "none", borderRadius: "9999px", width: "28px", height: "28px", display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer" }}>
+            <span style={{ fontFamily: "'Material Symbols Outlined'", fontSize: "16px", color: text2, lineHeight: 1 }}>close</span>
+          </button>
+        </div>
+      </div>
+
+      {/* List */}
+      <div style={{ maxHeight: "320px", overflowY: "auto" }}>
+        {notes.map((n, i) => (
+          <div key={n.id}
+            onClick={() => setNotes(prev => prev.map(x => x.id === n.id ? { ...x, unread: false } : x))}
+            style={{
+              display: "flex", gap: "14px", padding: "16px 20px", cursor: "pointer",
+              borderBottom: i < notes.length - 1 ? `1px solid ${bdr}` : "none",
+              background: n.unread ? (isDark ? "rgba(0,255,0,0.03)" : "rgba(0,200,0,0.03)") : item,
+              transition: "background 0.15s",
+            }}
+            onMouseEnter={e => e.currentTarget.style.background = isDark ? "rgba(255,255,255,0.04)" : "rgba(0,200,0,0.05)"}
+            onMouseLeave={e => e.currentTarget.style.background = n.unread ? (isDark ? "rgba(0,255,0,0.03)" : "rgba(0,200,0,0.03)") : item}
+          >
+            <div style={{ width: "36px", height: "36px", borderRadius: "10px", background: `${n.color}15`, border: `1px solid ${n.color}25`, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
+              <span style={{ fontFamily: "'Material Symbols Outlined'", fontSize: "18px", color: n.color, lineHeight: 1 }}>{n.icon}</span>
+            </div>
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <div style={{ display: "flex", alignItems: "center", gap: "6px", marginBottom: "3px" }}>
+                <p style={{ fontSize: "12px", fontWeight: 800, color: text1, margin: 0, flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{n.title}</p>
+                {n.unread && <div style={{ width: "7px", height: "7px", borderRadius: "9999px", background: "#00FF00", flexShrink: 0 }} />}
+              </div>
+              <p style={{ fontSize: "11px", color: text2, margin: 0, lineHeight: 1.4, overflow: "hidden", display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical" }}>{n.body}</p>
+              <p style={{ fontSize: "10px", color: isDark ? "#334155" : "#cbd5e1", fontWeight: 700, margin: "4px 0 0" }}>{n.time}</p>
+            </div>
+          </div>
+        ))}
+      </div>
+
+      {/* Footer */}
+      <div style={{ padding: "12px 20px", borderTop: `1px solid ${bdr}`, textAlign: "center" }}>
+        <button style={{ fontSize: "12px", fontWeight: 800, color: "#00AA00", background: "none", border: "none", cursor: "pointer", fontFamily: "'Inter',sans-serif" }}>
+          View all notifications →
+        </button>
+      </div>
+    </div>
+  );
+}
+
+/* ── Theme Switcher — icon-only pill ── */
+function ThemeSwitcher({ theme, setTheme, resolved }) {
+  const isDark = resolved === "dark";
+  const [hovered, setHovered] = useState(null);
+  const opts = [
+    { value: "light",  icon: "light_mode",     label: "Light"  },
+    { value: "dark",   icon: "dark_mode",       label: "Dark"   },
+    { value: "system", icon: "desktop_windows", label: "System" },
+  ];
+  return (
+    <div style={{
+      display: "inline-flex", alignItems: "center", gap: "2px", padding: "4px",
+      borderRadius: "9999px",
+      background: isDark ? "rgba(255,255,255,0.06)" : "rgba(0,0,0,0.05)",
+      border: `1px solid ${isDark ? "rgba(255,255,255,0.1)" : "rgba(0,0,0,0.08)"}`,
+      position: "relative",
+    }}>
+      {opts.map(({ value, icon, label }) => {
+        const active = theme === value;
+        return (
+          <div key={value} style={{ position: "relative" }}>
+            <button
+              onClick={() => setTheme(value)}
+              onMouseEnter={() => setHovered(value)}
+              onMouseLeave={() => setHovered(null)}
+              title={label}
+              style={{
+                width: "32px", height: "32px", borderRadius: "9999px", border: "none",
+                cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center",
+                transition: "all 0.22s cubic-bezier(0.34,1.56,0.64,1)",
+                background: active ? (isDark ? "rgba(0,255,0,0.18)" : "#00FF00") : "transparent",
+                boxShadow: active ? (isDark ? "0 0 14px rgba(0,255,0,0.3)" : "0 4px 12px rgba(0,255,0,0.35)") : "none",
+                transform: active ? "scale(1.08)" : "scale(1)",
+              }}
+            >
+              <span style={{
+                fontFamily: "'Material Symbols Outlined'", fontSize: "16px", lineHeight: 1,
+                color: active ? (isDark ? "#00FF00" : "#0f172a") : (isDark ? "#475569" : "#94a3b8"),
+              }}>{icon}</span>
+            </button>
+            {/* Tooltip */}
+            {hovered === value && (
+              <div style={{
+                position: "absolute", bottom: "calc(100% + 8px)", left: "50%", transform: "translateX(-50%)",
+                background: isDark ? "#1e293b" : "#0f172a", color: "#fff",
+                fontSize: "10px", fontWeight: 700, padding: "4px 8px", borderRadius: "6px",
+                whiteSpace: "nowrap", pointerEvents: "none", zIndex: 100,
+                boxShadow: "0 4px 12px rgba(0,0,0,0.3)",
+                animation: "fadeUp 0.15s ease",
+              }}>
+                {label}
+                <div style={{ position: "absolute", top: "100%", left: "50%", transform: "translateX(-50%)", width: 0, height: 0, borderLeft: "4px solid transparent", borderRight: "4px solid transparent", borderTop: `4px solid ${isDark ? "#1e293b" : "#0f172a"}` }} />
+              </div>
+            )}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+/* ── Shared theme hook ── */
+function useTheme() {
+  const KEY = "studybuddy_theme";
+  const [theme,    setThemeState] = useState("system");
+  const [resolved, setResolved]   = useState("light");
+
+  useEffect(() => {
+    try { setThemeState(localStorage.getItem(KEY) || "system"); } catch {}
+  }, []);
+
+  const setTheme = (val) => {
+    try { localStorage.setItem(KEY, val); } catch {}
+    setThemeState(val);
+  };
+
+  useEffect(() => {
+    const mq = window.matchMedia("(prefers-color-scheme: dark)");
+    const update = () => setResolved(theme === "system" ? (mq.matches ? "dark" : "light") : theme);
+    update();
+    mq.addEventListener("change", update);
+    return () => mq.removeEventListener("change", update);
+  }, [theme]);
+
+  return { theme, setTheme, resolved };
+}
+
+/* ── Skeleton Pulse ── */
+function Skeleton({ w = "100%", h = "20px", r = "8px", isDark }) {
+  return (
+    <div style={{
+      width: w, height: h, borderRadius: r,
+      background: isDark ? "rgba(255,255,255,0.06)" : "rgba(0,0,0,0.06)",
+      animation: "skeletonPulse 1.6s ease-in-out infinite",
+      overflow: "hidden", position: "relative",
+    }}>
+      <div style={{
+        position: "absolute", inset: 0,
+        background: isDark
+          ? "linear-gradient(90deg, transparent 0%, rgba(255,255,255,0.06) 50%, transparent 100%)"
+          : "linear-gradient(90deg, transparent 0%, rgba(255,255,255,0.7) 50%, transparent 100%)",
+        animation: "skeletonShimmer 1.6s ease-in-out infinite",
+      }} />
+    </div>
+  );
+}
+
+function StatCardSkeleton({ isDark }) {
+  const bg  = isDark ? "rgba(15,23,42,0.8)" : "#ffffff";
+  const bdr = isDark ? "rgba(0,255,0,0.1)"  : "rgba(0,200,0,0.06)";
+  return (
+    <div style={{ background: bg, padding: "24px", borderRadius: "20px", border: `1px solid ${bdr}`, boxShadow: isDark ? "0 4px 20px rgba(0,0,0,0.3)" : "0 2px 12px rgba(0,0,0,0.05)" }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: "20px" }}>
+        <Skeleton w="36px" h="36px" r="10px" isDark={isDark} />
+        <Skeleton w="80px" h="12px" r="6px"  isDark={isDark} />
+      </div>
+      <Skeleton w="60%" h="11px" r="6px" isDark={isDark} />
+      <div style={{ marginTop: "10px" }}>
+        <Skeleton w="50%" h="32px" r="8px" isDark={isDark} />
+      </div>
+      <div style={{ marginTop: "20px" }}>
+        <Skeleton w="100%" h="6px" r="9999px" isDark={isDark} />
+      </div>
+    </div>
+  );
+}
+
+function NoteCardSkeleton({ isDark }) {
+  const bg  = isDark ? "rgba(15,23,42,0.8)" : "#ffffff";
+  const bdr = isDark ? "rgba(0,255,0,0.1)"  : "rgba(0,200,0,0.06)";
+  return (
+    <div style={{ background: bg, padding: "20px", borderRadius: "18px", border: `1px solid ${bdr}`, display: "flex", gap: "20px" }}>
+      <Skeleton w="100px" h="100px" r="14px" isDark={isDark} />
+      <div style={{ flex: 1, display: "flex", flexDirection: "column", gap: "10px" }}>
+        <Skeleton w="40%" h="10px" r="6px" isDark={isDark} />
+        <Skeleton w="70%" h="14px" r="6px" isDark={isDark} />
+        <Skeleton w="90%" h="10px" r="6px" isDark={isDark} />
+        <Skeleton w="80%" h="10px" r="6px" isDark={isDark} />
+        <div style={{ display: "flex", justifyContent: "flex-end", marginTop: "6px" }}>
+          <Skeleton w="100px" h="32px" r="10px" isDark={isDark} />
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ── Branch selection popup ── */
+const BRANCHES = [
+  { code: "IT",    label: "Information Technology",  icon: "computer"     },
+  { code: "CS",    label: "Computer Science",         icon: "code"         },
+  { code: "EXTC",  label: "Electronics & Telecomm.", icon: "memory"       },
+  { code: "MECH",  label: "Mechanical Engineering",  icon: "settings"     },
+  { code: "CIVIL", label: "Civil Engineering",        icon: "architecture" },
+  { code: "ELEC",  label: "Electrical Engineering",  icon: "bolt"         },
+];
+
+function BranchPopup({ uid, isDark, onComplete }) {
+  const [selected, setSelected] = useState("");
+  const [saving,   setSaving]   = useState(false);
+
+  const save = async () => {
+    if (!selected) return;
+    setSaving(true);
+    await set(ref(db, `users/${uid}/branch`), selected);
+    setSaving(false);
+    onComplete(selected);
+  };
+
+  const bg     = isDark ? "rgba(15,23,42,0.98)"     : "rgba(255,255,255,0.98)";
+  const text1  = isDark ? "#f1f5f9"                 : "#0f172a";
+  const text2  = isDark ? "#64748b"                 : "#64748b";
+  const cardBg  = (on) => on ? "rgba(0,255,0,0.12)" : (isDark ? "rgba(255,255,255,0.04)" : "rgba(0,0,0,0.02)");
+  const cardBdr = (on) => on ? "rgba(0,255,0,0.6)"  : (isDark ? "rgba(255,255,255,0.08)" : "rgba(0,0,0,0.08)");
+
+  return (
+    <div style={{ position: "fixed", inset: 0, zIndex: 999, background: isDark ? "rgba(8,15,26,0.8)" : "rgba(15,23,42,0.55)", backdropFilter: "blur(20px)", WebkitBackdropFilter: "blur(20px)", display: "flex", alignItems: "center", justifyContent: "center", padding: "16px" }}>
+      <div style={{ width: "100%", maxWidth: "520px", background: bg, borderRadius: "28px", border: `1px solid ${isDark ? "rgba(0,255,0,0.2)" : "rgba(0,200,0,0.2)"}`, padding: "44px 36px", boxShadow: "0 40px 100px rgba(0,0,0,0.3)", animation: "popIn 0.35s cubic-bezier(0.34,1.56,0.64,1)" }}>
+        <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: "8px", marginBottom: "32px" }}>
+          <div style={{ width: "56px", height: "56px", background: "#00FF00", borderRadius: "14px", display: "flex", alignItems: "center", justifyContent: "center", boxShadow: "0 0 24px rgba(0,255,0,0.4)", marginBottom: "8px" }}>
+            <span style={{ fontFamily: "'Material Symbols Outlined'", fontSize: "30px", color: "#0f172a", lineHeight: 1 }}>school</span>
+          </div>
+          <h2 style={{ fontSize: "22px", fontWeight: 900, color: text1, margin: 0, letterSpacing: "-0.03em" }}>Choose Your Branch</h2>
+          <p style={{ fontSize: "13px", color: text2, fontWeight: 500, margin: 0, textAlign: "center" }}>We'll personalise your StudyBuddy experience based on your branch.</p>
+        </div>
+
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(2,1fr)", gap: "12px", marginBottom: "28px" }}>
+          {BRANCHES.map(({ code, label, icon }) => {
+            const on = selected === code;
+            return (
+              <button key={code} onClick={() => setSelected(code)}
+                style={{ display: "flex", alignItems: "center", gap: "12px", padding: "14px 16px", borderRadius: "14px", border: `1.5px solid ${cardBdr(on)}`, background: cardBg(on), cursor: "pointer", transition: "all 0.2s cubic-bezier(0.34,1.56,0.64,1)", boxShadow: on ? "0 0 18px rgba(0,255,0,0.2)" : "none", transform: on ? "scale(1.02)" : "scale(1)" }}
+                onMouseEnter={(e) => { if (!on) { e.currentTarget.style.background = isDark ? "rgba(255,255,255,0.07)" : "rgba(0,200,0,0.06)"; e.currentTarget.style.borderColor = "rgba(0,255,0,0.3)"; } }}
+                onMouseLeave={(e) => { if (!on) { e.currentTarget.style.background = cardBg(false); e.currentTarget.style.borderColor = cardBdr(false); } }}
+              >
+                <span style={{ fontFamily: "'Material Symbols Outlined'", fontSize: "20px", color: on ? "#00FF00" : (isDark ? "#475569" : "#94a3b8"), lineHeight: 1 }}>{icon}</span>
+                <div style={{ textAlign: "left" }}>
+                  <div style={{ fontSize: "13px", fontWeight: 800, color: on ? "#00FF00" : text1, lineHeight: 1 }}>{code}</div>
+                  <div style={{ fontSize: "10px", color: isDark ? "#475569" : "#94a3b8", fontWeight: 600, marginTop: "2px", lineHeight: 1.3 }}>{label}</div>
+                </div>
+                {on && <span style={{ marginLeft: "auto", fontFamily: "'Material Symbols Outlined'", fontSize: "18px", color: "#00FF00", lineHeight: 1 }}>check_circle</span>}
+              </button>
+            );
+          })}
+        </div>
+
+        <button onClick={save} disabled={!selected || saving}
+          style={{ width: "100%", height: "52px", background: selected ? "#00FF00" : (isDark ? "rgba(255,255,255,0.06)" : "rgba(0,0,0,0.05)"), color: selected ? "#0f172a" : (isDark ? "#475569" : "#94a3b8"), border: "none", borderRadius: "14px", fontSize: "15px", fontWeight: 900, cursor: selected ? "pointer" : "not-allowed", fontFamily: "'Inter',sans-serif", transition: "all 0.25s cubic-bezier(0.34,1.56,0.64,1)", boxShadow: selected ? "0 8px 28px rgba(0,255,0,0.38)" : "none", display: "flex", alignItems: "center", justifyContent: "center", gap: "8px" }}
+        >
+          {saving && <div style={{ width: "20px", height: "20px", border: "2px solid rgba(0,0,0,0.2)", borderTopColor: "#0f172a", borderRadius: "9999px", animation: "spin 0.7s linear infinite" }} />}
+          {saving ? "Saving…" : "Continue to Dashboard"}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+/* ── Stat Card ── */
+function StatCard({ icon, label, value, subtext, progress, isDark }) {
+  const bg    = isDark ? "rgba(15,23,42,0.8)" : "#ffffff";
+  const text1 = isDark ? "#f1f5f9"            : "#0f172a";
+  const text2 = isDark ? "#64748b"            : "#94a3b8";
+  const bdr   = isDark ? "rgba(0,255,0,0.1)"  : "rgba(0,200,0,0.06)";
+
+  return (
+    <div style={{ background: bg, padding: "24px", borderRadius: "20px", boxShadow: isDark ? "0 4px 20px rgba(0,0,0,0.3)" : "0 2px 12px rgba(0,0,0,0.05)", border: `1px solid ${bdr}`, transition: "box-shadow 0.2s" }}
+      onMouseEnter={(e) => (e.currentTarget.style.boxShadow = isDark ? "0 8px 32px rgba(0,255,0,0.1)" : "0 8px 28px rgba(0,200,0,0.12)")}
+      onMouseLeave={(e) => (e.currentTarget.style.boxShadow = isDark ? "0 4px 20px rgba(0,0,0,0.3)"  : "0 2px 12px rgba(0,0,0,0.05)")}
+    >
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: "16px" }}>
+        <div style={{ padding: "8px", borderRadius: "10px", background: "rgba(0,200,0,0.1)" }}>
+          <span style={{ fontFamily: "'Material Symbols Outlined'", fontSize: "22px", color: "#009900", lineHeight: 1 }}>{icon}</span>
+        </div>
+        <span style={{ fontSize: "10px", fontWeight: 800, color: "#00AA00" }}>{subtext}</span>
+      </div>
+      <p style={{ fontSize: "11px", fontWeight: 700, color: text2, textTransform: "uppercase", letterSpacing: "0.08em", margin: "0 0 4px" }}>{label}</p>
+      <h3 style={{ fontSize: "28px", fontWeight: 900, color: text1, margin: "0 0 16px", letterSpacing: "-0.03em" }}>{value}</h3>
+      <div style={{ width: "100%", height: "6px", borderRadius: "9999px", background: isDark ? "rgba(0,255,0,0.1)" : "rgba(0,200,0,0.1)", overflow: "hidden" }}>
+        <div style={{ height: "100%", width: `${progress}%`, background: "#00FF00", borderRadius: "9999px" }} />
+      </div>
+    </div>
+  );
+}
+
+/* ══════════════════════════════════════════ */
+export default function Dashboard() {
+  const router = useRouter();
+  const { theme, setTheme, resolved } = useTheme();
+  const isDark = resolved === "dark";
+
+  const [authUser,       setAuthUser]       = useState(null);
+  const [userData,       setUserData]       = useState(null);
+  const [loading,        setLoading]        = useState(true);
+  const [showBranch,     setShowBranch]     = useState(false);
+  const [activePage,     setActivePage]     = useState("dashboard");
+  const [sidebarOpen,    setSidebarOpen]    = useState(true);
+  const [showGreeting,   setShowGreeting]   = useState(false);
+  const [showNotifs,     setShowNotifs]     = useState(false);
+  const [greetingShown,  setGreetingShown]  = useState(false);
+  const notifRef  = useRef(null);
+  const notifBtn  = useRef(null);
+
+  /* Close notifs on outside click */
+  useEffect(() => {
+    const handler = (e) => {
+      if (showNotifs && notifRef.current && !notifRef.current.contains(e.target) && notifBtn.current && !notifBtn.current.contains(e.target)) {
+        setShowNotifs(false);
+      }
+    };
+    document.addEventListener("mousedown", handler);
+    return () => document.removeEventListener("mousedown", handler);
+  }, [showNotifs]);
+
+  /* Auth guard */
+  useEffect(() => {
+    const unsub = onAuthStateChanged(auth, (firebaseUser) => {
+      if (!firebaseUser) { router.replace("/"); return; }
+      setAuthUser(firebaseUser);
+      const userRef = ref(db, `users/${firebaseUser.uid}`);
+      const unsubDB = onValue(userRef, (snap) => {
+        if (snap.exists()) {
+          const data = snap.val();
+          setUserData(data);
+          if (!data.branch) setShowBranch(true);
+          else               setShowBranch(false);
+        }
+        setLoading(false);
+        /* Show greeting popup after data loads (once per session) */
+        if (!greetingShown) {
+          setTimeout(() => setShowGreeting(true), 600);
+          setGreetingShown(true);
+        }
+      });
+      return () => unsubDB();
+    });
+    return () => unsub();
+  }, [router, greetingShown]);
+
+  /* Derived colours */
+  const bg      = isDark ? "#080f1a"                : "#f5f8f5";
+  const sidebar  = isDark ? "rgba(8,15,26,0.96)"    : "rgba(255,255,255,0.75)";
+  const header   = isDark ? "rgba(8,15,26,0.92)"    : "rgba(255,255,255,0.75)";
+  const card     = isDark ? "rgba(15,23,42,0.8)"    : "#ffffff";
+  const text1    = isDark ? "#f1f5f9"               : "#0f172a";
+  const text2    = isDark ? "#94a3b8"               : "#475569";
+  const text3    = isDark ? "#475569"               : "#94a3b8";
+  const bdr      = isDark ? "rgba(0,255,0,0.1)"     : "rgba(0,200,0,0.1)";
+  const inputBg  = isDark ? "rgba(255,255,255,0.05)": "rgba(0,200,0,0.05)";
+  const rightBg  = isDark ? "rgba(8,15,26,0.6)"     : "rgba(255,255,255,0.5)";
+
+  const firstName = userData?.firstName || authUser?.displayName?.split(" ")[0] || "";
+  const fullName  = userData?.fullName  || authUser?.displayName || "";
+  const photoURL  = userData?.photoURL  || authUser?.photoURL    || "";
+  const branch    = userData?.branch    || null;
+  const email     = userData?.email     || authUser?.email       || "";
+
+  const studyHours     = userData?.stats?.studyHours     ?? 0;
+  const aiQuestions    = userData?.stats?.aiQuestions    ?? 0;
+  const solvedProblems = userData?.stats?.solvedProblems ?? 0;
+  const streak         = userData?.stats?.streak         ?? 0;
+
+  const stats = [
+    { icon: "schedule",              label: "Study Hours",     value: studyHours    ? `${studyHours}h` : "—", subtext: studyHours    ? "+12% vs last week" : "No data yet", progress: Math.min((studyHours/50)*100,100)    },
+    { icon: "question_answer",       label: "AI Questions",    value: aiQuestions   || "—",                   subtext: aiQuestions    ? "+5% vs last week"  : "No data yet", progress: Math.min((aiQuestions/200)*100,100)  },
+    { icon: "task_alt",              label: "Solved Problems", value: solvedProblems|| "—",                   subtext: solvedProblems ? "+8% vs last week"  : "No data yet", progress: Math.min((solvedProblems/100)*100,100)},
+    { icon: "local_fire_department", label: "Active Streak",   value: streak        ? `${streak} days` : "—", subtext: streak        ? "Keep it up!"       : "Start today!",progress: Math.min((streak/30)*100,100)        },
+  ];
+
+  const recentNotes = userData?.recentNotes ? Object.values(userData.recentNotes) : [];
+  const unreadCount = MOCK_NOTIFICATIONS.filter(n => n.unread).length;
+
+  const navItems = [
+    { id: "dashboard", icon: "dashboard",   label: "Dashboard" },
+    { id: "notes",     icon: "description", label: "Notes"     },
+    { id: "test",      icon: "quiz",        label: "Test"      },
+    { id: "ai",        icon: "psychology",  label: "Neural AI" },
+    { id: "profile",   icon: "person",      label: "Profile"   },
+    { id: "settings",  icon: "settings",    label: "Settings"  },
+  ];
+
+  const hour = new Date().getHours();
+  const greetWord = hour < 12 ? "morning" : hour < 17 ? "afternoon" : "evening";
+
+  /* Loading skeleton */
+  if (loading) return (
+    <>
+      <style>{`
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap');
+        @import url('https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:opsz,wght,FILL,GRAD@20..48,100..700,0..1,-50..200');
+        *,*::before,*::after{box-sizing:border-box;margin:0;padding:0;}
+        body{font-family:'Inter',sans-serif;background:${bg};overflow:hidden;}
+        @keyframes skeletonPulse{0%,100%{opacity:1;}50%{opacity:0.5;}}
+        @keyframes skeletonShimmer{0%{transform:translateX(-100%);}100%{transform:translateX(200%);}}
+      `}</style>
+      <div style={{ display: "flex", height: "100vh", background: bg }}>
+        {/* Sidebar skeleton */}
+        <div style={{ width: "260px", minWidth: "260px", background: sidebar, borderRight: `1px solid ${bdr}`, padding: "24px 20px", display: "flex", flexDirection: "column", gap: "16px" }}>
+          <div style={{ display: "flex", alignItems: "center", gap: "12px", marginBottom: "24px" }}>
+            <Skeleton w="40px" h="40px" r="10px" isDark={isDark} />
+            <div style={{ flex: 1, display: "flex", flexDirection: "column", gap: "6px" }}>
+              <Skeleton w="80%" h="14px" r="6px" isDark={isDark} />
+              <Skeleton w="50%" h="10px" r="6px" isDark={isDark} />
+            </div>
+          </div>
+          {[...Array(6)].map((_, i) => (
+            <div key={i} style={{ display: "flex", alignItems: "center", gap: "12px", padding: "12px 14px" }}>
+              <Skeleton w="20px" h="20px" r="6px" isDark={isDark} />
+              <Skeleton w="60%" h="13px" r="6px" isDark={isDark} />
+            </div>
+          ))}
+        </div>
+        {/* Main skeleton */}
+        <div style={{ flex: 1, display: "flex", flexDirection: "column" }}>
+          <div style={{ height: "72px", background: header, borderBottom: `1px solid ${bdr}`, padding: "0 32px", display: "flex", alignItems: "center", gap: "16px" }}>
+            <Skeleton w="36px" h="36px" r="9999px" isDark={isDark} />
+            <Skeleton w="360px" h="40px" r="9999px" isDark={isDark} />
+            <div style={{ marginLeft: "auto", display: "flex", gap: "12px", alignItems: "center" }}>
+              <Skeleton w="100px" h="36px" r="9999px" isDark={isDark} />
+              <Skeleton w="40px"  h="40px" r="9999px" isDark={isDark} />
+              <Skeleton w="40px"  h="40px" r="9999px" isDark={isDark} />
+            </div>
+          </div>
+          <div style={{ flex: 1, padding: "32px", display: "flex", flexDirection: "column", gap: "40px", overflowY: "auto" }}>
+            {/* Welcome skeleton */}
+            <div style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
+              <Skeleton w="340px" h="32px" r="8px" isDark={isDark} />
+              <Skeleton w="220px" h="16px" r="6px" isDark={isDark} />
+            </div>
+            {/* Stats skeleton */}
+            <div>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "20px" }}>
+                <Skeleton w="160px" h="20px" r="6px" isDark={isDark} />
+                <Skeleton w="40px"  h="20px" r="9999px" isDark={isDark} />
+              </div>
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(220px,1fr))", gap: "16px" }}>
+                {[...Array(4)].map((_, i) => <StatCardSkeleton key={i} isDark={isDark} />)}
+              </div>
+            </div>
+            {/* Notes skeleton */}
+            <div>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "20px" }}>
+                <Skeleton w="140px" h="20px" r="6px" isDark={isDark} />
+                <Skeleton w="60px"  h="14px" r="6px" isDark={isDark} />
+              </div>
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(340px,1fr))", gap: "16px" }}>
+                {[...Array(2)].map((_, i) => <NoteCardSkeleton key={i} isDark={isDark} />)}
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </>
+  );
+
+  return (
+    <>
+      <style>{`
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap');
+        @import url('https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:opsz,wght,FILL,GRAD@20..48,100..700,0..1,-50..200');
+        *,*::before,*::after{box-sizing:border-box;margin:0;padding:0;}
+        body{font-family:'Inter',sans-serif;background:${bg};color:${text1};overflow:hidden;transition:background 0.3s,color 0.3s;}
+        .ms{font-family:'Material Symbols Outlined'!important;font-weight:normal;font-style:normal;font-size:24px;line-height:1;letter-spacing:normal;text-transform:none;display:inline-block;white-space:nowrap;direction:ltr;}
+        @keyframes spin        {to{transform:rotate(360deg);}}
+        @keyframes popIn       {from{opacity:0;transform:scale(0.88) translateY(20px);}to{opacity:1;transform:scale(1) translateY(0);}}
+        @keyframes fadeUp      {from{opacity:0;transform:translateY(12px);}to{opacity:1;transform:translateY(0);}}
+        @keyframes slideDown   {from{opacity:0;transform:translateY(-8px) scale(0.97);}to{opacity:1;transform:translateY(0) scale(1);}}
+        @keyframes greetTimer  {from{width:100%;}to{width:0%;}}
+        @keyframes skeletonPulse  {0%,100%{opacity:1;}50%{opacity:0.5;}}
+        @keyframes skeletonShimmer{0%{transform:translateX(-100%);}100%{transform:translateX(200%);}}
+
+        .dash-root{display:flex;height:100vh;overflow:hidden;}
+        .sidebar{width:260px;min-width:260px;height:100vh;background:${sidebar};backdrop-filter:blur(12px);-webkit-backdrop-filter:blur(12px);border-right:1px solid ${bdr};display:flex;flex-direction:column;padding:24px 20px;z-index:20;transition:width 0.3s ease,min-width 0.3s ease;}
+        .sidebar.collapsed{width:72px;min-width:72px;}
+        .sidebar.collapsed .sl{display:none;}
+        .sidebar-logo{display:flex;align-items:center;gap:12px;margin-bottom:40px;padding:0 4px;}
+        .brand-text h1{font-size:1.15rem;font-weight:900;letter-spacing:-0.04em;line-height:1;color:${text1};}
+        .brand-text p{font-size:10px;font-weight:800;color:#00AA00;text-transform:uppercase;letter-spacing:0.12em;margin-top:2px;}
+        .nav-link{display:flex;align-items:center;gap:12px;padding:12px 14px;border-radius:9999px;text-decoration:none;font-size:13px;font-weight:700;color:${text2};transition:all 0.2s ease;cursor:pointer;border:none;background:none;width:100%;text-align:left;font-family:'Inter',sans-serif;}
+        .nav-link:hover{background:rgba(0,200,0,0.08);color:${text1};}
+        .nav-link.active{background:#00FF00;color:#0f172a;box-shadow:0 6px 20px rgba(0,255,0,0.3);}
+        .nav-link.active .ms{color:#0f172a;}
+        .nav-link.danger{color:#f87171;}
+        .nav-link.danger:hover{background:rgba(248,113,113,0.1);}
+        .dash-main{flex:1;display:flex;flex-direction:column;height:100vh;overflow:hidden;}
+        .dash-header{height:72px;background:${header};backdrop-filter:blur(12px);-webkit-backdrop-filter:blur(12px);border-bottom:1px solid ${bdr};padding:0 32px;display:flex;align-items:center;justify-content:space-between;z-index:10;flex-shrink:0;}
+        .search-box{display:flex;align-items:center;gap:8px;background:${inputBg};border:1px solid ${bdr};border-radius:9999px;padding:10px 18px;max-width:380px;flex:1;transition:border-color 0.2s,box-shadow 0.2s;}
+        .search-box:focus-within{border-color:rgba(0,255,0,0.4);box-shadow:0 0 0 3px rgba(0,255,0,0.08);}
+        .search-box input{background:transparent;border:none;outline:none;font-size:13px;font-family:'Inter',sans-serif;color:${text1};flex:1;}
+        .search-box input::placeholder{color:${text3};}
+        .dash-content{flex:1;display:flex;overflow:hidden;}
+        .dash-scroll{flex:1;overflow-y:auto;padding:32px;display:flex;flex-direction:column;gap:40px;}
+        .dash-scroll::-webkit-scrollbar{width:4px;}
+        .dash-scroll::-webkit-scrollbar-thumb{background:rgba(0,200,0,0.2);border-radius:2px;}
+        .right-panel{width:300px;min-width:300px;border-left:1px solid ${bdr};overflow-y:auto;padding:32px 24px;display:flex;flex-direction:column;gap:36px;background:${rightBg};}
+        .right-panel::-webkit-scrollbar{width:4px;}
+        .right-panel::-webkit-scrollbar-thumb{background:rgba(0,200,0,0.2);}
+        .btn-primary{background:#00FF00;color:#0f172a;border:none;border-radius:9999px;padding:10px 20px;font-size:13px;font-weight:800;cursor:pointer;font-family:'Inter',sans-serif;display:flex;align-items:center;gap:6px;transition:transform 0.2s,box-shadow 0.2s;box-shadow:0 4px 16px rgba(0,255,0,0.3);}
+        .btn-primary:hover{transform:translateY(-2px);box-shadow:0 8px 24px rgba(0,255,0,0.45);}
+        .note-card{background:${card};padding:20px;border-radius:18px;border:1px solid ${bdr};display:flex;gap:20px;transition:box-shadow 0.2s;}
+        .note-card:hover{box-shadow:${isDark ? "0 8px 28px rgba(0,255,0,0.1)" : "0 8px 28px rgba(0,200,0,0.12)"};}
+        .note-icon-box{width:100px;min-width:100px;height:100px;border-radius:14px;background:linear-gradient(135deg,rgba(0,255,0,0.18),rgba(0,255,0,0.05));display:flex;align-items:center;justify-content:center;}
+        .empty-state{display:flex;flex-direction:column;align-items:center;justify-content:center;padding:40px 20px;gap:12px;opacity:0.5;}
+        @media(max-width:1200px){.right-panel{display:none;}}
+        @media(max-width:768px){.sidebar{display:none;}.dash-header{padding:0 16px;}.dash-scroll{padding:20px 16px;}}
+      `}</style>
+
+      {/* Time-based greeting popup */}
+      {showGreeting && (
+        <GreetingPopup isDark={isDark} firstName={firstName} onClose={() => setShowGreeting(false)} />
+      )}
+
+      {showBranch && authUser && (
+        <BranchPopup uid={authUser.uid} isDark={isDark} onComplete={(b) => {
+          setUserData(prev => ({ ...prev, branch: b }));
+          setShowBranch(false);
+        }} />
+      )}
+
+      <div className="dash-root">
+
+        {/* Sidebar */}
+        <aside className={`sidebar${sidebarOpen ? "" : " collapsed"}`}>
+          <div className="sidebar-logo">
+            <div style={{ width: "40px", height: "40px", background: "#00FF00", borderRadius: "10px", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0, boxShadow: "0 0 16px rgba(0,255,0,0.35)" }}>
+              <span className="ms" style={{ color: "#0f172a", fontSize: "22px" }}>school</span>
+            </div>
+            <div className="brand-text sl">
+              <h1>StudyBuddy</h1>
+              <p>Engineering AI</p>
+            </div>
+          </div>
+
+          <nav style={{ flex: 1, display: "flex", flexDirection: "column", gap: "4px" }}>
+            {navItems.slice(0, 4).map(({ id, icon, label }) => (
+              <button key={id} className={`nav-link${activePage === id ? " active" : ""}`} onClick={() => setActivePage(id)}>
+                <span className="ms" style={{ fontSize: "20px", flexShrink: 0 }}>{icon}</span>
+                <span className="sl">{label}</span>
+              </button>
+            ))}
+            <div style={{ padding: "16px 4px 8px", fontSize: "10px", fontWeight: 800, color: text3, textTransform: "uppercase", letterSpacing: "0.12em" }} className="sl">Account</div>
+            {navItems.slice(4).map(({ id, icon, label }) => (
+              <button key={id} className={`nav-link${activePage === id ? " active" : ""}`} onClick={() => setActivePage(id)}>
+                <span className="ms" style={{ fontSize: "20px", flexShrink: 0 }}>{icon}</span>
+                <span className="sl">{label}</span>
+              </button>
+            ))}
+            <button className="nav-link danger" onClick={() => signOut(auth).then(() => router.replace("/"))}>
+              <span className="ms" style={{ fontSize: "20px", flexShrink: 0 }}>logout</span>
+              <span className="sl">Sign Out</span>
+            </button>
+          </nav>
+        </aside>
+
+        {/* Main */}
+        <main className="dash-main">
+          <header className="dash-header">
+            <div style={{ display: "flex", alignItems: "center", gap: "16px", flex: 1 }}>
+              <button onClick={() => setSidebarOpen(s => !s)}
+                style={{ background: isDark ? "rgba(255,255,255,0.06)" : "rgba(0,200,0,0.08)", border: "none", borderRadius: "9999px", width: "36px", height: "36px", display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer", flexShrink: 0, transition: "background 0.2s" }}
+                onMouseEnter={e => e.currentTarget.style.background = isDark ? "rgba(255,255,255,0.1)" : "rgba(0,200,0,0.14)"}
+                onMouseLeave={e => e.currentTarget.style.background = isDark ? "rgba(255,255,255,0.06)" : "rgba(0,200,0,0.08)"}
+              >
+                <span className="ms" style={{ fontSize: "20px", color: text2 }}>menu</span>
+              </button>
+              <div className="search-box">
+                <span className="ms" style={{ fontSize: "18px", color: text3 }}>search</span>
+                <input placeholder="Search notes, formulas, or topics…" type="text" />
+              </div>
+            </div>
+
+            <div style={{ display: "flex", alignItems: "center", gap: "12px", marginLeft: "24px" }}>
+              {/* Compact icon-only theme switcher */}
+              <ThemeSwitcher theme={theme} setTheme={setTheme} resolved={resolved} />
+
+              {/* Notification button with popup */}
+              <div style={{ position: "relative" }}>
+                <button ref={notifBtn}
+                  onClick={() => setShowNotifs(s => !s)}
+                  style={{
+                    width: "40px", height: "40px", borderRadius: "9999px",
+                    background: showNotifs
+                      ? (isDark ? "rgba(0,255,0,0.12)" : "rgba(0,200,0,0.1)")
+                      : (isDark ? "rgba(255,255,255,0.06)" : "rgba(0,200,0,0.08)"),
+                    border: showNotifs ? "1px solid rgba(0,255,0,0.3)" : "1px solid transparent",
+                    display: "flex", alignItems: "center", justifyContent: "center",
+                    cursor: "pointer", position: "relative", transition: "all 0.2s",
+                  }}
+                  onMouseEnter={e => { if (!showNotifs) e.currentTarget.style.background = isDark ? "rgba(255,255,255,0.1)" : "rgba(0,200,0,0.14)"; }}
+                  onMouseLeave={e => { if (!showNotifs) e.currentTarget.style.background = isDark ? "rgba(255,255,255,0.06)" : "rgba(0,200,0,0.08)"; }}
+                >
+                  <span className="ms" style={{ fontSize: "22px", color: showNotifs ? "#00AA00" : text2 }}>notifications</span>
+                  {unreadCount > 0 && (
+                    <span style={{
+                      position: "absolute", top: "7px", right: "7px",
+                      minWidth: "16px", height: "16px", padding: "0 3px",
+                      background: "#00FF00", borderRadius: "9999px",
+                      border: `2px solid ${bg}`, fontSize: "9px", fontWeight: 900,
+                      color: "#0f172a", display: "flex", alignItems: "center", justifyContent: "center",
+                      fontFamily: "'Inter',sans-serif", lineHeight: 1,
+                    }}>{unreadCount}</span>
+                  )}
+                </button>
+                {showNotifs && (
+                  <NotificationPanel isDark={isDark} onClose={() => setShowNotifs(false)} panelRef={notifRef} />
+                )}
+              </div>
+
+              <div style={{ width: "1px", height: "32px", background: bdr }} />
+
+              <div style={{ display: "flex", alignItems: "center", gap: "10px", cursor: "pointer" }}>
+                <div style={{ textAlign: "right" }}>
+                  <p style={{ fontSize: "12px", fontWeight: 800, color: text1, lineHeight: 1 }}>{fullName || "—"}</p>
+                  <p style={{ fontSize: "10px", color: text3, fontWeight: 600, marginTop: "2px" }}>{branch || "No branch set"} · TCET</p>
+                </div>
+                <div style={{ width: "40px", height: "40px", borderRadius: "9999px", border: "2.5px solid #00FF00", overflow: "hidden", background: isDark ? "rgba(255,255,255,0.1)" : "#e2e8f0", flexShrink: 0 }}>
+                  {photoURL
+                    ? <img src={photoURL} alt={fullName} style={{ width: "100%", height: "100%", objectFit: "cover" }} referrerPolicy="no-referrer" />
+                    : <div style={{ width: "100%", height: "100%", display: "flex", alignItems: "center", justifyContent: "center", background: "#00FF00", color: "#0f172a", fontSize: "16px", fontWeight: 900 }}>
+                        {firstName ? firstName.charAt(0).toUpperCase() : "?"}
+                      </div>
+                  }
+                </div>
+              </div>
+            </div>
+          </header>
+
+          <div className="dash-content">
+            <div className="dash-scroll">
+
+              {/* Welcome */}
+              <div style={{ animation: "fadeUp 0.4s ease both" }}>
+                <h2 style={{ fontSize: "clamp(1.4rem,3vw,1.9rem)", fontWeight: 900, letterSpacing: "-0.03em", color: text1, marginBottom: "6px" }}>
+                  {firstName ? `Good ${greetWord}, ${firstName}! 👋` : `Good ${greetWord}! 👋`}
+                </h2>
+                <p style={{ fontSize: "14px", color: text2, fontWeight: 500, display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap" }}>
+                  Here&apos;s your academic overview.
+                  {branch && (
+                    <span style={{ padding: "2px 10px", background: "rgba(0,200,0,0.1)", border: "1px solid rgba(0,200,0,0.2)", borderRadius: "9999px", fontSize: "11px", fontWeight: 800, color: "#009900" }}>{branch}</span>
+                  )}
+                  {email && <span style={{ fontSize: "11px", color: text3, fontWeight: 500 }}>{email}</span>}
+                </p>
+              </div>
+
+              {/* Stats */}
+              <section style={{ animation: "fadeUp 0.4s ease 0.05s both" }}>
+                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "20px" }}>
+                  <h3 style={{ fontSize: "18px", fontWeight: 800, letterSpacing: "-0.02em", color: text1 }}>Academic Overview</h3>
+                  <span style={{ fontSize: "10px", fontWeight: 800, color: text3, background: isDark ? "rgba(255,255,255,0.05)" : "rgba(0,200,0,0.06)", padding: "4px 12px", borderRadius: "9999px", textTransform: "uppercase", letterSpacing: "0.1em" }}>Live</span>
+                </div>
+                <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(220px,1fr))", gap: "16px" }}>
+                  {stats.map(s => <StatCard key={s.label} {...s} isDark={isDark} />)}
+                </div>
+              </section>
+
+              {/* Recent Notes */}
+              <section style={{ animation: "fadeUp 0.4s ease 0.1s both" }}>
+                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "20px" }}>
+                  <h3 style={{ fontSize: "18px", fontWeight: 800, letterSpacing: "-0.02em", color: text1 }}>Recent Notes</h3>
+                  <button style={{ fontSize: "13px", fontWeight: 800, color: "#00AA00", background: "none", border: "none", cursor: "pointer", textDecoration: "underline", textUnderlineOffset: "3px" }}>View All</button>
+                </div>
+                {recentNotes.length === 0 ? (
+                  <div className="note-card">
+                    <div className="empty-state" style={{ width: "100%" }}>
+                      <span className="ms" style={{ fontSize: "40px", color: text3 }}>auto_stories</span>
+                      <p style={{ fontSize: "14px", fontWeight: 700, color: text2 }}>No notes yet</p>
+                      <p style={{ fontSize: "12px", color: text3 }}>Your saved notes will appear here.</p>
+                    </div>
+                  </div>
+                ) : (
+                  <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(340px,1fr))", gap: "16px" }}>
+                    {recentNotes.map((note, i) => (
+                      <div key={i} className="note-card">
+                        <div className="note-icon-box">
+                          <span className="ms" style={{ fontSize: "36px", color: "rgba(0,180,0,0.6)" }}>{note.icon || "description"}</span>
+                        </div>
+                        <div style={{ flex: 1, display: "flex", flexDirection: "column", justifyContent: "space-between" }}>
+                          <div>
+                            <span style={{ display: "inline-block", padding: "3px 10px", borderRadius: "9999px", background: "rgba(0,200,0,0.1)", color: "#009900", fontSize: "10px", fontWeight: 800, textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: "8px" }}>{note.subject || branch || "General"}</span>
+                            <h4 style={{ fontSize: "14px", fontWeight: 800, color: text1, marginBottom: "4px" }}>{note.title}</h4>
+                            <p style={{ fontSize: "11px", color: text2, lineHeight: 1.5 }}>{note.desc}</p>
+                          </div>
+                          <div style={{ display: "flex", alignItems: "center", justifyContent: "flex-end", marginTop: "12px" }}>
+                            <button style={{ display: "flex", alignItems: "center", gap: "6px", padding: "8px 14px", background: isDark ? "#f1f5f9" : "#0f172a", color: isDark ? "#0f172a" : "#fff", border: "none", borderRadius: "10px", fontSize: "11px", fontWeight: 800, cursor: "pointer", fontFamily: "'Inter',sans-serif" }}>
+                              Open Note
+                              <span className="ms" style={{ fontSize: "14px" }}>arrow_forward</span>
+                            </button>
+                          </div>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </section>
+
+            </div>
+          </div>
+        </main>
+      </div>
+    </>
+  );
+}
