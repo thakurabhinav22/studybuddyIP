@@ -479,8 +479,6 @@ export default function Dashboard() {
   const [showGreeting, setShowGreeting] = useState(false);
   const [showNotifs, setShowNotifs] = useState(false);   // bell dropdown
   const [showIOSNotifs, setShowIOSNotifs] = useState(false);   // iOS toast layer
-  const [greetingShown, setGreetingShown] = useState(false);
-  const notifRef = useRef(null);
   const notifBtn = useRef(null);
 
   /* Close notifs on outside click */
@@ -508,17 +506,17 @@ export default function Dashboard() {
           else setShowBranch(false);
         }
         setLoading(false);
-        /* Show greeting popup after data loads (once per session) */
-        if (!greetingShown) {
+        /* Show greeting popup once per browser session (survives auth re-fires) */
+        if (!sessionStorage.getItem("sb_greeted")) {
+          sessionStorage.setItem("sb_greeted", "1");
           setTimeout(() => setShowGreeting(true), 600);
           setTimeout(() => setShowIOSNotifs(true), 1400);
-          setGreetingShown(true);
         }
       });
       return () => unsubDB();
     });
     return () => unsub();
-  }, [router, greetingShown]);
+  }, [router]);
 
   /* Derived colours */
   const bg = isDark ? "#080f1a" : "#f5f8f5";
