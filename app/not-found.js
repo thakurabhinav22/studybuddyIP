@@ -283,7 +283,7 @@ export default function NotFound() {
 
             {/* Buttons */}
             <div className="nf-actions">
-              <Link href="/" className="nf-btn-p">
+              <Link href="/dashboard" className="nf-btn-p">
                 <span className="ms" style={{ fontSize: "20px", color: "#0f172a" }}>dashboard</span>
                 Return to Dashboard
               </Link>

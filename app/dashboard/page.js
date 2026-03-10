@@ -802,14 +802,14 @@ export default function Dashboard() {
           </div>
           <nav style={{ flex: 1, display: "flex", flexDirection: "column", gap: "4px" }}>
             {navItems.slice(0, 4).map(({ id, icon, label }) => (
-              <button key={id} className={`nav-link${activePage === id ? " active" : ""}`} onClick={() => setActivePage(id)}>
+              <button key={id} className={`nav-link${activePage === id ? " active" : ""}`} onClick={() => router.push(`/${id}`)}>
                 <span className="ms" style={{ fontSize: "20px", flexShrink: 0 }}>{icon}</span>
                 <span className="sl">{label}</span>
               </button>
             ))}
             <div style={{ padding: "16px 4px 8px", fontSize: "10px", fontWeight: 800, color: text3, textTransform: "uppercase", letterSpacing: "0.12em" }} className="sl">Account</div>
             {navItems.slice(4).map(({ id, icon, label }) => (
-              <button key={id} className={`nav-link${activePage === id ? " active" : ""}`} onClick={() => setActivePage(id)}>
+              <button key={id} className={`nav-link${activePage === id ? " active" : ""}`} onClick={() => router.push(`/${id}`)}>
                 <span className="ms" style={{ fontSize: "20px", flexShrink: 0 }}>{icon}</span>
                 <span className="sl">{label}</span>
               </button>
@@ -909,7 +909,7 @@ export default function Dashboard() {
       {/* ══ MOBILE BOTTOM NAV ══ */}
       <nav className="mob-nav">
         {navItems.slice(0, 4).map(({ id, icon }) => (
-          <button key={id} className={`mob-tab${activePage === id ? " active" : ""}`} onClick={() => setActivePage(id)}>
+          <button key={id} className={`mob-tab${activePage === id ? " active" : ""}`} onClick={() => router.push(`/${id}`)}>
             <span className="ms">{icon}</span>
           </button>
         ))}

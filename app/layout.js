@@ -1,15 +1,29 @@
+import { Inter } from "next/font/google";
 import "./globals.css";
 
+const inter = Inter({
+  subsets: ["latin"],
+  weight: ["400", "500", "600", "700", "800", "900"],
+  variable: "--font-inter",
+});
+
 export const metadata = {
-  title: "StudyBuddy - AI Engineering Assistant",
-  description: "The ultimate workspace for engineering students powered by AI.",
+  title: "StudyBuddy · Engineering AI",
+  description: "Your personalised engineering study companion",
 };
 
 export default function RootLayout({ children }) {
   return (
-    <html lang="en">
-      {/* No antialiased class — it washes out text color */}
-      <body style={{ WebkitFontSmoothing: "auto", MozOsxFontSmoothing: "auto" }}>
+    <html lang="en" className={inter.variable}>
+      <head>
+        <link rel="preconnect" href="https://fonts.googleapis.com" />
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossOrigin="anonymous" />
+        <link
+          href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:opsz,wght,FILL,GRAD@20..48,100..700,0..1,-50..200"
+          rel="stylesheet"
+        />
+      </head>
+      <body style={{ margin: 0, padding: 0, overflow: "hidden" }}>
         {children}
       </body>
     </html>
