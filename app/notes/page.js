@@ -551,14 +551,6 @@ export default function NotesPage() {
             </button>
           </nav>
 
-          {/* Upgrade card */}
-          <div style={{ background: "#0f172a", borderRadius: "18px", padding: "20px", position: "relative", overflow: "hidden" }} className="sl">
-            <div style={{ position: "absolute", right: "-16px", top: "-16px", width: "80px", height: "80px", background: "rgba(0,255,0,0.15)", borderRadius: "9999px", filter: "blur(20px)", pointerEvents: "none" }} />
-            <p style={{ color: "#fff", fontSize: "12px", fontWeight: 500, marginBottom: "12px", position: "relative", zIndex: 1 }}>Get full access to AI tools</p>
-            <button style={{ width: "100%", padding: "10px", background: "#00FF00", color: "#0f172a", fontSize: "12px", fontWeight: 700, border: "none", borderRadius: "10px", cursor: "pointer", fontFamily: "'Lexend',sans-serif", position: "relative", zIndex: 1 }}>
-              Upgrade to Premium
-            </button>
-          </div>
         </aside>
 
         {/* ══ MAIN ══ */}
@@ -595,14 +587,6 @@ export default function NotesPage() {
             <div style={{ display: "flex", alignItems: "center", gap: "12px", marginLeft: "24px" }}>
               <ThemeSwitcher theme={theme} setTheme={setTheme} resolved={resolved} />
 
-              <button
-                className="upload-btn"
-                onMouseEnter={() => setUploadHover(true)}
-                onMouseLeave={() => setUploadHover(false)}
-              >
-                <span className="ms" style={{ fontSize: "18px", transform: uploadHover ? "translateY(-2px)" : "translateY(0)", transition: "transform 0.2s" }}>upload_file</span>
-                Upload PDF
-              </button>
 
               <div style={{ width: "1px", height: "32px", background: bdr }} />
 
