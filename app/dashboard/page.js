@@ -2,31 +2,31 @@
 
 import { useState, useEffect, useRef } from "react";
 import { useRouter } from "next/navigation";
-import { auth, db } from "@/firebase";                         // ← your firebase.js
+import { auth, db } from "@/firebase";
 import { onAuthStateChanged, signOut } from "firebase/auth";
 import { ref, onValue, set } from "firebase/database";
 
 /* ── Time-based greeting messages ── */
 const TIME_GREETINGS = {
-  dawn: { icon: "🌅", title: "The world wakes up with you.", sub: "Early birds catch more than worms — they catch clarity.", color: "#00FF00" },
-  morning: { icon: "☀️", title: "Morning light, sharp mind.", sub: "A fresh day to learn something extraordinary.", color: "#00FF00" },
-  afternoon: { icon: "🌤️", title: "Keep the momentum going.", sub: "Afternoon energy is a gift — don't let it drift away.", color: "#00FF00" },
-  evening: { icon: "🌇", title: "The golden hour is yours.", sub: "Wind down, reflect, and let knowledge settle in.", color: "#00FF00" },
-  night: { icon: "🌙", title: "Night has a quiet magic.", sub: "The stars are out. Your focus is unmatched right now.", color: "#00FF00" },
-  midnight: { icon: "✨", title: "The world sleeps. You glow.", sub: "Midnight scholars write their own history. Stay the course.", color: "#00FF00" },
+  dawn:      { icon: "🌅", title: "The world wakes up with you.", sub: "Early birds catch more than worms — they catch clarity.",    color: "#00FF00" },
+  morning:   { icon: "☀️", title: "Morning light, sharp mind.",  sub: "A fresh day to learn something extraordinary.",               color: "#00FF00" },
+  afternoon: { icon: "🌤️", title: "Keep the momentum going.",   sub: "Afternoon energy is a gift — don't let it drift away.",       color: "#00FF00" },
+  evening:   { icon: "🌇", title: "The golden hour is yours.",   sub: "Wind down, reflect, and let knowledge settle in.",            color: "#00FF00" },
+  night:     { icon: "🌙", title: "Night has a quiet magic.",    sub: "The stars are out. Your focus is unmatched right now.",        color: "#00FF00" },
+  midnight:  { icon: "✨", title: "The world sleeps. You glow.", sub: "Midnight scholars write their own history. Stay the course.", color: "#00FF00" },
 };
 
 function getTimeOfDay() {
   const h = new Date().getHours();
-  if (h >= 4 && h < 6) return "dawn";
-  if (h >= 6 && h < 12) return "morning";
+  if (h >= 4  && h < 6)  return "dawn";
+  if (h >= 6  && h < 12) return "morning";
   if (h >= 12 && h < 17) return "afternoon";
   if (h >= 17 && h < 20) return "evening";
   if (h >= 20 && h < 24) return "night";
   return "midnight";
 }
 
-/* ── Greeting Popup — centered fullscreen modal ── */
+/* ── Greeting Popup ── */
 function GreetingPopup({ isDark, firstName, onClose }) {
   const tod = getTimeOfDay();
   const msg = TIME_GREETINGS[tod];
@@ -57,59 +57,31 @@ function GreetingPopup({ isDark, firstName, onClose }) {
       <div style={{
         width: "100%", maxWidth: "400px", position: "relative", overflow: "hidden",
         background: isDark ? "rgba(10,16,30,0.98)" : "rgba(255,255,255,0.99)",
-        borderRadius: "28px",
-        border: `1.5px solid ${msg.color}30`,
+        borderRadius: "28px", border: `1.5px solid ${msg.color}30`,
         boxShadow: `0 32px 80px rgba(0,0,0,0.4), 0 0 0 1px ${msg.color}15`,
         transform: visible ? "scale(1) translateY(0)" : "scale(0.88) translateY(24px)",
         opacity: visible ? 1 : 0,
         transition: "transform 0.38s cubic-bezier(0.34,1.56,0.64,1), opacity 0.38s ease",
       }}>
-        {/* glow blob */}
         <div style={{ position: "absolute", top: "-40px", right: "-40px", width: "160px", height: "160px", borderRadius: "9999px", background: `${msg.color}18`, filter: "blur(40px)", pointerEvents: "none" }} />
-
-        {/* close */}
-        <button onClick={dismiss} style={{
-          position: "absolute", top: "14px", right: "14px", width: "32px", height: "32px",
-          borderRadius: "9999px", border: "none",
-          background: isDark ? "rgba(255,255,255,0.08)" : "rgba(0,0,0,0.06)",
-          cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 1,
-          transition: "background 0.18s, transform 0.18s",
-        }}
+        <button onClick={dismiss} style={{ position: "absolute", top: "14px", right: "14px", width: "32px", height: "32px", borderRadius: "9999px", border: "none", background: isDark ? "rgba(255,255,255,0.08)" : "rgba(0,0,0,0.06)", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 1, transition: "background 0.18s, transform 0.18s" }}
           onMouseEnter={e => { e.currentTarget.style.background = isDark ? "rgba(255,255,255,0.15)" : "rgba(0,0,0,0.12)"; e.currentTarget.style.transform = "scale(1.1)"; }}
-          onMouseLeave={e => { e.currentTarget.style.background = isDark ? "rgba(255,255,255,0.08)" : "rgba(0,0,0,0.06)"; e.currentTarget.style.transform = "scale(1)"; }}
-        >
+          onMouseLeave={e => { e.currentTarget.style.background = isDark ? "rgba(255,255,255,0.08)" : "rgba(0,0,0,0.06)"; e.currentTarget.style.transform = "scale(1)"; }}>
           <span style={{ fontFamily: "'Material Symbols Outlined'", fontSize: "17px", lineHeight: 1, color: isDark ? "#64748b" : "#94a3b8" }}>close</span>
         </button>
-
-        {/* body */}
         <div style={{ padding: "36px 32px 28px", position: "relative" }}>
-          <div style={{ width: "68px", height: "68px", borderRadius: "18px", background: `${msg.color}18`, border: `1.5px solid ${msg.color}28`, display: "flex", alignItems: "center", justifyContent: "center", fontSize: "34px", marginBottom: "18px" }}>
-            {msg.icon}
-          </div>
-          <p style={{ fontSize: "10px", fontWeight: 900, letterSpacing: "0.1em", textTransform: "uppercase", color: msg.color, margin: "0 0 7px", fontFamily: "'Inter',sans-serif" }}>
-            {tod.toUpperCase()}
-          </p>
+          <div style={{ width: "68px", height: "68px", borderRadius: "18px", background: `${msg.color}18`, border: `1.5px solid ${msg.color}28`, display: "flex", alignItems: "center", justifyContent: "center", fontSize: "34px", marginBottom: "18px" }}>{msg.icon}</div>
+          <p style={{ fontSize: "10px", fontWeight: 900, letterSpacing: "0.1em", textTransform: "uppercase", color: msg.color, margin: "0 0 7px", fontFamily: "'Inter',sans-serif" }}>{tod.toUpperCase()}</p>
           <h2 style={{ fontSize: "21px", fontWeight: 900, letterSpacing: "-0.03em", color: isDark ? "#f1f5f9" : "#0f172a", margin: "0 0 9px", lineHeight: 1.2, fontFamily: "'Inter',sans-serif" }}>
             {firstName ? `${firstName}, ${msg.title.toLowerCase()}` : msg.title}
           </h2>
-          <p style={{ fontSize: "13px", fontWeight: 500, lineHeight: 1.6, color: isDark ? "#64748b" : "#64748b", margin: "0 0 26px", fontFamily: "'Inter',sans-serif" }}>
-            {msg.sub}
-          </p>
-          <button onClick={dismiss} style={{
-            width: "100%", height: "46px", borderRadius: "13px", border: "none",
-            background: msg.color, color: "#0f172a",
-            fontSize: "14px", fontWeight: 900, cursor: "pointer", fontFamily: "'Inter',sans-serif",
-            boxShadow: `0 8px 24px ${msg.color}40`,
-            transition: "transform 0.2s, box-shadow 0.2s",
-          }}
+          <p style={{ fontSize: "13px", fontWeight: 500, lineHeight: 1.6, color: "#64748b", margin: "0 0 26px", fontFamily: "'Inter',sans-serif" }}>{msg.sub}</p>
+          <button onClick={dismiss} style={{ width: "100%", height: "46px", borderRadius: "13px", border: "none", background: msg.color, color: "#0f172a", fontSize: "14px", fontWeight: 900, cursor: "pointer", fontFamily: "'Inter',sans-serif", boxShadow: `0 8px 24px ${msg.color}40`, transition: "transform 0.2s, box-shadow 0.2s" }}
             onMouseEnter={e => { e.currentTarget.style.transform = "translateY(-2px)"; e.currentTarget.style.boxShadow = `0 12px 32px ${msg.color}55`; }}
-            onMouseLeave={e => { e.currentTarget.style.transform = "translateY(0)"; e.currentTarget.style.boxShadow = `0 8px 24px ${msg.color}40`; }}
-          >
+            onMouseLeave={e => { e.currentTarget.style.transform = "translateY(0)"; e.currentTarget.style.boxShadow = `0 8px 24px ${msg.color}40`; }}>
             Let&apos;s get studying 🚀
           </button>
         </div>
-
-        {/* progress bar */}
         <div style={{ height: "3px", background: isDark ? "rgba(255,255,255,0.05)" : "rgba(0,0,0,0.04)" }}>
           <div style={{ height: "100%", background: msg.color, width: `${prog}%`, transition: "width 0.1s linear" }} />
         </div>
@@ -118,7 +90,7 @@ function GreetingPopup({ isDark, firstName, onClose }) {
   );
 }
 
-/* ── iOS-style Notification Toasts — live from Firebase ── */
+/* ── iOS Notification Toasts ── */
 const NOTIF_EMOJI = { quiz: "🎯", auto_stories: "📚", emoji_events: "🔥", psychology: "🧠", default: "💡" };
 
 function IOSNotifToasts({ uid, isDark, onDone }) {
@@ -132,10 +104,10 @@ function IOSNotifToasts({ uid, isDark, onDone }) {
       get(nRef).then(snap => {
         if (!snap.exists()) {
           const demos = [
-            { title: "Test Reminder", body: "Your DSA quiz is scheduled for tomorrow at 10 AM.", icon: "quiz", color: "#f59e0b", createdAt: Date.now(), read: false },
+            { title: "Test Reminder",       body: "Your DSA quiz is scheduled for tomorrow at 10 AM.", icon: "quiz",         color: "#f59e0b", createdAt: Date.now(),          read: false },
             { title: "New Notes Available", body: "CN Module 4 notes have been uploaded by your peer.", icon: "auto_stories", color: "#22c55e", createdAt: Date.now() - 120000, read: false },
-            { title: "7-Day Streak! 🔥", body: "You've maintained a 7-day study streak. Keep going!", icon: "emoji_events", color: "#818cf8", createdAt: Date.now() - 3600000, read: true },
-            { title: "Neural AI is ready", body: "Your last AI session summary has been saved.", icon: "psychology", color: "#00CC00", createdAt: Date.now() - 86400000, read: true },
+            { title: "7-Day Streak! 🔥",    body: "You've maintained a 7-day study streak. Keep going!", icon: "emoji_events", color: "#818cf8", createdAt: Date.now() - 3600000, read: true },
+            { title: "Neural AI is ready",  body: "Your last AI session summary has been saved.",        icon: "psychology",   color: "#00CC00", createdAt: Date.now() - 86400000, read: true },
           ];
           Promise.all(demos.map(d => push(nRef, d))).then(() => setReady(true));
         } else { setReady(true); }
@@ -151,54 +123,34 @@ function IOSNotifToasts({ uid, isDark, onDone }) {
         if (!snap.exists()) { setItems([]); return; }
         const list = Object.entries(snap.val())
           .map(([id, v]) => ({ id, ...v, visible: false, exiting: false }))
-          .sort((a, b) => b.createdAt - a.createdAt)
-          .slice(0, 4);
+          .sort((a, b) => b.createdAt - a.createdAt).slice(0, 4);
         setItems(list);
       });
       return () => unsub();
     });
   }, [uid, ready]);
 
-  // staggered entrance
   useEffect(() => {
     if (!items.length) return;
     items.forEach((_, i) => setTimeout(() =>
       setItems(p => p.map((it, idx) => idx === i ? { ...it, visible: true } : it)), i * 150));
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [ready]);
 
-  const fmt = ts => { const d = Date.now() - ts; if (d < 60000) return "just now"; if (d < 3600000) return `${Math.floor(d / 60000)}m ago`; if (d < 86400000) return `${Math.floor(d / 3600000)}h ago`; return `${Math.floor(d / 86400000)}d ago`; };
+  const fmt = ts => { const d = Date.now()-ts; if(d<60000) return "just now"; if(d<3600000) return `${Math.floor(d/60000)}m ago`; if(d<86400000) return `${Math.floor(d/3600000)}h ago`; return `${Math.floor(d/86400000)}d ago`; };
 
   const dismiss = id => {
     setItems(p => p.map(it => it.id === id ? { ...it, exiting: true } : it));
-    import("firebase/database").then(({ set: fbSet, ref: fbRef }) =>
-      fbSet(fbRef(db, `notifications/${uid}/${id}/read`), true));
+    import("firebase/database").then(({ set: fbSet, ref: fbRef }) => fbSet(fbRef(db, `notifications/${uid}/${id}/read`), true));
     setTimeout(() => setItems(p => { const n = p.filter(it => it.id !== id); if (!n.length) onDone(); return n; }), 320);
-  };
-
-  const dismissAll = () => {
-    setItems(p => p.map(it => ({ ...it, exiting: true })));
-    items.forEach(({ id }) => import("firebase/database").then(({ set: fbSet, ref: fbRef }) =>
-      fbSet(fbRef(db, `notifications/${uid}/${id}/read`), true)));
-    setTimeout(onDone, 360);
   };
 
   if (!items.length) return null;
 
   return (
     <div style={{ position: "fixed", top: 0, left: 0, right: 0, zIndex: 8000, display: "flex", flexDirection: "column", alignItems: "center", paddingTop: "12px", gap: "8px", pointerEvents: "none" }}>
-      <div style={{ alignSelf: "flex-end", marginRight: "16px", pointerEvents: "auto" }}>
-        {/* <button onClick={dismissAll} style={{ background: "rgba(14,20,36,0.94)", border: "1px solid rgba(255,255,255,0.1)", borderRadius: "9999px", padding: "4px 14px", fontSize: "11px", fontWeight: 700, cursor: "pointer", color: "#64748b", fontFamily: "'Inter',sans-serif", backdropFilter: "blur(12px)", WebkitBackdropFilter: "blur(12px)" }}>
-          Clear all
-        </button> */}
-      </div>
       {items.map(n => (
-        <div key={n.id} style={{
-          width: "100%", maxWidth: "370px", padding: "0 12px", pointerEvents: "auto",
-          transform: n.exiting ? "translateY(-14px) scale(0.93)" : n.visible ? "translateY(0) scale(1)" : "translateY(-20px) scale(0.92)",
-          opacity: n.exiting ? 0 : n.visible ? 1 : 0,
-          transition: "transform 0.32s cubic-bezier(0.34,1.56,0.64,1), opacity 0.26s ease",
-        }}>
+        <div key={n.id} style={{ width: "100%", maxWidth: "370px", padding: "0 12px", pointerEvents: "auto", transform: n.exiting ? "translateY(-14px) scale(0.93)" : n.visible ? "translateY(0) scale(1)" : "translateY(-20px) scale(0.92)", opacity: n.exiting ? 0 : n.visible ? 1 : 0, transition: "transform 0.32s cubic-bezier(0.34,1.56,0.64,1), opacity 0.26s ease" }}>
           <div style={{ background: isDark ? "rgba(12,18,32,0.97)" : "rgba(255,255,255,0.97)", backdropFilter: "blur(24px)", WebkitBackdropFilter: "blur(24px)", borderRadius: "18px", border: isDark ? "1px solid rgba(255,255,255,0.09)" : "1px solid rgba(0,0,0,0.07)", boxShadow: isDark ? "0 8px 32px rgba(0,0,0,0.55)" : "0 8px 28px rgba(0,0,0,0.13)", overflow: "hidden" }}>
             <div style={{ padding: "8px 11px 7px", display: "flex", alignItems: "center", gap: "7px", borderBottom: isDark ? "1px solid rgba(255,255,255,0.05)" : "1px solid rgba(0,0,0,0.04)" }}>
               <div style={{ width: "22px", height: "22px", borderRadius: "6px", background: `${n.color}22`, display: "flex", alignItems: "center", justifyContent: "center", fontSize: "13px", flexShrink: 0 }}>{NOTIF_EMOJI[n.icon] || NOTIF_EMOJI.default}</div>
@@ -221,56 +173,27 @@ function IOSNotifToasts({ uid, isDark, onDone }) {
   );
 }
 
-/* ── Theme Switcher — icon-only pill ── */
+/* ── Theme Switcher ── */
 function ThemeSwitcher({ theme, setTheme, resolved }) {
   const isDark = resolved === "dark";
   const [hovered, setHovered] = useState(null);
   const opts = [
-    { value: "light", icon: "light_mode", label: "Light" },
-    { value: "dark", icon: "dark_mode", label: "Dark" },
+    { value: "light",  icon: "light_mode",     label: "Light"  },
+    { value: "dark",   icon: "dark_mode",       label: "Dark"   },
     { value: "system", icon: "desktop_windows", label: "System" },
   ];
   return (
-    <div style={{
-      display: "inline-flex", alignItems: "center", gap: "2px", padding: "4px",
-      borderRadius: "9999px",
-      background: isDark ? "rgba(255,255,255,0.06)" : "rgba(0,0,0,0.05)",
-      border: `1px solid ${isDark ? "rgba(255,255,255,0.1)" : "rgba(0,0,0,0.08)"}`,
-      position: "relative",
-    }}>
+    <div style={{ display: "inline-flex", alignItems: "center", gap: "2px", padding: "4px", borderRadius: "9999px", background: isDark ? "rgba(255,255,255,0.06)" : "rgba(0,0,0,0.05)", border: `1px solid ${isDark ? "rgba(255,255,255,0.1)" : "rgba(0,0,0,0.08)"}`, position: "relative" }}>
       {opts.map(({ value, icon, label }) => {
         const active = theme === value;
         return (
           <div key={value} style={{ position: "relative" }}>
-            <button
-              onClick={() => setTheme(value)}
-              onMouseEnter={() => setHovered(value)}
-              onMouseLeave={() => setHovered(null)}
-              title={label}
-              style={{
-                width: "32px", height: "32px", borderRadius: "9999px", border: "none",
-                cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center",
-                transition: "all 0.22s cubic-bezier(0.34,1.56,0.64,1)",
-                background: active ? (isDark ? "rgba(0,255,0,0.18)" : "#00FF00") : "transparent",
-                boxShadow: active ? (isDark ? "0 0 14px rgba(0,255,0,0.3)" : "0 4px 12px rgba(0,255,0,0.35)") : "none",
-                transform: active ? "scale(1.08)" : "scale(1)",
-              }}
-            >
-              <span style={{
-                fontFamily: "'Material Symbols Outlined'", fontSize: "16px", lineHeight: 1,
-                color: active ? (isDark ? "#00FF00" : "#0f172a") : (isDark ? "#475569" : "#94a3b8"),
-              }}>{icon}</span>
+            <button onClick={() => setTheme(value)} onMouseEnter={() => setHovered(value)} onMouseLeave={() => setHovered(null)} title={label}
+              style={{ width: "32px", height: "32px", borderRadius: "9999px", border: "none", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", transition: "all 0.22s cubic-bezier(0.34,1.56,0.64,1)", background: active ? (isDark ? "rgba(0,255,0,0.18)" : "#00FF00") : "transparent", boxShadow: active ? (isDark ? "0 0 14px rgba(0,255,0,0.3)" : "0 4px 12px rgba(0,255,0,0.35)") : "none", transform: active ? "scale(1.08)" : "scale(1)" }}>
+              <span style={{ fontFamily: "'Material Symbols Outlined'", fontSize: "16px", lineHeight: 1, color: active ? (isDark ? "#00FF00" : "#0f172a") : (isDark ? "#475569" : "#94a3b8") }}>{icon}</span>
             </button>
-            {/* Tooltip */}
             {hovered === value && (
-              <div style={{
-                position: "absolute", bottom: "calc(100% + 8px)", left: "50%", transform: "translateX(-50%)",
-                background: isDark ? "#1e293b" : "#0f172a", color: "#fff",
-                fontSize: "10px", fontWeight: 700, padding: "4px 8px", borderRadius: "6px",
-                whiteSpace: "nowrap", pointerEvents: "none", zIndex: 100,
-                boxShadow: "0 4px 12px rgba(0,0,0,0.3)",
-                animation: "fadeUp 0.15s ease",
-              }}>
+              <div style={{ position: "absolute", bottom: "calc(100% + 8px)", left: "50%", transform: "translateX(-50%)", background: isDark ? "#1e293b" : "#0f172a", color: "#fff", fontSize: "10px", fontWeight: 700, padding: "4px 8px", borderRadius: "6px", whiteSpace: "nowrap", pointerEvents: "none", zIndex: 100, boxShadow: "0 4px 12px rgba(0,0,0,0.3)", animation: "fadeUp 0.15s ease" }}>
                 {label}
                 <div style={{ position: "absolute", top: "100%", left: "50%", transform: "translateX(-50%)", width: 0, height: 0, borderLeft: "4px solid transparent", borderRight: "4px solid transparent", borderTop: `4px solid ${isDark ? "#1e293b" : "#0f172a"}` }} />
               </div>
@@ -282,20 +205,15 @@ function ThemeSwitcher({ theme, setTheme, resolved }) {
   );
 }
 
-/* ── Shared theme hook ── */
+/* ── Theme hook ── */
 function useTheme() {
   const KEY = "studybuddy_theme";
   const [theme, setThemeState] = useState("system");
   const [resolved, setResolved] = useState("light");
 
-  useEffect(() => {
-    try { setThemeState(localStorage.getItem(KEY) || "system"); } catch { }
-  }, []);
+  useEffect(() => { try { setThemeState(localStorage.getItem(KEY) || "system"); } catch {} }, []);
 
-  const setTheme = (val) => {
-    try { localStorage.setItem(KEY, val); } catch { }
-    setThemeState(val);
-  };
+  const setTheme = (val) => { try { localStorage.setItem(KEY, val); } catch {} setThemeState(val); };
 
   useEffect(() => {
     const mq = window.matchMedia("(prefers-color-scheme: dark)");
@@ -308,22 +226,11 @@ function useTheme() {
   return { theme, setTheme, resolved };
 }
 
-/* ── Skeleton Pulse ── */
+/* ── Skeleton ── */
 function Skeleton({ w = "100%", h = "20px", r = "8px", isDark }) {
   return (
-    <div style={{
-      width: w, height: h, borderRadius: r,
-      background: isDark ? "rgba(255,255,255,0.06)" : "rgba(0,0,0,0.06)",
-      animation: "skeletonPulse 1.6s ease-in-out infinite",
-      overflow: "hidden", position: "relative",
-    }}>
-      <div style={{
-        position: "absolute", inset: 0,
-        background: isDark
-          ? "linear-gradient(90deg, transparent 0%, rgba(255,255,255,0.06) 50%, transparent 100%)"
-          : "linear-gradient(90deg, transparent 0%, rgba(255,255,255,0.7) 50%, transparent 100%)",
-        animation: "skeletonShimmer 1.6s ease-in-out infinite",
-      }} />
+    <div style={{ width: w, height: h, borderRadius: r, background: isDark ? "rgba(255,255,255,0.06)" : "rgba(0,0,0,0.06)", animation: "skeletonPulse 1.6s ease-in-out infinite", overflow: "hidden", position: "relative" }}>
+      <div style={{ position: "absolute", inset: 0, background: isDark ? "linear-gradient(90deg, transparent 0%, rgba(255,255,255,0.06) 50%, transparent 100%)" : "linear-gradient(90deg, transparent 0%, rgba(255,255,255,0.7) 50%, transparent 100%)", animation: "skeletonShimmer 1.6s ease-in-out infinite" }} />
     </div>
   );
 }
@@ -338,12 +245,8 @@ function StatCardSkeleton({ isDark }) {
         <Skeleton w="80px" h="12px" r="6px" isDark={isDark} />
       </div>
       <Skeleton w="60%" h="11px" r="6px" isDark={isDark} />
-      <div style={{ marginTop: "10px" }}>
-        <Skeleton w="50%" h="32px" r="8px" isDark={isDark} />
-      </div>
-      <div style={{ marginTop: "20px" }}>
-        <Skeleton w="100%" h="6px" r="9999px" isDark={isDark} />
-      </div>
+      <div style={{ marginTop: "10px" }}><Skeleton w="50%" h="32px" r="8px" isDark={isDark} /></div>
+      <div style={{ marginTop: "20px" }}><Skeleton w="100%" h="6px" r="9999px" isDark={isDark} /></div>
     </div>
   );
 }
@@ -359,22 +262,20 @@ function NoteCardSkeleton({ isDark }) {
         <Skeleton w="70%" h="14px" r="6px" isDark={isDark} />
         <Skeleton w="90%" h="10px" r="6px" isDark={isDark} />
         <Skeleton w="80%" h="10px" r="6px" isDark={isDark} />
-        <div style={{ display: "flex", justifyContent: "flex-end", marginTop: "6px" }}>
-          <Skeleton w="100px" h="32px" r="10px" isDark={isDark} />
-        </div>
+        <div style={{ display: "flex", justifyContent: "flex-end", marginTop: "6px" }}><Skeleton w="100px" h="32px" r="10px" isDark={isDark} /></div>
       </div>
     </div>
   );
 }
 
-/* ── Branch selection popup ── */
+/* ── Branch Popup ── */
 const BRANCHES = [
-  { code: "IT", label: "Information Technology", icon: "computer" },
-  { code: "CS", label: "Computer Science", icon: "code" },
-  { code: "EXTC", label: "Electronics & Telecomm.", icon: "memory" },
-  { code: "MECH", label: "Mechanical Engineering", icon: "settings" },
-  { code: "CIVIL", label: "Civil Engineering", icon: "architecture" },
-  { code: "ELEC", label: "Electrical Engineering", icon: "bolt" },
+  { code: "IT",    label: "Information Technology",  icon: "computer"     },
+  { code: "CS",    label: "Computer Science",         icon: "code"         },
+  { code: "EXTC",  label: "Electronics & Telecomm.", icon: "memory"       },
+  { code: "MECH",  label: "Mechanical Engineering",  icon: "settings"     },
+  { code: "CIVIL", label: "Civil Engineering",        icon: "architecture" },
+  { code: "ELEC",  label: "Electrical Engineering",  icon: "bolt"         },
 ];
 
 function BranchPopup({ uid, isDark, onComplete }) {
@@ -392,8 +293,8 @@ function BranchPopup({ uid, isDark, onComplete }) {
   const bg = isDark ? "rgba(15,23,42,0.98)" : "rgba(255,255,255,0.98)";
   const text1 = isDark ? "#f1f5f9" : "#0f172a";
   const text2 = isDark ? "#64748b" : "#64748b";
-  const cardBg = (on) => on ? "rgba(0,255,0,0.12)" : (isDark ? "rgba(255,255,255,0.04)" : "rgba(0,0,0,0.02)");
-  const cardBdr = (on) => on ? "rgba(0,255,0,0.6)" : (isDark ? "rgba(255,255,255,0.08)" : "rgba(0,0,0,0.08)");
+  const cardBg  = (on) => on ? "rgba(0,255,0,0.12)" : (isDark ? "rgba(255,255,255,0.04)" : "rgba(0,0,0,0.02)");
+  const cardBdr = (on) => on ? "rgba(0,255,0,0.6)"  : (isDark ? "rgba(255,255,255,0.08)" : "rgba(0,0,0,0.08)");
 
   return (
     <div style={{ position: "fixed", inset: 0, zIndex: 999, background: isDark ? "rgba(8,15,26,0.8)" : "rgba(15,23,42,0.55)", backdropFilter: "blur(20px)", WebkitBackdropFilter: "blur(20px)", display: "flex", alignItems: "center", justifyContent: "center", padding: "16px" }}>
@@ -405,16 +306,14 @@ function BranchPopup({ uid, isDark, onComplete }) {
           <h2 style={{ fontSize: "22px", fontWeight: 900, color: text1, margin: 0, letterSpacing: "-0.03em" }}>Choose Your Branch</h2>
           <p style={{ fontSize: "13px", color: text2, fontWeight: 500, margin: 0, textAlign: "center" }}>We'll personalise your StudyBuddy experience based on your branch.</p>
         </div>
-
         <div style={{ display: "grid", gridTemplateColumns: "repeat(2,1fr)", gap: "12px", marginBottom: "28px" }}>
           {BRANCHES.map(({ code, label, icon }) => {
             const on = selected === code;
             return (
               <button key={code} onClick={() => setSelected(code)}
                 style={{ display: "flex", alignItems: "center", gap: "12px", padding: "14px 16px", borderRadius: "14px", border: `1.5px solid ${cardBdr(on)}`, background: cardBg(on), cursor: "pointer", transition: "all 0.2s cubic-bezier(0.34,1.56,0.64,1)", boxShadow: on ? "0 0 18px rgba(0,255,0,0.2)" : "none", transform: on ? "scale(1.02)" : "scale(1)" }}
-                onMouseEnter={(e) => { if (!on) { e.currentTarget.style.background = isDark ? "rgba(255,255,255,0.07)" : "rgba(0,200,0,0.06)"; e.currentTarget.style.borderColor = "rgba(0,255,0,0.3)"; } }}
-                onMouseLeave={(e) => { if (!on) { e.currentTarget.style.background = cardBg(false); e.currentTarget.style.borderColor = cardBdr(false); } }}
-              >
+                onMouseEnter={e => { if (!on) { e.currentTarget.style.background = isDark ? "rgba(255,255,255,0.07)" : "rgba(0,200,0,0.06)"; e.currentTarget.style.borderColor = "rgba(0,255,0,0.3)"; } }}
+                onMouseLeave={e => { if (!on) { e.currentTarget.style.background = cardBg(false); e.currentTarget.style.borderColor = cardBdr(false); } }}>
                 <span style={{ fontFamily: "'Material Symbols Outlined'", fontSize: "20px", color: on ? "#00FF00" : (isDark ? "#475569" : "#94a3b8"), lineHeight: 1 }}>{icon}</span>
                 <div style={{ textAlign: "left" }}>
                   <div style={{ fontSize: "13px", fontWeight: 800, color: on ? "#00FF00" : text1, lineHeight: 1 }}>{code}</div>
@@ -425,10 +324,8 @@ function BranchPopup({ uid, isDark, onComplete }) {
             );
           })}
         </div>
-
         <button onClick={save} disabled={!selected || saving}
-          style={{ width: "100%", height: "52px", background: selected ? "#00FF00" : (isDark ? "rgba(255,255,255,0.06)" : "rgba(0,0,0,0.05)"), color: selected ? "#0f172a" : (isDark ? "#475569" : "#94a3b8"), border: "none", borderRadius: "14px", fontSize: "15px", fontWeight: 900, cursor: selected ? "pointer" : "not-allowed", fontFamily: "'Inter',sans-serif", transition: "all 0.25s cubic-bezier(0.34,1.56,0.64,1)", boxShadow: selected ? "0 8px 28px rgba(0,255,0,0.38)" : "none", display: "flex", alignItems: "center", justifyContent: "center", gap: "8px" }}
-        >
+          style={{ width: "100%", height: "52px", background: selected ? "#00FF00" : (isDark ? "rgba(255,255,255,0.06)" : "rgba(0,0,0,0.05)"), color: selected ? "#0f172a" : (isDark ? "#475569" : "#94a3b8"), border: "none", borderRadius: "14px", fontSize: "15px", fontWeight: 900, cursor: selected ? "pointer" : "not-allowed", fontFamily: "'Inter',sans-serif", transition: "all 0.25s cubic-bezier(0.34,1.56,0.64,1)", boxShadow: selected ? "0 8px 28px rgba(0,255,0,0.38)" : "none", display: "flex", alignItems: "center", justifyContent: "center", gap: "8px" }}>
           {saving && <div style={{ width: "20px", height: "20px", border: "2px solid rgba(0,0,0,0.2)", borderTopColor: "#0f172a", borderRadius: "9999px", animation: "spin 0.7s linear infinite" }} />}
           {saving ? "Saving…" : "Continue to Dashboard"}
         </button>
@@ -443,12 +340,10 @@ function StatCard({ icon, label, value, subtext, progress, isDark }) {
   const text1 = isDark ? "#f1f5f9" : "#0f172a";
   const text2 = isDark ? "#64748b" : "#94a3b8";
   const bdr = isDark ? "rgba(0,255,0,0.1)" : "rgba(0,200,0,0.06)";
-
   return (
     <div style={{ background: bg, padding: "24px", borderRadius: "20px", boxShadow: isDark ? "0 4px 20px rgba(0,0,0,0.3)" : "0 2px 12px rgba(0,0,0,0.05)", border: `1px solid ${bdr}`, transition: "box-shadow 0.2s" }}
-      onMouseEnter={(e) => (e.currentTarget.style.boxShadow = isDark ? "0 8px 32px rgba(0,255,0,0.1)" : "0 8px 28px rgba(0,200,0,0.12)")}
-      onMouseLeave={(e) => (e.currentTarget.style.boxShadow = isDark ? "0 4px 20px rgba(0,0,0,0.3)" : "0 2px 12px rgba(0,0,0,0.05)")}
-    >
+      onMouseEnter={e => e.currentTarget.style.boxShadow = isDark ? "0 8px 32px rgba(0,255,0,0.1)" : "0 8px 28px rgba(0,200,0,0.12)"}
+      onMouseLeave={e => e.currentTarget.style.boxShadow = isDark ? "0 4px 20px rgba(0,0,0,0.3)" : "0 2px 12px rgba(0,0,0,0.05)"}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: "16px" }}>
         <div style={{ padding: "8px", borderRadius: "10px", background: "rgba(0,200,0,0.1)" }}>
           <span style={{ fontFamily: "'Material Symbols Outlined'", fontSize: "22px", color: "#009900", lineHeight: 1 }}>{icon}</span>
@@ -464,33 +359,61 @@ function StatCard({ icon, label, value, subtext, progress, isDark }) {
   );
 }
 
+/* ── Page Components ── */
+function PagePlaceholder({ title, icon, isDark }) {
+  const text1 = isDark ? "#f1f5f9" : "#0f172a";
+  const text2 = isDark ? "#64748b" : "#94a3b8";
+  return (
+    <div style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", height: "100%", gap: "16px", padding: "40px", minHeight: "400px" }}>
+      <div style={{ width: "80px", height: "80px", borderRadius: "20px", background: "rgba(0,200,0,0.1)", border: "1px solid rgba(0,200,0,0.2)", display: "flex", alignItems: "center", justifyContent: "center" }}>
+        <span style={{ fontFamily: "'Material Symbols Outlined'", fontSize: "40px", color: "#00AA00", lineHeight: 1 }}>{icon}</span>
+      </div>
+      <h2 style={{ fontSize: "24px", fontWeight: 900, color: text1, margin: 0, letterSpacing: "-0.03em" }}>{title}</h2>
+      <p style={{ fontSize: "14px", color: text2, margin: 0, textAlign: "center", maxWidth: "300px", lineHeight: 1.6 }}>
+        This section is coming soon. Stay tuned for updates!
+      </p>
+      <div style={{ padding: "8px 20px", background: "rgba(0,200,0,0.1)", border: "1px solid rgba(0,200,0,0.25)", borderRadius: "9999px", fontSize: "12px", fontWeight: 800, color: "#009900", fontFamily: "'Inter',sans-serif" }}>
+        🚧 In Development
+      </div>
+    </div>
+  );
+}
+
 /* ══════════════════════════════════════════ */
 export default function Dashboard() {
   const router = useRouter();
   const { theme, setTheme, resolved } = useTheme();
   const isDark = resolved === "dark";
 
-  const [authUser, setAuthUser] = useState(null);
-  const [userData, setUserData] = useState(null);
-  const [loading, setLoading] = useState(true);
-  const [showBranch, setShowBranch] = useState(false);
-  const [activePage, setActivePage] = useState("dashboard");
-  const [sidebarOpen, setSidebarOpen] = useState(true);
-  const [showGreeting, setShowGreeting] = useState(false);
-  const [showNotifs, setShowNotifs] = useState(false);   // bell dropdown
-  const [showIOSNotifs, setShowIOSNotifs] = useState(false);   // iOS toast layer
-  const notifBtn = useRef(null);
+  const [authUser,      setAuthUser]      = useState(null);
+  const [userData,      setUserData]      = useState(null);
+  const [loading,       setLoading]       = useState(true);
+  const [showBranch,    setShowBranch]    = useState(false);
+  const [activePage,    setActivePage]    = useState("dashboard");
+  const [sidebarOpen,   setSidebarOpen]   = useState(true);
+  const [showGreeting,  setShowGreeting]  = useState(false);
+  const [showNotifs,    setShowNotifs]    = useState(false);
+  const [showIOSNotifs, setShowIOSNotifs] = useState(false);
+  const [mobileSearch,  setMobileSearch]  = useState(false);
+  const notifRef  = useRef(null);
+  const notifBtn  = useRef(null);
+  const searchRef = useRef(null);
 
   /* Close notifs on outside click */
   useEffect(() => {
     const handler = (e) => {
-      if (showNotifs && notifRef.current && !notifRef.current.contains(e.target) && notifBtn.current && !notifBtn.current.contains(e.target)) {
-        setShowNotifs(false);
-      }
+      if (showNotifs && notifRef.current && !notifRef.current.contains(e.target) && notifBtn.current && !notifBtn.current.contains(e.target)) setShowNotifs(false);
     };
     document.addEventListener("mousedown", handler);
     return () => document.removeEventListener("mousedown", handler);
   }, [showNotifs]);
+
+  /* Close mobile search on outside click */
+  useEffect(() => {
+    const handler = (e) => { if (mobileSearch && searchRef.current && !searchRef.current.contains(e.target)) setMobileSearch(false); };
+    document.addEventListener("mousedown", handler);
+    return () => document.removeEventListener("mousedown", handler);
+  }, [mobileSearch]);
 
   /* Auth guard */
   useEffect(() => {
@@ -506,7 +429,7 @@ export default function Dashboard() {
           else setShowBranch(false);
         }
         setLoading(false);
-        /* Show greeting popup once per browser session (survives auth re-fires) */
+        /* Show greeting once per browser session */
         if (!sessionStorage.getItem("sb_greeted")) {
           sessionStorage.setItem("sb_greeted", "1");
           setTimeout(() => setShowGreeting(true), 600);
@@ -519,48 +442,57 @@ export default function Dashboard() {
   }, [router]);
 
   /* Derived colours */
-  const bg = isDark ? "#080f1a" : "#f5f8f5";
-  const sidebar = isDark ? "rgba(8,15,26,0.96)" : "rgba(255,255,255,0.75)";
-  const header = isDark ? "rgba(8,15,26,0.92)" : "rgba(255,255,255,0.75)";
-  const card = isDark ? "rgba(15,23,42,0.8)" : "#ffffff";
-  const text1 = isDark ? "#f1f5f9" : "#0f172a";
-  const text2 = isDark ? "#94a3b8" : "#475569";
-  const text3 = isDark ? "#475569" : "#94a3b8";
-  const bdr = isDark ? "rgba(0,255,0,0.1)" : "rgba(0,200,0,0.1)";
-  const inputBg = isDark ? "rgba(255,255,255,0.05)" : "rgba(0,200,0,0.05)";
-  const rightBg = isDark ? "rgba(8,15,26,0.6)" : "rgba(255,255,255,0.5)";
+  const bg      = isDark ? "#080f1a"             : "#f5f8f5";
+  const sidebar  = isDark ? "rgba(8,15,26,0.96)" : "rgba(255,255,255,0.75)";
+  const header   = isDark ? "rgba(8,15,26,0.92)" : "rgba(255,255,255,0.75)";
+  const card     = isDark ? "rgba(15,23,42,0.8)" : "#ffffff";
+  const text1    = isDark ? "#f1f5f9"            : "#0f172a";
+  const text2    = isDark ? "#94a3b8"            : "#475569";
+  const text3    = isDark ? "#475569"            : "#94a3b8";
+  const bdr      = isDark ? "rgba(0,255,0,0.1)"  : "rgba(0,200,0,0.1)";
+  const inputBg  = isDark ? "rgba(255,255,255,0.05)" : "rgba(0,200,0,0.05)";
+  const rightBg  = isDark ? "rgba(8,15,26,0.6)"  : "rgba(255,255,255,0.5)";
 
-  const firstName = userData?.firstName || authUser?.displayName?.split(" ")[0] || "";
-  const fullName = userData?.fullName || authUser?.displayName || "";
-  const photoURL = userData?.photoURL || authUser?.photoURL || "";
-  const branch = userData?.branch || null;
-  const email = userData?.email || authUser?.email || "";
-
-  const studyHours = userData?.stats?.studyHours ?? 0;
-  const aiQuestions = userData?.stats?.aiQuestions ?? 0;
-  const solvedProblems = userData?.stats?.solvedProblems ?? 0;
-  const streak = userData?.stats?.streak ?? 0;
+  const firstName     = userData?.firstName || authUser?.displayName?.split(" ")[0] || "";
+  const fullName      = userData?.fullName  || authUser?.displayName || "";
+  const photoURL      = userData?.photoURL  || authUser?.photoURL    || "";
+  const branch        = userData?.branch    || null;
+  const email         = userData?.email     || authUser?.email       || "";
+  const studyHours    = userData?.stats?.studyHours     ?? 0;
+  const aiQuestions   = userData?.stats?.aiQuestions    ?? 0;
+  const solvedProblems= userData?.stats?.solvedProblems ?? 0;
+  const streak        = userData?.stats?.streak         ?? 0;
 
   const stats = [
-    { icon: "schedule", label: "Study Hours", value: studyHours ? `${studyHours}h` : "—", subtext: studyHours ? "+12% vs last week" : "No data yet", progress: Math.min((studyHours / 50) * 100, 100) },
-    { icon: "question_answer", label: "AI Questions", value: aiQuestions || "—", subtext: aiQuestions ? "+5% vs last week" : "No data yet", progress: Math.min((aiQuestions / 200) * 100, 100) },
-    { icon: "task_alt", label: "Solved Problems", value: solvedProblems || "—", subtext: solvedProblems ? "+8% vs last week" : "No data yet", progress: Math.min((solvedProblems / 100) * 100, 100) },
-    { icon: "local_fire_department", label: "Active Streak", value: streak ? `${streak} days` : "—", subtext: streak ? "Keep it up!" : "Start today!", progress: Math.min((streak / 30) * 100, 100) },
+    { icon: "schedule",              label: "Study Hours",     value: studyHours     ? `${studyHours}h` : "—", subtext: studyHours     ? "+12% vs last week" : "No data yet", progress: Math.min((studyHours/50)*100,100)     },
+    { icon: "question_answer",       label: "AI Questions",    value: aiQuestions    || "—",                   subtext: aiQuestions     ? "+5% vs last week"  : "No data yet", progress: Math.min((aiQuestions/200)*100,100)   },
+    { icon: "task_alt",              label: "Solved Problems", value: solvedProblems || "—",                   subtext: solvedProblems  ? "+8% vs last week"  : "No data yet", progress: Math.min((solvedProblems/100)*100,100)},
+    { icon: "local_fire_department", label: "Active Streak",   value: streak         ? `${streak} days` : "—", subtext: streak         ? "Keep it up!"       : "Start today!", progress: Math.min((streak/30)*100,100)         },
   ];
 
   const recentNotes = userData?.recentNotes ? Object.values(userData.recentNotes) : [];
 
   const navItems = [
-    { id: "dashboard", icon: "dashboard", label: "Dashboard" },
-    { id: "notes", icon: "description", label: "Notes" },
-    { id: "test", icon: "quiz", label: "Test" },
-    { id: "ai", icon: "psychology", label: "Neural AI" },
-    { id: "profile", icon: "person", label: "Profile" },
-    { id: "settings", icon: "settings", label: "Settings" },
+    { id: "dashboard", icon: "dashboard",   label: "Dashboard" },
+    { id: "notes",     icon: "description", label: "Notes"     },
+    { id: "test",      icon: "quiz",        label: "Test"      },
+    { id: "ai",        icon: "psychology",  label: "Neural AI" },
+    { id: "profile",   icon: "person",      label: "Profile"   },
+    { id: "settings",  icon: "settings",    label: "Settings"  },
   ];
 
   const hour = new Date().getHours();
   const greetWord = hour < 12 ? "morning" : hour < 17 ? "afternoon" : "evening";
+
+  /* Page title map */
+  const pageTitles = {
+    dashboard: "Dashboard",
+    notes:     "My Notes",
+    test:      "Tests & Quizzes",
+    ai:        "Neural AI",
+    profile:   "Profile",
+    settings:  "Settings",
+  };
 
   /* Loading skeleton */
   if (loading) return (
@@ -574,7 +506,6 @@ export default function Dashboard() {
         @keyframes skeletonShimmer{0%{transform:translateX(-100%);}100%{transform:translateX(200%);}}
       `}</style>
       <div style={{ display: "flex", height: "100vh", background: bg }}>
-        {/* Sidebar skeleton */}
         <div style={{ width: "260px", minWidth: "260px", background: sidebar, borderRight: `1px solid ${bdr}`, padding: "24px 20px", display: "flex", flexDirection: "column", gap: "16px" }}>
           <div style={{ display: "flex", alignItems: "center", gap: "12px", marginBottom: "24px" }}>
             <Skeleton w="40px" h="40px" r="10px" isDark={isDark} />
@@ -590,7 +521,6 @@ export default function Dashboard() {
             </div>
           ))}
         </div>
-        {/* Main skeleton */}
         <div style={{ flex: 1, display: "flex", flexDirection: "column" }}>
           <div style={{ height: "72px", background: header, borderBottom: `1px solid ${bdr}`, padding: "0 32px", display: "flex", alignItems: "center", gap: "16px" }}>
             <Skeleton w="36px" h="36px" r="9999px" isDark={isDark} />
@@ -598,18 +528,15 @@ export default function Dashboard() {
             <div style={{ marginLeft: "auto", display: "flex", gap: "12px", alignItems: "center" }}>
               <Skeleton w="100px" h="36px" r="9999px" isDark={isDark} />
               <Skeleton w="40px" h="40px" r="9999px" isDark={isDark} />
-              <Skeleton w="40px" h="40px" r="9999px" isDark={isDark} />
             </div>
           </div>
           <div style={{ flex: 1, padding: "32px", display: "flex", flexDirection: "column", gap: "40px", overflowY: "auto" }}>
-            {/* Welcome skeleton */}
             <div style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
               <Skeleton w="340px" h="32px" r="8px" isDark={isDark} />
               <Skeleton w="220px" h="16px" r="6px" isDark={isDark} />
             </div>
-            {/* Stats skeleton */}
             <div>
-              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "20px" }}>
+              <div style={{ display: "flex", justifyContent: "space-between", marginBottom: "20px" }}>
                 <Skeleton w="160px" h="20px" r="6px" isDark={isDark} />
                 <Skeleton w="40px" h="20px" r="9999px" isDark={isDark} />
               </div>
@@ -617,20 +544,98 @@ export default function Dashboard() {
                 {[...Array(4)].map((_, i) => <StatCardSkeleton key={i} isDark={isDark} />)}
               </div>
             </div>
-            {/* Notes skeleton */}
-            <div>
-              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "20px" }}>
-                <Skeleton w="140px" h="20px" r="6px" isDark={isDark} />
-                <Skeleton w="60px" h="14px" r="6px" isDark={isDark} />
-              </div>
-              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(340px,1fr))", gap: "16px" }}>
-                {[...Array(2)].map((_, i) => <NoteCardSkeleton key={i} isDark={isDark} />)}
-              </div>
-            </div>
           </div>
         </div>
       </div>
     </>
+  );
+
+  /* ── Page content renderer ── */
+  const renderPage = () => {
+    switch (activePage) {
+      case "dashboard":
+        return (
+          <>
+            {/* Welcome */}
+            <div style={{ animation: "fadeUp 0.4s ease both" }}>
+              <h2 style={{ fontSize: "clamp(1.4rem,3vw,1.9rem)", fontWeight: 900, letterSpacing: "-0.03em", color: text1, marginBottom: "6px" }}>
+                {firstName ? `Good ${greetWord}, ${firstName}! 👋` : `Good ${greetWord}! 👋`}
+              </h2>
+              <p style={{ fontSize: "14px", color: text2, fontWeight: 500, display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap", margin: 0 }}>
+                Here&apos;s your academic overview.
+                {branch && <span style={{ padding: "2px 10px", background: "rgba(0,200,0,0.1)", border: "1px solid rgba(0,200,0,0.2)", borderRadius: "9999px", fontSize: "11px", fontWeight: 800, color: "#009900" }}>{branch}</span>}
+                {email && <span style={{ fontSize: "11px", color: text3, fontWeight: 500 }}>{email}</span>}
+              </p>
+            </div>
+            {/* Stats */}
+            <section style={{ animation: "fadeUp 0.4s ease 0.05s both" }}>
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "20px" }}>
+                <h3 style={{ fontSize: "18px", fontWeight: 800, letterSpacing: "-0.02em", color: text1, margin: 0 }}>Academic Overview</h3>
+                <span style={{ fontSize: "10px", fontWeight: 800, color: text3, background: isDark ? "rgba(255,255,255,0.05)" : "rgba(0,200,0,0.06)", padding: "4px 12px", borderRadius: "9999px", textTransform: "uppercase", letterSpacing: "0.1em" }}>Live</span>
+              </div>
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(220px,1fr))", gap: "16px" }}>
+                {stats.map(s => <StatCard key={s.label} {...s} isDark={isDark} />)}
+              </div>
+            </section>
+            {/* Recent Notes */}
+            <section style={{ animation: "fadeUp 0.4s ease 0.1s both" }}>
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "20px" }}>
+                <h3 style={{ fontSize: "18px", fontWeight: 800, letterSpacing: "-0.02em", color: text1, margin: 0 }}>Recent Notes</h3>
+                <button onClick={() => setActivePage("notes")} style={{ fontSize: "13px", fontWeight: 800, color: "#00AA00", background: "none", border: "none", cursor: "pointer", textDecoration: "underline", textUnderlineOffset: "3px", fontFamily: "'Inter',sans-serif" }}>View All</button>
+              </div>
+              {recentNotes.length === 0 ? (
+                <div className="note-card">
+                  <div className="empty-state" style={{ width: "100%" }}>
+                    <span className="ms" style={{ fontSize: "40px", color: text3 }}>auto_stories</span>
+                    <p style={{ fontSize: "14px", fontWeight: 700, color: text2, margin: 0 }}>No notes yet</p>
+                    <p style={{ fontSize: "12px", color: text3, margin: 0 }}>Your saved notes will appear here.</p>
+                  </div>
+                </div>
+              ) : (
+                <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(340px,1fr))", gap: "16px" }}>
+                  {recentNotes.map((note, i) => (
+                    <div key={i} className="note-card">
+                      <div className="note-icon-box">
+                        <span className="ms" style={{ fontSize: "36px", color: "rgba(0,180,0,0.6)" }}>{note.icon || "description"}</span>
+                      </div>
+                      <div style={{ flex: 1, display: "flex", flexDirection: "column", justifyContent: "space-between" }}>
+                        <div>
+                          <span style={{ display: "inline-block", padding: "3px 10px", borderRadius: "9999px", background: "rgba(0,200,0,0.1)", color: "#009900", fontSize: "10px", fontWeight: 800, textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: "8px" }}>{note.subject || branch || "General"}</span>
+                          <h4 style={{ fontSize: "14px", fontWeight: 800, color: text1, margin: "0 0 4px" }}>{note.title}</h4>
+                          <p style={{ fontSize: "11px", color: text2, lineHeight: 1.5, margin: 0 }}>{note.desc}</p>
+                        </div>
+                        <div style={{ display: "flex", alignItems: "center", justifyContent: "flex-end", marginTop: "12px" }}>
+                          <button style={{ display: "flex", alignItems: "center", gap: "6px", padding: "8px 14px", background: isDark ? "#f1f5f9" : "#0f172a", color: isDark ? "#0f172a" : "#fff", border: "none", borderRadius: "10px", fontSize: "11px", fontWeight: 800, cursor: "pointer", fontFamily: "'Inter',sans-serif" }}>
+                            Open Note <span className="ms" style={{ fontSize: "14px" }}>arrow_forward</span>
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </section>
+          </>
+        );
+      case "notes":    return <PagePlaceholder title="My Notes"       icon="description" isDark={isDark} />;
+      case "test":     return <PagePlaceholder title="Tests & Quizzes" icon="quiz"        isDark={isDark} />;
+      case "ai":       return <PagePlaceholder title="Neural AI"       icon="psychology"  isDark={isDark} />;
+      case "profile":  return <PagePlaceholder title="My Profile"      icon="person"      isDark={isDark} />;
+      case "settings": return <PagePlaceholder title="Settings"        icon="settings"    isDark={isDark} />;
+      default:         return null;
+    }
+  };
+
+  /* Avatar element (reused in header) */
+  const AvatarEl = ({ size = 40 }) => (
+    <div style={{ width: `${size}px`, height: `${size}px`, borderRadius: "9999px", border: "2.5px solid #00FF00", overflow: "hidden", background: isDark ? "rgba(255,255,255,0.1)" : "#e2e8f0", flexShrink: 0 }}>
+      {photoURL
+        ? <img src={photoURL} alt={fullName} style={{ width: "100%", height: "100%", objectFit: "cover" }} referrerPolicy="no-referrer" />
+        : <div style={{ width: "100%", height: "100%", display: "flex", alignItems: "center", justifyContent: "center", background: "#00FF00", color: "#0f172a", fontSize: `${size * 0.4}px`, fontWeight: 900, fontFamily: "'Inter',sans-serif" }}>
+            {firstName ? firstName.charAt(0).toUpperCase() : "?"}
+          </div>
+      }
+    </div>
   );
 
   return (
@@ -641,15 +646,18 @@ export default function Dashboard() {
         *,*::before,*::after{box-sizing:border-box;margin:0;padding:0;}
         body{font-family:'Inter',sans-serif;background:${bg};color:${text1};overflow:hidden;transition:background 0.3s,color 0.3s;}
         .ms{font-family:'Material Symbols Outlined'!important;font-weight:normal;font-style:normal;font-size:24px;line-height:1;letter-spacing:normal;text-transform:none;display:inline-block;white-space:nowrap;direction:ltr;}
-        @keyframes spin        {to{transform:rotate(360deg);}}
-        @keyframes popIn       {from{opacity:0;transform:scale(0.88) translateY(20px);}to{opacity:1;transform:scale(1) translateY(0);}}
-        @keyframes fadeUp      {from{opacity:0;transform:translateY(12px);}to{opacity:1;transform:translateY(0);}}
-        @keyframes slideDown   {from{opacity:0;transform:translateY(-8px) scale(0.97);}to{opacity:1;transform:translateY(0) scale(1);}}
-        @keyframes greetTimer  {from{width:100%;}to{width:0%;}}
+        @keyframes spin           {to{transform:rotate(360deg);}}
+        @keyframes popIn          {from{opacity:0;transform:scale(0.88) translateY(20px);}to{opacity:1;transform:scale(1) translateY(0);}}
+        @keyframes fadeUp         {from{opacity:0;transform:translateY(12px);}to{opacity:1;transform:translateY(0);}}
+        @keyframes slideDown      {from{opacity:0;transform:translateY(-8px) scale(0.97);}to{opacity:1;transform:translateY(0) scale(1);}}
         @keyframes skeletonPulse  {0%,100%{opacity:1;}50%{opacity:0.5;}}
         @keyframes skeletonShimmer{0%{transform:translateX(-100%);}100%{transform:translateX(200%);}}
+        @keyframes searchSlide    {from{opacity:0;transform:translateY(-6px);}to{opacity:1;transform:translateY(0);}}
 
+        /* ── Layout ── */
         .dash-root{display:flex;height:100vh;overflow:hidden;}
+
+        /* ── Sidebar ── */
         .sidebar{width:260px;min-width:260px;height:100vh;background:${sidebar};backdrop-filter:blur(12px);-webkit-backdrop-filter:blur(12px);border-right:1px solid ${bdr};display:flex;flex-direction:column;padding:24px 20px;z-index:20;transition:width 0.3s ease,min-width 0.3s ease;}
         .sidebar.collapsed{width:72px;min-width:72px;}
         .sidebar.collapsed .sl{display:none;}
@@ -662,12 +670,43 @@ export default function Dashboard() {
         .nav-link.active .ms{color:#0f172a;}
         .nav-link.danger{color:#f87171;}
         .nav-link.danger:hover{background:rgba(248,113,113,0.1);}
+
+        /* ── Main area ── */
         .dash-main{flex:1;display:flex;flex-direction:column;height:100vh;overflow:hidden;}
+
+        /* ── Desktop header ── */
         .dash-header{height:72px;background:${header};backdrop-filter:blur(12px);-webkit-backdrop-filter:blur(12px);border-bottom:1px solid ${bdr};padding:0 32px;display:flex;align-items:center;justify-content:space-between;z-index:10;flex-shrink:0;}
         .search-box{display:flex;align-items:center;gap:8px;background:${inputBg};border:1px solid ${bdr};border-radius:9999px;padding:10px 18px;max-width:380px;flex:1;transition:border-color 0.2s,box-shadow 0.2s;}
         .search-box:focus-within{border-color:rgba(0,255,0,0.4);box-shadow:0 0 0 3px rgba(0,255,0,0.08);}
         .search-box input{background:transparent;border:none;outline:none;font-size:13px;font-family:'Inter',sans-serif;color:${text1};flex:1;}
         .search-box input::placeholder{color:${text3};}
+
+        /* ── Mobile header — shown only on mobile ── */
+        .mob-header{
+          display:none;
+          height:64px;
+          background:${header};
+          backdrop-filter:blur(12px);
+          -webkit-backdrop-filter:blur(12px);
+          border-bottom:1px solid ${bdr};
+          padding:0 16px;
+          align-items:center;
+          justify-content:space-between;
+          z-index:10;
+          flex-shrink:0;
+          gap:10px;
+        }
+        .mob-search-bar{
+          display:flex;align-items:center;gap:8px;
+          background:${inputBg};border:1px solid ${bdr};border-radius:9999px;
+          padding:8px 14px;flex:1;
+          transition:border-color 0.2s,box-shadow 0.2s;
+        }
+        .mob-search-bar:focus-within{border-color:rgba(0,255,0,0.4);box-shadow:0 0 0 3px rgba(0,255,0,0.08);}
+        .mob-search-bar input{background:transparent;border:none;outline:none;font-size:13px;font-family:'Inter',sans-serif;color:${text1};flex:1;width:100%;}
+        .mob-search-bar input::placeholder{color:${text3};}
+
+        /* ── Content ── */
         .dash-content{flex:1;display:flex;overflow:hidden;}
         .dash-scroll{flex:1;overflow-y:auto;padding:32px;display:flex;flex-direction:column;gap:40px;}
         .dash-scroll::-webkit-scrollbar{width:4px;}
@@ -675,16 +714,12 @@ export default function Dashboard() {
         .right-panel{width:300px;min-width:300px;border-left:1px solid ${bdr};overflow-y:auto;padding:32px 24px;display:flex;flex-direction:column;gap:36px;background:${rightBg};}
         .right-panel::-webkit-scrollbar{width:4px;}
         .right-panel::-webkit-scrollbar-thumb{background:rgba(0,200,0,0.2);}
-        .btn-primary{background:#00FF00;color:#0f172a;border:none;border-radius:9999px;padding:10px 20px;font-size:13px;font-weight:800;cursor:pointer;font-family:'Inter',sans-serif;display:flex;align-items:center;gap:6px;transition:transform 0.2s,box-shadow 0.2s;box-shadow:0 4px 16px rgba(0,255,0,0.3);}
-        .btn-primary:hover{transform:translateY(-2px);box-shadow:0 8px 24px rgba(0,255,0,0.45);}
         .note-card{background:${card};padding:20px;border-radius:18px;border:1px solid ${bdr};display:flex;gap:20px;transition:box-shadow 0.2s;}
         .note-card:hover{box-shadow:${isDark ? "0 8px 28px rgba(0,255,0,0.1)" : "0 8px 28px rgba(0,200,0,0.12)"};}
         .note-icon-box{width:100px;min-width:100px;height:100px;border-radius:14px;background:linear-gradient(135deg,rgba(0,255,0,0.18),rgba(0,255,0,0.05));display:flex;align-items:center;justify-content:center;}
         .empty-state{display:flex;flex-direction:column;align-items:center;justify-content:center;padding:40px 20px;gap:12px;opacity:0.5;}
-        @media(max-width:1200px){.right-panel{display:none;}}
-        @media(max-width:768px){.sidebar{display:none;}.dash-header{padding:0 16px;}.dash-scroll{padding:20px 16px 96px;}}
 
-        /* ── Mobile bottom nav — floating pill style ── */
+        /* ── Mobile bottom nav ── */
         .mob-nav{
           display:none;
           position:fixed;
@@ -692,38 +727,50 @@ export default function Dashboard() {
           left:50%;
           transform:translateX(-50%);
           z-index:300;
-          background:${isDark ? "rgba(255,255,255,0.10)" : "rgba(255,255,255,0.85)"};
-          backdrop-filter:blur(24px);
-          -webkit-backdrop-filter:blur(24px);
-          border:1px solid ${isDark ? "rgba(255,255,255,0.14)" : "rgba(0,0,0,0.08)"};
+          background:${isDark ? "rgba(14,20,36,0.95)" : "rgba(255,255,255,0.92)"};
+          backdrop-filter:blur(28px);
+          -webkit-backdrop-filter:blur(28px);
+          border:1px solid ${isDark ? "rgba(255,255,255,0.12)" : "rgba(0,0,0,0.07)"};
           border-radius:9999px;
-          padding:8px 12px;
-          display:none;
+          padding:8px 24px;
           align-items:center;
-          gap:4px;
-          box-shadow: 0 8px 40px rgba(0,0,0,0.18), 0 2px 8px rgba(0,0,0,0.10);
-          width:auto;
+          gap:6px;
+          box-shadow:0 12px 48px rgba(0,0,0,0.22), 0 2px 10px rgba(0,0,0,0.12);
+          min-width:340px;
         }
         .mob-tab{
-          width:44px;height:44px;
+          width:54px;height:54px;
           border-radius:9999px;
           display:flex;align-items:center;justify-content:center;
           background:none;border:none;cursor:pointer;
           font-family:'Inter',sans-serif;
           -webkit-tap-highlight-color:transparent;
-          transition:transform 0.18s cubic-bezier(0.34,1.56,0.64,1), background 0.18s;
-          position:relative;
+          transition:transform 0.22s cubic-bezier(0.34,1.56,0.64,1), background 0.18s;
+          flex-shrink:0;
         }
-        .mob-tab:active{transform:scale(0.85);}
-        .mob-tab .ms{font-size:22px;color:${isDark ? "rgba(255,255,255,0.45)" : "rgba(0,0,0,0.4)"};transition:color 0.18s;}
+        .mob-tab:active{transform:scale(0.80);}
+        .mob-tab .ms{
+          font-size:22px;
+          color:${isDark ? "rgba(255,255,255,0.35)" : "rgba(0,0,0,0.32)"};
+          transition:color 0.18s;
+        }
         .mob-tab.active{
           background:#00FF00;
-          box-shadow:0 4px 18px rgba(0,255,0,0.45);
-          transform:scale(1.08);
+          box-shadow:0 4px 22px rgba(0,255,0,0.55);
+          transform:scale(1.12);
         }
-        .mob-tab.active .ms{color:#0f172a;}
+        .mob-tab.active .ms{color:#0a1a0a;}
         .mob-tab.danger .ms{color:#f87171;}
-        @media(max-width:768px){.mob-nav{display:flex!important;}}
+
+        /* ── Responsive ── */
+        @media(max-width:1200px){.right-panel{display:none;}}
+        @media(max-width:768px){
+          .sidebar{display:none!important;}
+          .dash-header{display:none!important;}
+          .mob-header{display:flex!important;}
+          .mob-nav{display:flex!important;}
+          .dash-scroll{padding:20px 16px 110px;}
+        }
       `}</style>
 
       {/* iOS Notification Toasts */}
@@ -731,21 +778,18 @@ export default function Dashboard() {
         <IOSNotifToasts uid={authUser.uid} isDark={isDark} onDone={() => setShowIOSNotifs(false)} />
       )}
 
-      {/* Time-based greeting popup */}
+      {/* Greeting popup */}
       {showGreeting && (
         <GreetingPopup isDark={isDark} firstName={firstName} onClose={() => setShowGreeting(false)} />
       )}
 
       {showBranch && authUser && (
-        <BranchPopup uid={authUser.uid} isDark={isDark} onComplete={(b) => {
-          setUserData(prev => ({ ...prev, branch: b }));
-          setShowBranch(false);
-        }} />
+        <BranchPopup uid={authUser.uid} isDark={isDark} onComplete={b => { setUserData(prev => ({ ...prev, branch: b })); setShowBranch(false); }} />
       )}
 
       <div className="dash-root">
 
-        {/* Sidebar */}
+        {/* ── Sidebar (desktop) ── */}
         <aside className={`sidebar${sidebarOpen ? "" : " collapsed"}`}>
           <div className="sidebar-logo">
             <div style={{ width: "40px", height: "40px", background: "#00FF00", borderRadius: "10px", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0, boxShadow: "0 0 16px rgba(0,255,0,0.35)" }}>
@@ -756,7 +800,6 @@ export default function Dashboard() {
               <p>Engineering AI</p>
             </div>
           </div>
-
           <nav style={{ flex: 1, display: "flex", flexDirection: "column", gap: "4px" }}>
             {navItems.slice(0, 4).map(({ id, icon, label }) => (
               <button key={id} className={`nav-link${activePage === id ? " active" : ""}`} onClick={() => setActivePage(id)}>
@@ -778,15 +821,16 @@ export default function Dashboard() {
           </nav>
         </aside>
 
-        {/* Main */}
+        {/* ── Main ── */}
         <main className="dash-main">
+
+          {/* Desktop header */}
           <header className="dash-header">
             <div style={{ display: "flex", alignItems: "center", gap: "16px", flex: 1 }}>
               <button onClick={() => setSidebarOpen(s => !s)}
                 style={{ background: isDark ? "rgba(255,255,255,0.06)" : "rgba(0,200,0,0.08)", border: "none", borderRadius: "9999px", width: "36px", height: "36px", display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer", flexShrink: 0, transition: "background 0.2s" }}
                 onMouseEnter={e => e.currentTarget.style.background = isDark ? "rgba(255,255,255,0.1)" : "rgba(0,200,0,0.14)"}
-                onMouseLeave={e => e.currentTarget.style.background = isDark ? "rgba(255,255,255,0.06)" : "rgba(0,200,0,0.08)"}
-              >
+                onMouseLeave={e => e.currentTarget.style.background = isDark ? "rgba(255,255,255,0.06)" : "rgba(0,200,0,0.08)"}>
                 <span className="ms" style={{ fontSize: "20px", color: text2 }}>menu</span>
               </button>
               <div className="search-box">
@@ -794,162 +838,84 @@ export default function Dashboard() {
                 <input placeholder="Search notes, formulas, or topics…" type="text" />
               </div>
             </div>
-
             <div style={{ display: "flex", alignItems: "center", gap: "12px", marginLeft: "24px" }}>
-              {/* Compact icon-only theme switcher */}
               <ThemeSwitcher theme={theme} setTheme={setTheme} resolved={resolved} />
-
-              {/* Notification button with popup */}
+              {/* Notif button */}
               <div style={{ position: "relative" }}>
-                <button ref={notifBtn}
-                  onClick={() => { setShowNotifs(s => !s); if (!showIOSNotifs) setShowIOSNotifs(true); }}
-                  style={{
-                    width: "40px", height: "40px", borderRadius: "9999px",
-                    background: showNotifs
-                      ? (isDark ? "rgba(0,255,0,0.12)" : "rgba(0,200,0,0.1)")
-                      : (isDark ? "rgba(255,255,255,0.06)" : "rgba(0,200,0,0.08)"),
-                    border: showNotifs ? "1px solid rgba(0,255,0,0.3)" : "1px solid transparent",
-                    display: "flex", alignItems: "center", justifyContent: "center",
-                    cursor: "pointer", position: "relative", transition: "all 0.2s",
-                  }}
+                <button ref={notifBtn} onClick={() => { setShowNotifs(s => !s); if (!showIOSNotifs) setShowIOSNotifs(true); }}
+                  style={{ width: "40px", height: "40px", borderRadius: "9999px", background: showNotifs ? (isDark ? "rgba(0,255,0,0.12)" : "rgba(0,200,0,0.1)") : (isDark ? "rgba(255,255,255,0.06)" : "rgba(0,200,0,0.08)"), border: showNotifs ? "1px solid rgba(0,255,0,0.3)" : "1px solid transparent", display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer", position: "relative", transition: "all 0.2s" }}
                   onMouseEnter={e => { if (!showNotifs) e.currentTarget.style.background = isDark ? "rgba(255,255,255,0.1)" : "rgba(0,200,0,0.14)"; }}
-                  onMouseLeave={e => { if (!showNotifs) e.currentTarget.style.background = isDark ? "rgba(255,255,255,0.06)" : "rgba(0,200,0,0.08)"; }}
-                >
+                  onMouseLeave={e => { if (!showNotifs) e.currentTarget.style.background = isDark ? "rgba(255,255,255,0.06)" : "rgba(0,200,0,0.08)"; }}>
                   <span className="ms" style={{ fontSize: "22px", color: showNotifs ? "#00AA00" : text2 }}>notifications</span>
-                  {/* unread dot */}
                   <span style={{ position: "absolute", top: "9px", right: "9px", width: "8px", height: "8px", background: "#00FF00", borderRadius: "9999px", border: `2px solid ${bg}`, boxShadow: "0 0 6px rgba(0,255,0,0.7)" }} />
                 </button>
                 {showNotifs && (
-                  <div ref={notifRef} style={{
-                    position: "absolute", top: "calc(100% + 12px)", right: 0,
-                    width: "280px", background: isDark ? "rgba(8,14,26,0.98)" : "rgba(255,255,255,0.98)",
-                    border: `1px solid ${bdr}`, borderRadius: "18px",
-                    boxShadow: "0 24px 60px rgba(0,0,0,0.25)",
-                    backdropFilter: "blur(20px)", WebkitBackdropFilter: "blur(20px)",
-                    zIndex: 500, overflow: "hidden",
-                    animation: "slideDown 0.22s cubic-bezier(0.34,1.56,0.64,1)",
-                    padding: "18px",
-                  }}>
+                  <div ref={notifRef} style={{ position: "absolute", top: "calc(100% + 12px)", right: 0, width: "280px", background: isDark ? "rgba(8,14,26,0.98)" : "rgba(255,255,255,0.98)", border: `1px solid ${bdr}`, borderRadius: "18px", boxShadow: "0 24px 60px rgba(0,0,0,0.25)", backdropFilter: "blur(20px)", WebkitBackdropFilter: "blur(20px)", zIndex: 500, overflow: "hidden", animation: "slideDown 0.22s cubic-bezier(0.34,1.56,0.64,1)", padding: "18px" }}>
                     <p style={{ fontSize: "13px", fontWeight: 900, color: text1, margin: "0 0 8px", fontFamily: "'Inter',sans-serif" }}>Notifications</p>
-                    <p style={{ fontSize: "12px", color: text2, margin: "0 0 14px", lineHeight: 1.5, fontFamily: "'Inter',sans-serif" }}>
-                      Nothing to Show
-                    </p>
-                    <button onClick={() => { setShowNotifs(false); setShowIOSNotifs(true); }}
-                      style={{ width: "100%", padding: "9px", background: "rgba(0,200,0,0.1)", border: "1px solid rgba(0,200,0,0.25)", borderRadius: "10px", fontSize: "12px", fontWeight: 800, color: "#009900", cursor: "pointer", fontFamily: "'Inter',sans-serif" }}>
-                      GOT IT
-                    </button>
+                    <p style={{ fontSize: "12px", color: text2, margin: "0 0 14px", lineHeight: 1.5, fontFamily: "'Inter',sans-serif" }}>Nothing to Show</p>
+                    <button onClick={() => { setShowNotifs(false); setShowIOSNotifs(true); }} style={{ width: "100%", padding: "9px", background: "rgba(0,200,0,0.1)", border: "1px solid rgba(0,200,0,0.25)", borderRadius: "10px", fontSize: "12px", fontWeight: 800, color: "#009900", cursor: "pointer", fontFamily: "'Inter',sans-serif" }}>GOT IT</button>
                   </div>
                 )}
               </div>
-
               <div style={{ width: "1px", height: "32px", background: bdr }} />
-
               <div style={{ display: "flex", alignItems: "center", gap: "10px", cursor: "pointer" }}>
                 <div style={{ textAlign: "right" }}>
                   <p style={{ fontSize: "12px", fontWeight: 800, color: text1, lineHeight: 1, margin: 0 }}>{fullName || "—"}</p>
                   <p style={{ fontSize: "10px", color: text3, fontWeight: 600, marginTop: "2px", margin: 0 }}>{branch || "No branch set"} · TCET</p>
                 </div>
-                <div style={{ width: "40px", height: "40px", borderRadius: "9999px", border: "2.5px solid #00FF00", overflow: "hidden", background: isDark ? "rgba(255,255,255,0.1)" : "#e2e8f0", flexShrink: 0 }}>
-                  {photoURL
-                    ? <img src={photoURL} alt={fullName} style={{ width: "100%", height: "100%", objectFit: "cover" }} referrerPolicy="no-referrer" />
-                    : <div style={{ width: "100%", height: "100%", display: "flex", alignItems: "center", justifyContent: "center", background: "#00FF00", color: "#0f172a", fontSize: "16px", fontWeight: 900 }}>
-                      {firstName ? firstName.charAt(0).toUpperCase() : "?"}
-                    </div>
-                  }
-                </div>
+                <AvatarEl size={40} />
               </div>
+            </div>
+          </header>
+
+          {/* ── Mobile header ── */}
+          <header className="mob-header">
+            {/* Left: logo mark */}
+            <div style={{ display: "flex", alignItems: "center", gap: "8px", flexShrink: 0 }}>
+              <div style={{ width: "34px", height: "34px", background: "#00FF00", borderRadius: "9px", display: "flex", alignItems: "center", justifyContent: "center", boxShadow: "0 0 12px rgba(0,255,0,0.4)", flexShrink: 0 }}>
+                <span className="ms" style={{ color: "#0f172a", fontSize: "18px" }}>school</span>
+              </div>
+            </div>
+
+            {/* Centre: search bar — always visible */}
+            <div className="mob-search-bar" style={{ flex: 1 }}>
+              <span className="ms" style={{ fontSize: "16px", color: text3, flexShrink: 0 }}>search</span>
+              <input placeholder="Search…" type="text" />
+            </div>
+
+            {/* Right: notif + avatar */}
+            <div style={{ display: "flex", alignItems: "center", gap: "8px", flexShrink: 0 }}>
+              {/* Notif bell */}
+              <button onClick={() => { if (!showIOSNotifs) setShowIOSNotifs(true); }}
+                style={{ width: "36px", height: "36px", borderRadius: "9999px", background: isDark ? "rgba(255,255,255,0.06)" : "rgba(0,200,0,0.08)", border: "none", display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer", position: "relative", flexShrink: 0 }}>
+                <span className="ms" style={{ fontSize: "20px", color: text2 }}>notifications</span>
+                <span style={{ position: "absolute", top: "7px", right: "7px", width: "7px", height: "7px", background: "#00FF00", borderRadius: "9999px", border: `2px solid ${bg}`, boxShadow: "0 0 5px rgba(0,255,0,0.8)" }} />
+              </button>
+              {/* Avatar → goes to profile */}
+              <button onClick={() => setActivePage("profile")} style={{ background: "none", border: "none", padding: 0, cursor: "pointer", flexShrink: 0 }}>
+                <AvatarEl size={36} />
+              </button>
             </div>
           </header>
 
           <div className="dash-content">
             <div className="dash-scroll">
-
-              {/* Welcome */}
-              <div style={{ animation: "fadeUp 0.4s ease both" }}>
-                <h2 style={{ fontSize: "clamp(1.4rem,3vw,1.9rem)", fontWeight: 900, letterSpacing: "-0.03em", color: text1, marginBottom: "6px" }}>
-                  {firstName ? `Good ${greetWord}, ${firstName}! 👋` : `Good ${greetWord}! 👋`}
-                </h2>
-                <p style={{ fontSize: "14px", color: text2, fontWeight: 500, display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap", margin: 0 }}>
-                  Here&apos;s your academic overview.
-                  {branch && (
-                    <span style={{ padding: "2px 10px", background: "rgba(0,200,0,0.1)", border: "1px solid rgba(0,200,0,0.2)", borderRadius: "9999px", fontSize: "11px", fontWeight: 800, color: "#009900" }}>{branch}</span>
-                  )}
-                  {email && <span style={{ fontSize: "11px", color: text3, fontWeight: 500 }}>{email}</span>}
-                </p>
-              </div>
-
-              {/* Stats */}
-              <section style={{ animation: "fadeUp 0.4s ease 0.05s both" }}>
-                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "20px" }}>
-                  <h3 style={{ fontSize: "18px", fontWeight: 800, letterSpacing: "-0.02em", color: text1, margin: 0 }}>Academic Overview</h3>
-                  <span style={{ fontSize: "10px", fontWeight: 800, color: text3, background: isDark ? "rgba(255,255,255,0.05)" : "rgba(0,200,0,0.06)", padding: "4px 12px", borderRadius: "9999px", textTransform: "uppercase", letterSpacing: "0.1em" }}>Live</span>
-                </div>
-                <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(220px,1fr))", gap: "16px" }}>
-                  {stats.map(s => <StatCard key={s.label} {...s} isDark={isDark} />)}
-                </div>
-              </section>
-
-              {/* Recent Notes */}
-              <section style={{ animation: "fadeUp 0.4s ease 0.1s both" }}>
-                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "20px" }}>
-                  <h3 style={{ fontSize: "18px", fontWeight: 800, letterSpacing: "-0.02em", color: text1, margin: 0 }}>Recent Notes</h3>
-                  <button style={{ fontSize: "13px", fontWeight: 800, color: "#00AA00", background: "none", border: "none", cursor: "pointer", textDecoration: "underline", textUnderlineOffset: "3px", fontFamily: "'Inter',sans-serif" }}>View All</button>
-                </div>
-                {recentNotes.length === 0 ? (
-                  <div className="note-card">
-                    <div className="empty-state" style={{ width: "100%" }}>
-                      <span className="ms" style={{ fontSize: "40px", color: text3 }}>auto_stories</span>
-                      <p style={{ fontSize: "14px", fontWeight: 700, color: text2, margin: 0 }}>No notes yet</p>
-                      <p style={{ fontSize: "12px", color: text3, margin: 0 }}>Your saved notes will appear here.</p>
-                    </div>
-                  </div>
-                ) : (
-                  <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(340px,1fr))", gap: "16px" }}>
-                    {recentNotes.map((note, i) => (
-                      <div key={i} className="note-card">
-                        <div className="note-icon-box">
-                          <span className="ms" style={{ fontSize: "36px", color: "rgba(0,180,0,0.6)" }}>{note.icon || "description"}</span>
-                        </div>
-                        <div style={{ flex: 1, display: "flex", flexDirection: "column", justifyContent: "space-between" }}>
-                          <div>
-                            <span style={{ display: "inline-block", padding: "3px 10px", borderRadius: "9999px", background: "rgba(0,200,0,0.1)", color: "#009900", fontSize: "10px", fontWeight: 800, textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: "8px" }}>{note.subject || branch || "General"}</span>
-                            <h4 style={{ fontSize: "14px", fontWeight: 800, color: text1, marginBottom: "4px", margin: "0 0 4px" }}>{note.title}</h4>
-                            <p style={{ fontSize: "11px", color: text2, lineHeight: 1.5, margin: 0 }}>{note.desc}</p>
-                          </div>
-                          <div style={{ display: "flex", alignItems: "center", justifyContent: "flex-end", marginTop: "12px" }}>
-                            <button style={{ display: "flex", alignItems: "center", gap: "6px", padding: "8px 14px", background: isDark ? "#f1f5f9" : "#0f172a", color: isDark ? "#0f172a" : "#fff", border: "none", borderRadius: "10px", fontSize: "11px", fontWeight: 800, cursor: "pointer", fontFamily: "'Inter',sans-serif" }}>
-                              Open Note
-                              <span className="ms" style={{ fontSize: "14px" }}>arrow_forward</span>
-                            </button>
-                          </div>
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                )}
-              </section>
-
+              {renderPage()}
             </div>
           </div>
         </main>
       </div>
 
-      {/* ══ MOBILE BOTTOM NAV — Floating Pill ══ */}
+      {/* ══ MOBILE BOTTOM NAV ══ */}
       <nav className="mob-nav">
         {navItems.slice(0, 4).map(({ id, icon }) => (
-          <button
-            key={id}
-            className={`mob-tab${activePage === id ? " active" : ""}`}
-            onClick={() => setActivePage(id)}
-          >
+          <button key={id} className={`mob-tab${activePage === id ? " active" : ""}`} onClick={() => setActivePage(id)}>
             <span className="ms">{icon}</span>
           </button>
         ))}
-        <button
-          className="mob-tab danger"
-          onClick={() => signOut(auth).then(() => router.replace("/"))}
-        >
-          <span className="ms">logout</span>
+        {/* Profile */}
+        <button className={`mob-tab${activePage === "profile" ? " active" : ""}`} onClick={() => setActivePage("profile")}>
+          <span className="ms">person</span>
         </button>
       </nav>
     </>
