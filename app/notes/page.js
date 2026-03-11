@@ -8,23 +8,9 @@ import { ref, onValue, get } from "firebase/database";
 
 /* ═══════════════════════════════════════════
    SESSION CACHE
-   Lives for the entire browser session.
-   Structure:
-     NOTES_CACHE = {
-       "IT|Sem:3": {
-         subjects: { CN: {...}, COA: {...} },
-         timestamp: 1234567890,          ← when we last fetched
-         etags: { CN: "hash", ... }      ← Firebase "hash" from server
-       }
-     }
-   CHUNKED_CACHE = {
-     "IT|Sem:3|CN|module1": true | false
-   }
-   Both are module-level Maps — not reset
-   between navigations.
 ═══════════════════════════════════════════ */
-const NOTES_CACHE    = new Map();   // branch|sem  → { subjects, timestamp }
-const CHUNKED_CACHE  = new Map();   // branch|sem|subject|modKey → bool
+const NOTES_CACHE   = new Map();
+const CHUNKED_CACHE = new Map();
 
 function notesKey(branch, sem)               { return `${branch}|${sem}`; }
 function chunkedKey(branch, sem, sub, modKey){ return `${branch}|${sem}|${sub}|${modKey}`; }
@@ -60,9 +46,9 @@ function ThemeSwitcher({ theme, setTheme, resolved }) {
   const isDark = resolved === "dark";
   const [hovered, setHovered] = useState(null);
   const opts = [
-    { value: "light",  icon: "light_mode",     label: "Light"  },
-    { value: "dark",   icon: "dark_mode",       label: "Dark"   },
-    { value: "system", icon: "desktop_windows", label: "System" },
+    { value:"light",  icon:"light_mode",     label:"Light"  },
+    { value:"dark",   icon:"dark_mode",       label:"Dark"   },
+    { value:"system", icon:"desktop_windows", label:"System" },
   ];
   return (
     <div style={{ display:"inline-flex", alignItems:"center", gap:"2px", padding:"4px", borderRadius:"9999px", background:isDark?"rgba(255,255,255,0.06)":"rgba(0,0,0,0.05)", border:`1px solid ${isDark?"rgba(255,255,255,0.1)":"rgba(0,0,0,0.08)"}` }}>
@@ -106,16 +92,16 @@ function Skeleton({ w = "100%", h = "20px", r = "8px", isDark }) {
    ICON MAP
 ───────────────────────────────────────── */
 const SUBJECT_ICON_MAP = {
-  CN:      { icon:"router",       color:"#3b82f6" },
-  COA:     { icon:"memory",       color:"#8b5cf6" },
-  MATHS3:  { icon:"functions",    color:"#00FF00" },
-  MATHS:   { icon:"functions",    color:"#00FF00" },
-  NOSQL:   { icon:"database",     color:"#f59e0b" },
-  MONOGPDB:{ icon:"database",     color:"#f59e0b" },
-  DSA:     { icon:"account_tree", color:"#ec4899" },
-  OS:      { icon:"terminal",     color:"#14b8a6" },
-  DBMS:    { icon:"storage",      color:"#f97316" },
-  DEFAULT: { icon:"description",  color:"#64748b" },
+  CN:       { icon:"router",       color:"#3b82f6" },
+  COA:      { icon:"memory",       color:"#8b5cf6" },
+  MATHS3:   { icon:"functions",    color:"#00FF00" },
+  MATHS:    { icon:"functions",    color:"#00FF00" },
+  NOSQL:    { icon:"database",     color:"#f59e0b" },
+  MONOGPDB: { icon:"database",     color:"#f59e0b" },
+  DSA:      { icon:"account_tree", color:"#ec4899" },
+  OS:       { icon:"terminal",     color:"#14b8a6" },
+  DBMS:     { icon:"storage",      color:"#f97316" },
+  DEFAULT:  { icon:"description",  color:"#64748b" },
 };
 function getSubjectMeta(code) { return SUBJECT_ICON_MAP[code] || SUBJECT_ICON_MAP.DEFAULT; }
 
@@ -139,29 +125,33 @@ export default function NotesPage() {
   const { theme, setTheme, resolved } = useTheme();
   const isDark = resolved === "dark";
 
-  /* auth */
   const [authUser,    setAuthUser]    = useState(null);
   const [userData,    setUserData]    = useState(null);
   const [authLoading, setAuthLoading] = useState(true);
 
-  /* notes */
-  const [subjects,     setSubjects]     = useState({});
-  const [notesLoading, setNotesLoading] = useState(false);
-  const [notesError,   setNotesError]   = useState(null);
-  const [fromCache,    setFromCache]    = useState(false);  // ← shows cache badge
-  const [lastUpdated,  setLastUpdated]  = useState(null);   // ← timestamp of last server push
+  const [subjects,      setSubjects]      = useState({});
+  const [notesLoading,  setNotesLoading]  = useState(false);
+  const [notesError,    setNotesError]    = useState(null);
+  const [fromCache,     setFromCache]     = useState(false);
+  const [lastUpdated,   setLastUpdated]   = useState(null);
 
-  /* UI */
-  const [activeSubject, setActiveSubject] = useState(null);
-  const [sidebarOpen,   setSidebarOpen]   = useState(true);
-  const [search,        setSearch]        = useState("");
-  const [hoveredFile,   setHoveredFile]   = useState(null);
-  const [dlAnim,        setDlAnim]        = useState(null);
+  const [activeSubject,  setActiveSubject]  = useState(null);
+  const [sidebarOpen,    setSidebarOpen]    = useState(true);
+  const [search,         setSearch]         = useState("");
+  const [hoveredFile,    setHoveredFile]    = useState(null);
+  const [dlAnim,         setDlAnim]         = useState(null);
   const [chunkedModules, setChunkedModules] = useState({});
 
-  const listenerRef = useRef(null); // hold the Firebase unsubscribe
+  /* Quick AI panel from notes page */
+  const [aiPanelOpen,  setAiPanelOpen]  = useState(false);
+  const [aiPanelMod,   setAiPanelMod]   = useState(null);   // { key, title }
+  const [aiMessages,   setAiMessages]   = useState([]);
+  const [aiInput,      setAiInput]      = useState("");
+  const [aiLoading,    setAiLoading]    = useState(false);
+  const aiChatEndRef = useRef(null);
 
-  /* ── Sem normaliser ── */
+  const listenerRef = useRef(null);
+
   const normaliseSem = useCallback((raw) => {
     if (!raw) return "";
     const str = raw.toString().trim();
@@ -184,29 +174,13 @@ export default function NotesPage() {
     return () => unsub();
   }, [router]);
 
-  /* ─────────────────────────────────────────
-     SMART NOTES LISTENER
-     Strategy:
-       1. If we have a cached version → render
-          it immediately (zero loading state).
-       2. Attach a realtime Firebase listener.
-       3. When Firebase pushes data:
-            - Compare with cached version by
-              JSON hash (cheap string compare).
-            - If different → update state +
-              update cache + show "Updated" toast.
-            - If same → do nothing (skip re-render).
-       4. On unmount → detach listener but keep
-          cache alive for next visit.
-  ───────────────────────────────────────── */
+  /* ── Smart notes listener ── */
   useEffect(() => {
     if (!userData?.branch || !userData?.sem) return;
-
     const { branch, sem } = userData;
     const semKey = normaliseSem(sem);
     const cKey   = notesKey(branch, semKey);
 
-    // Step 1 — serve from cache instantly
     if (NOTES_CACHE.has(cKey)) {
       const cached = NOTES_CACHE.get(cKey);
       setSubjects(cached.subjects);
@@ -217,20 +191,15 @@ export default function NotesPage() {
     } else {
       setNotesLoading(true);
     }
-
     setNotesError(null);
 
-    // Step 2 — attach realtime listener
     const subjectsRef = ref(db, `notes/${branch}/${semKey}/subjects`);
-
-    // Detach any previous listener
     if (listenerRef.current) { listenerRef.current(); listenerRef.current = null; }
 
     const unsubNotes = onValue(
       subjectsRef,
       (snap) => {
         setNotesLoading(false);
-
         if (!snap.exists()) {
           NOTES_CACHE.delete(cKey);
           setSubjects({});
@@ -238,85 +207,49 @@ export default function NotesPage() {
           setFromCache(false);
           return;
         }
-
         const raw = snap.val();
         const normalised = {};
         Object.entries(raw).forEach(([code, val]) => {
-          if (val === true) {
-            normalised[code] = { Subject:code, Totalmodules:0, modules:{} };
-          } else if (typeof val === "object" && val !== null) {
-            normalised[code] = val;
-          }
+          if (val === true) normalised[code] = { Subject:code, Totalmodules:0, modules:{} };
+          else if (typeof val === "object" && val !== null) normalised[code] = val;
         });
-
-        // Step 3 — diff against cache
         const incoming = JSON.stringify(normalised);
         const cached   = NOTES_CACHE.get(cKey);
-
         if (cached && JSON.stringify(cached.subjects) === incoming) {
-          // No change from server — skip re-render
           setFromCache(true);
           return;
         }
-
-        // Data changed (or first load) — update state + cache
         const ts = Date.now();
-        NOTES_CACHE.set(cKey, { subjects: normalised, timestamp: ts });
+        NOTES_CACHE.set(cKey, { subjects:normalised, timestamp:ts });
         setSubjects(normalised);
         setFromCache(false);
         setLastUpdated(ts);
-
         const first = Object.keys(normalised)[0] || null;
         setActiveSubject((p) => p && normalised[p] ? p : first);
       },
-      (err) => {
-        setNotesLoading(false);
-        setNotesError(err.message);
-      }
+      (err) => { setNotesLoading(false); setNotesError(err.message); }
     );
-
     listenerRef.current = unsubNotes;
-    return () => {
-      // On unmount: detach listener, keep cache
-      unsubNotes();
-      listenerRef.current = null;
-    };
+    return () => { unsubNotes(); listenerRef.current = null; };
   }, [userData?.branch, userData?.sem, normaliseSem]);
 
-  /* ─────────────────────────────────────────
-     CHUNKED PDF CHECK (with cache)
-     Only fires when active subject changes.
-     Uses CHUNKED_CACHE so we don't re-read
-     Firebase every time you switch subjects.
-  ───────────────────────────────────────── */
+  /* ── Chunked PDF check ── */
   useEffect(() => {
     if (!activeSubject || !userData?.branch || !userData?.sem) return;
-
     const { branch, sem } = userData;
-    const semKey = normaliseSem(sem);
+    const semKey      = normaliseSem(sem);
     const modulesData = subjects[activeSubject]?.modules || {};
     const moduleKeys  = Object.keys(modulesData);
     if (!moduleKeys.length) return;
 
-    // Build result from cache + pending checks
-    const result = {};
+    const result  = {};
     const toFetch = [];
-
     moduleKeys.forEach((modKey) => {
       const ck = chunkedKey(branch, semKey, activeSubject, modKey);
-      if (CHUNKED_CACHE.has(ck)) {
-        result[modKey] = CHUNKED_CACHE.get(ck);
-      } else {
-        toFetch.push(modKey);
-      }
+      if (CHUNKED_CACHE.has(ck)) result[modKey] = CHUNKED_CACHE.get(ck);
+      else toFetch.push(modKey);
     });
-
-    // Set whatever we already know
-    if (Object.keys(result).length) {
-      setChunkedModules((prev) => ({ ...prev, ...result }));
-    }
-
-    // Fetch only unknown entries
+    if (Object.keys(result).length) setChunkedModules((prev) => ({ ...prev, ...result }));
     if (!toFetch.length) return;
 
     Promise.all(
@@ -329,21 +262,67 @@ export default function NotesPage() {
       })
     ).then((pairs) => {
       const fresh = {};
-      pairs.forEach(([k, v]) => { fresh[k] = v; });
+      pairs.forEach(([k,v]) => { fresh[k] = v; });
       setChunkedModules((prev) => ({ ...prev, ...fresh }));
     });
   }, [activeSubject, subjects, userData?.branch, userData?.sem, normaliseSem]);
 
+  /* ── AI chat for notes page ── */
+  useEffect(() => { aiChatEndRef.current?.scrollIntoView({ behavior:"smooth" }); }, [aiMessages]);
+
+  const openAiPanel = (mod) => {
+    setAiPanelMod({ key:mod.key, title:mod.Title || mod.key });
+    setAiMessages([{ role:"ai", text:`Hi! I'm ready to help you with **${mod.Title || mod.key}**. Ask me anything — summaries, exam questions, explanations!` }]);
+    setAiInput("");
+    setAiPanelOpen(true);
+  };
+
+  const sendAiMessage = async (text) => {
+    if (!text.trim() || aiLoading) return;
+    const userMsg = text.trim();
+    setAiInput("");
+    setAiMessages(m => [...m, { role:"user", text:userMsg }]);
+    setAiLoading(true);
+    try {
+      const res = await fetch("https://api.anthropic.com/v1/messages", {
+        method: "POST",
+        headers: { "Content-Type":"application/json" },
+        body: JSON.stringify({
+          model: "claude-sonnet-4-20250514",
+          max_tokens: 1000,
+          system: `You are StudyBuddy AI — an engineering exam assistant.
+The student is asking about: "${aiPanelMod?.title}" from subject "${activeSubject}", semester "${userData?.sem}".
+Give concise, exam-focused answers. Use bullet points when listing. Keep answers under 200 words unless asked to elaborate.`,
+          messages: [{ role:"user", content:userMsg }],
+        }),
+      });
+      const data  = await res.json();
+      const reply = data.content?.[0]?.text || "Sorry, couldn't get a response.";
+      setAiMessages(m => [...m, { role:"ai", text:reply }]);
+    } catch {
+      setAiMessages(m => [...m, { role:"ai", text:"Network error. Please try again." }]);
+    }
+    setAiLoading(false);
+  };
+
+  const aiQuickActions = (mod) => [
+    { icon:"summarize",   label:"Summarize",     prompt:`Summarize the key points of "${mod?.title}" in bullet points for exam prep.` },
+    { icon:"quiz",        label:"Quiz me",        prompt:`Generate 5 short exam questions with answers on "${mod?.title}".` },
+    { icon:"lightbulb",   label:"Key concepts",  prompt:`List the most important concepts from "${mod?.title}" for exams.` },
+    { icon:"article",     label:"Page summary",  prompt:`Give me an overview of what topics "${mod?.title}" likely covers and what to focus on for exams.` },
+  ];
+
   /* ── Colors ── */
-  const bg     = isDark ? "#080f1a"                 : "#f5f8f5";
-  const sidebar = isDark ? "rgba(8,15,26,0.96)"     : "rgba(255,255,255,0.75)";
-  const header  = isDark ? "rgba(8,15,26,0.92)"     : "rgba(255,255,255,0.75)";
-  const card    = isDark ? "rgba(15,23,42,0.85)"    : "#ffffff";
-  const text1   = isDark ? "#f1f5f9"                : "#0f172a";
-  const text2   = isDark ? "#94a3b8"                : "#475569";
-  const text3   = isDark ? "#475569"                : "#94a3b8";
-  const bdr     = isDark ? "rgba(0,255,0,0.1)"      : "rgba(0,200,0,0.1)";
-  const inputBg = isDark ? "rgba(255,255,255,0.05)" : "rgba(0,200,0,0.05)";
+  const bg      = isDark ? "#080f1a"                 : "#f5f8f5";
+  const sidebar = isDark ? "rgba(8,15,26,0.96)"      : "rgba(255,255,255,0.75)";
+  const header  = isDark ? "rgba(8,15,26,0.92)"      : "rgba(255,255,255,0.75)";
+  const card    = isDark ? "rgba(15,23,42,0.85)"     : "#ffffff";
+  const panel   = isDark ? "rgba(8,15,26,0.98)"      : "rgba(255,255,255,0.98)";
+  const text1   = isDark ? "#f1f5f9"                 : "#0f172a";
+  const text2   = isDark ? "#94a3b8"                 : "#475569";
+  const text3   = isDark ? "#475569"                 : "#94a3b8";
+  const bdr     = isDark ? "rgba(0,255,0,0.1)"       : "rgba(0,200,0,0.1)";
+  const inputBg = isDark ? "rgba(255,255,255,0.05)"  : "rgba(0,200,0,0.05)";
 
   const firstName = userData?.firstName || authUser?.displayName?.split(" ")[0] || "";
   const fullName  = userData?.fullName  || authUser?.displayName || "";
@@ -353,7 +332,7 @@ export default function NotesPage() {
 
   const activeSubjectData = activeSubject ? subjects[activeSubject] : null;
   const allModules = activeSubjectData?.modules
-    ? Object.entries(activeSubjectData.modules).map(([key, mod]) => ({ key, ...mod }))
+    ? Object.entries(activeSubjectData.modules).map(([key,mod]) => ({ key, ...mod }))
     : [];
   const filteredModules = search.trim()
     ? allModules.filter((m) => (m.Title || "").toLowerCase().includes(search.toLowerCase()))
@@ -361,7 +340,6 @@ export default function NotesPage() {
 
   const handleDownload = (idx) => { setDlAnim(idx); setTimeout(() => setDlAnim(null), 1200); };
 
-  /* Open PDF → route to viewer or fallback */
   const handleOpenPDF = (mod) => {
     const isChunked = chunkedModules[mod.key];
     const semKey    = normaliseSem(sem);
@@ -372,7 +350,6 @@ export default function NotesPage() {
     }
   };
 
-  /* Download PDF → reassemble or fallback */
   const handleDownloadPDF = async (mod, idx) => {
     const isChunked = chunkedModules[mod.key];
     if (isChunked) {
@@ -394,13 +371,13 @@ export default function NotesPage() {
         const blob = new Blob([bytes], { type:"application/pdf" });
         const url  = URL.createObjectURL(blob);
         const a    = document.createElement("a");
-        a.href = url; a.download = fileName || `${mod.Title || mod.key}.pdf`; a.click();
+        a.href = url; a.download = fileName || `${mod.Title||mod.key}.pdf`; a.click();
         setTimeout(() => URL.revokeObjectURL(url), 3000);
       } catch (err) { console.error("Download failed:", err); }
     } else if (mod.resourcesPDF) {
       handleDownload(idx);
       const a = document.createElement("a");
-      a.href = mod.resourcesPDF; a.download = `${mod.Title || mod.key}.pdf`; a.target = "_blank"; a.click();
+      a.href = mod.resourcesPDF; a.download = `${mod.Title||mod.key}.pdf`; a.target="_blank"; a.click();
     }
   };
 
@@ -415,7 +392,6 @@ export default function NotesPage() {
     </div>
   );
 
-  /* ── Auth loading skeleton ── */
   if (authLoading) return (
     <>
       <style>{`
@@ -460,16 +436,11 @@ export default function NotesPage() {
     </>
   );
 
-  /* ── Format last updated ── */
   const fmtTime = (ts) => {
     if (!ts) return "";
-    const d = new Date(ts);
-    return d.toLocaleTimeString([], { hour:"2-digit", minute:"2-digit" });
+    return new Date(ts).toLocaleTimeString([], { hour:"2-digit", minute:"2-digit" });
   };
 
-  /* ─────────────────────────────────────────
-     RENDER
-  ───────────────────────────────────────── */
   return (
     <>
       <style>{`
@@ -486,6 +457,9 @@ export default function NotesPage() {
         @keyframes skeletonShimmer{0%{transform:translateX(-100%);}100%{transform:translateX(200%);}}
         @keyframes slideIn{from{opacity:0;transform:translateY(-8px);}to{opacity:1;transform:translateY(0);}}
         @keyframes pulse{0%,100%{opacity:1;}50%{opacity:0.5;}}
+        @keyframes sheetSlideUp{from{transform:translateY(100%);}to{transform:translateY(0);}}
+        @keyframes msgPop{from{opacity:0;transform:translateY(8px) scale(0.97);}to{opacity:1;transform:none;}}
+
         .sb-root{display:flex;height:100vh;overflow:hidden;background:${bg};}
         .sb-sidebar{width:260px;min-width:260px;height:100vh;background:${sidebar};backdrop-filter:blur(12px);-webkit-backdrop-filter:blur(12px);border-right:1px solid ${bdr};display:flex;flex-direction:column;padding:24px 20px;z-index:20;transition:width 0.3s,min-width 0.3s;}
         .sb-sidebar.collapsed{width:72px;min-width:72px;}
@@ -514,7 +488,7 @@ export default function NotesPage() {
         .subject-card{background:${card};padding:24px 20px;border-radius:20px;border:2px solid ${bdr};cursor:pointer;transition:all 0.22s cubic-bezier(0.34,1.56,0.64,1);display:flex;flex-direction:column;gap:12px;animation:fadeUp 0.35s ease both;}
         .subject-card:hover{transform:translateY(-4px);box-shadow:0 12px 32px rgba(0,255,0,0.1);}
         .subject-card.active{border-color:#00FF00;box-shadow:0 0 0 3px rgba(0,255,0,0.12),0 12px 32px rgba(0,255,0,0.1);}
-        .module-row{background:${card};padding:14px 18px;border-radius:16px;border:1px solid ${bdr};display:flex;align-items:center;justify-content:space-between;gap:16px;transition:all 0.2s;animation:fadeUp 0.3s ease both;}
+        .module-row{background:${card};padding:14px 18px;border-radius:16px;border:1px solid ${bdr};display:flex;align-items:center;justify-content:space-between;gap:12px;transition:all 0.2s;animation:fadeUp 0.3s ease both;}
         .module-row:hover{background:${isDark?"rgba(0,255,0,0.03)":"rgba(0,200,0,0.04)"};border-color:rgba(0,255,0,0.22);}
         .module-title{font-size:13px;font-weight:600;color:${text1};margin:0 0 4px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:420px;}
         .module-meta{font-size:11px;color:${text3};margin:0;display:flex;align-items:center;gap:6px;flex-wrap:wrap;}
@@ -527,14 +501,36 @@ export default function NotesPage() {
         .btn-dl:hover{background:#00FF00!important;color:#0f172a!important;}
         .btn-dl.done{background:rgba(0,200,0,0.12)!important;color:#00AA00!important;animation:dlPulse 0.5s ease;}
         .btn-dl:disabled{opacity:0.35;cursor:not-allowed;}
+        /* AI button on module rows */
+        .btn-ai{display:flex;align-items:center;gap:5px;padding:8px 14px;font-size:12px;font-weight:700;color:#00AA00;background:rgba(0,200,0,0.08);border:1px solid rgba(0,200,0,0.2);border-radius:10px;cursor:pointer;font-family:'Lexend',sans-serif;transition:all 0.18s;white-space:nowrap;}
+        .btn-ai:hover{background:#00FF00;color:#0f172a;border-color:#00FF00;}
         .badge-chunked{display:inline-flex;align-items:center;gap:4px;padding:2px 8px;background:rgba(0,200,0,0.1);border:1px solid rgba(0,200,0,0.25);border-radius:9999px;font-size:10px;font-weight:700;color:#009900;}
         .cache-badge{display:inline-flex;align-items:center;gap:5px;padding:3px 10px;border-radius:9999px;font-size:10px;font-weight:700;animation:slideIn 0.25s ease both;}
-        .mob-nav{display:none;position:fixed;bottom:20px;left:50%;transform:translateX(-50%);z-index:300;background:${isDark?"rgba(14,20,36,0.95)":"rgba(255,255,255,0.92)"};backdrop-filter:blur(28px);-webkit-backdrop-filter:blur(28px);border:1px solid ${isDark?"rgba(255,255,255,0.12)":"rgba(0,0,0,0.07)"};border-radius:9999px;padding:8px 20px;align-items:center;gap:4px;box-shadow:0 12px 48px rgba(0,0,0,0.22);min-width:320px;}
+        .mob-nav{display:none;position:fixed;bottom:20px;left:50%;transform:translateX(-50%);z-index:300;background:${isDark?"rgba(14,20,36,0.95)":"rgba(255,255,255,0.92)"};backdrop-filter:blur(28px);-webkit-backdrop-filter:blur(28px);border:1px solid ${isDark?"rgba(255,255,255,0.12)":"rgba(0,0,0,0.07)"};border-radius:9999px;padding:8px 20px;align-items:center;gap:4px;box-shadow:0 12px 48px rgba(0,0,0,0.22);}
         .mob-tab{width:52px;height:52px;border-radius:9999px;display:flex;align-items:center;justify-content:center;background:none;border:none;cursor:pointer;-webkit-tap-highlight-color:transparent;transition:transform 0.22s cubic-bezier(0.34,1.56,0.64,1),background 0.18s;flex-shrink:0;}
         .mob-tab:active{transform:scale(0.8);}
         .mob-tab .ms{font-size:22px;color:${isDark?"rgba(255,255,255,0.35)":"rgba(0,0,0,0.32)"};transition:color 0.18s;}
         .mob-tab.active{background:#00FF00;box-shadow:0 4px 22px rgba(0,255,0,0.55);transform:scale(1.12);}
         .mob-tab.active .ms{color:#0a1a0a;}
+
+        /* AI mini-panel overlay */
+        .ai-panel-overlay{position:fixed;inset:0;background:rgba(0,0,0,0.55);z-index:200;backdrop-filter:blur(6px);}
+        .ai-panel{position:fixed;right:0;top:0;bottom:0;width:380px;max-width:100vw;background:${panel};border-left:1px solid ${bdr};display:flex;flex-direction:column;z-index:201;box-shadow:-20px 0 60px rgba(0,0,0,0.3);animation:sheetSlideUp 0.32s cubic-bezier(0.32,0.72,0,1) both;}
+        .ai-panel-scroll{flex:1;overflow-y:auto;padding:16px;display:flex;flex-direction:column;gap:12px;}
+        .ai-panel-scroll::-webkit-scrollbar{width:3px;}
+        .ai-panel-scroll::-webkit-scrollbar-thumb{background:rgba(0,200,0,0.2);border-radius:2px;}
+        .ai-msg-ai{background:${isDark?"rgba(0,255,0,0.07)":"rgba(0,200,0,0.06)"};border:1px solid ${bdr};border-radius:16px;border-top-left-radius:4px;padding:12px 14px;font-size:12px;color:${text1};line-height:1.65;animation:msgPop 0.25s ease both;}
+        .ai-msg-user{background:#00FF00;color:#0f172a;border-radius:16px;border-bottom-right-radius:4px;padding:12px 14px;font-size:12px;font-weight:600;line-height:1.65;align-self:flex-end;max-width:85%;animation:msgPop 0.25s ease both;}
+        .ai-quick-btn{display:flex;align-items:center;gap:8px;padding:8px 12px;background:${isDark?"rgba(255,255,255,0.04)":"rgba(0,200,0,0.05)"};border:1px solid ${bdr};border-radius:10px;cursor:pointer;font-size:11px;font-weight:700;color:${text2};font-family:'Lexend',sans-serif;transition:all 0.18s;text-align:left;}
+        .ai-quick-btn:hover{background:rgba(0,200,0,0.1);color:${text1};border-color:rgba(0,200,0,0.3);}
+        .ai-input{width:100%;background:${isDark?"rgba(255,255,255,0.05)":"rgba(0,200,0,0.04)"};border:1px solid ${bdr};border-radius:12px;padding:10px 44px 10px 14px;font-size:12px;font-family:'Lexend',sans-serif;color:${text1};outline:none;resize:none;min-height:44px;max-height:120px;transition:border-color 0.2s;}
+        .ai-input:focus{border-color:rgba(0,255,0,0.4);}
+        .ai-input::placeholder{color:${text3};}
+
+        /* Mobile sheet AI panel */
+        @keyframes sheetUp{from{transform:translateY(100%);}to{transform:translateY(0);}}
+        .mob-ai-sheet{position:fixed;left:0;right:0;bottom:0;z-index:201;border-radius:24px 24px 0 0;background:${panel};box-shadow:0 -12px 60px rgba(0,0,0,0.35);display:flex;flex-direction:column;animation:sheetUp 0.35s cubic-bezier(0.32,0.72,0,1) both;max-height:88vh;}
+
         @media(max-width:768px){
           .sb-sidebar{display:none!important;}
           .sb-header{display:none!important;}
@@ -542,8 +538,11 @@ export default function NotesPage() {
           .mob-nav{display:flex!important;}
           .sb-scroll{padding:20px 16px 110px;}
           .subject-grid{grid-template-columns:repeat(2,1fr);gap:12px;}
-          .module-row{flex-wrap:wrap;}
+          .module-row{flex-wrap:wrap;gap:10px;}
           .module-title{max-width:100%;}
+          .ai-panel{width:100%;right:0;top:auto;bottom:0;border-left:none;border-top:1px solid ${bdr};border-radius:24px 24px 0 0;max-height:85vh;animation:sheetUp 0.35s cubic-bezier(0.32,0.72,0,1) both;}
+          .btn-dl,.btn-open{padding:7px 12px;font-size:11px;}
+          .btn-ai{padding:7px 12px;font-size:11px;}
         }
         @media(max-width:480px){.subject-grid{grid-template-columns:repeat(2,1fr);}}
       `}</style>
@@ -611,7 +610,7 @@ export default function NotesPage() {
               <div style={{ width:"1px", height:"32px", background:bdr }} />
               <div style={{ display:"flex", alignItems:"center", gap:"10px", cursor:"pointer" }} onClick={() => router.push("/profile")}>
                 <div style={{ textAlign:"right" }}>
-                  <p style={{ fontSize:"12px", fontWeight:700, color:text1, lineHeight:1, margin:0 }}>{fullName || "—"}</p>
+                  <p style={{ fontSize:"12px", fontWeight:700, color:text1, lineHeight:1, margin:0 }}>{fullName||"—"}</p>
                   <p style={{ fontSize:"10px", color:text3, fontWeight:500, marginTop:"2px", margin:0 }}>{branch||"No branch"}{sem?` · ${sem}`:""}</p>
                 </div>
                 <AvatarEl size={40} />
@@ -641,12 +640,10 @@ export default function NotesPage() {
           {/* ══ CONTENT ══ */}
           <div className="sb-scroll">
 
-            {/* Page heading + cache status */}
+            {/* Page heading */}
             <div style={{ animation:"fadeUp 0.35s ease both" }}>
               <div style={{ display:"flex", alignItems:"center", gap:"10px", marginBottom:"6px", flexWrap:"wrap" }}>
                 <h2 style={{ fontSize:"clamp(1.4rem,3vw,1.9rem)", fontWeight:700, letterSpacing:"-0.03em", color:text1, margin:0 }}>Subjects</h2>
-
-                {/* Cache / live badges */}
                 {fromCache && (
                   <span className="cache-badge" style={{ background:"rgba(0,255,0,0.08)", border:"1px solid rgba(0,255,0,0.2)", color:"#00AA00" }}>
                     <span className="ms" style={{ fontSize:"13px" }}>bolt</span>
@@ -667,7 +664,6 @@ export default function NotesPage() {
               </p>
             </div>
 
-            {/* No profile warning */}
             {(!branch || !sem) && (
               <div style={{ display:"flex", alignItems:"center", gap:"14px", padding:"18px 20px", background:isDark?"rgba(245,158,11,0.08)":"rgba(245,158,11,0.06)", border:"1px solid rgba(245,158,11,0.25)", borderRadius:"16px", animation:"fadeUp 0.3s ease both" }}>
                 <span className="ms" style={{ fontSize:"26px", color:"#f59e0b" }}>info</span>
@@ -681,7 +677,6 @@ export default function NotesPage() {
               </div>
             )}
 
-            {/* Spinner (first load only — cache skips this) */}
             {notesLoading && (
               <div style={{ display:"flex", alignItems:"center", justifyContent:"center", padding:"60px 20px", gap:"14px" }}>
                 <div style={{ width:"28px", height:"28px", border:`3px solid ${bdr}`, borderTopColor:"#00FF00", borderRadius:"9999px", animation:"spin 0.7s linear infinite" }} />
@@ -689,7 +684,6 @@ export default function NotesPage() {
               </div>
             )}
 
-            {/* Error */}
             {notesError && (
               <div style={{ display:"flex", alignItems:"center", gap:"14px", padding:"18px 20px", background:isDark?"rgba(239,68,68,0.08)":"rgba(239,68,68,0.05)", border:"1px solid rgba(239,68,68,0.2)", borderRadius:"16px" }}>
                 <span className="ms" style={{ fontSize:"26px", color:"#ef4444" }}>error</span>
@@ -733,7 +727,6 @@ export default function NotesPage() {
               </section>
             )}
 
-            {/* Empty */}
             {!notesLoading && !notesError && branch && sem && Object.keys(subjects).length === 0 && (
               <div style={{ display:"flex", flexDirection:"column", alignItems:"center", justifyContent:"center", padding:"60px 20px", gap:"14px", opacity:0.6, animation:"fadeUp 0.3s ease both" }}>
                 <span className="ms" style={{ fontSize:"48px", color:text3 }}>folder_off</span>
@@ -795,7 +788,16 @@ export default function NotesPage() {
                               </p>
                             </div>
                           </div>
-                          <div style={{ display:"flex", alignItems:"center", gap:"8px", flexShrink:0 }}>
+                          <div style={{ display:"flex", alignItems:"center", gap:"8px", flexShrink:0, flexWrap:"wrap" }}>
+                            {/* NEW: AI button */}
+                            <button
+                              className="btn-ai"
+                              onClick={() => openAiPanel(mod)}
+                              title="Ask AI about this module"
+                            >
+                              <span className="ms" style={{ fontSize:"16px" }}>psychology</span>
+                              AI
+                            </button>
                             <button
                               className="btn-open"
                               disabled={!hasPDF}
@@ -836,6 +838,85 @@ export default function NotesPage() {
           <span className="ms">person</span>
         </button>
       </nav>
+
+      {/* ══ AI PANEL (slides in from right on desktop, bottom sheet on mobile) ══ */}
+      {aiPanelOpen && (
+        <>
+          <div className="ai-panel-overlay" onClick={() => setAiPanelOpen(false)} />
+          <div className="ai-panel">
+            {/* Header */}
+            <div style={{ padding:"16px 20px", borderBottom:`1px solid ${bdr}`, display:"flex", alignItems:"center", justifyContent:"space-between", flexShrink:0 }}>
+              <div style={{ display:"flex", alignItems:"center", gap:"10px" }}>
+                <div style={{ width:"34px", height:"34px", borderRadius:"10px", background:"rgba(0,255,0,0.12)", display:"flex", alignItems:"center", justifyContent:"center" }}>
+                  <span className="ms" style={{ fontSize:"20px", color:"#00CC00" }}>psychology</span>
+                </div>
+                <div>
+                  <p style={{ fontSize:"13px", fontWeight:700, color:text1, margin:0 }}>Neural AI</p>
+                  <p style={{ fontSize:"10px", color:text3, margin:"2px 0 0", maxWidth:"200px", whiteSpace:"nowrap", overflow:"hidden", textOverflow:"ellipsis" }}>{aiPanelMod?.title}</p>
+                </div>
+              </div>
+              <button onClick={() => setAiPanelOpen(false)} style={{ background:"none", border:"none", cursor:"pointer", color:text3, width:"36px", height:"36px", display:"flex", alignItems:"center", justifyContent:"center" }}>
+                <span className="ms" style={{ fontSize:"22px" }}>close</span>
+              </button>
+            </div>
+
+            {/* Quick actions */}
+            <div style={{ padding:"12px 16px", borderBottom:`1px solid ${bdr}`, display:"grid", gridTemplateColumns:"1fr 1fr", gap:"8px", flexShrink:0 }}>
+              {aiQuickActions(aiPanelMod).map(({icon,label,prompt}) => (
+                <button key={label} className="ai-quick-btn" onClick={() => sendAiMessage(prompt)}>
+                  <span className="ms" style={{ fontSize:"16px", color:"#00CC00" }}>{icon}</span>
+                  {label}
+                </button>
+              ))}
+            </div>
+
+            {/* Messages */}
+            <div className="ai-panel-scroll">
+              {aiMessages.map((msg, i) => (
+                <div key={i} className={msg.role==="ai"?"ai-msg-ai":"ai-msg-user"}>
+                  {msg.role==="ai" && (
+                    <div style={{ display:"flex", alignItems:"center", gap:"6px", marginBottom:"6px" }}>
+                      <span className="ms" style={{ fontSize:"14px", color:"#00CC00" }}>auto_awesome</span>
+                      <span style={{ fontSize:"10px", fontWeight:700, color:"#00AA00", textTransform:"uppercase", letterSpacing:"0.08em" }}>StudyBuddy AI</span>
+                    </div>
+                  )}
+                  <p style={{ margin:0, whiteSpace:"pre-wrap" }}>{msg.text}</p>
+                </div>
+              ))}
+              {aiLoading && (
+                <div className="ai-msg-ai" style={{ display:"flex", alignItems:"center", gap:"8px" }}>
+                  {[0,1,2].map(i => (
+                    <div key={i} style={{ width:"8px", height:"8px", borderRadius:"9999px", background:"#00CC00", animation:`pulse 1s ease-in-out ${i*0.2}s infinite` }} />
+                  ))}
+                </div>
+              )}
+              <div ref={aiChatEndRef} />
+            </div>
+
+            {/* Input */}
+            <div style={{ padding:"12px", borderTop:`1px solid ${bdr}`, flexShrink:0 }}>
+              <div style={{ position:"relative" }}>
+                <textarea
+                  className="ai-input"
+                  placeholder={`Ask about ${aiPanelMod?.title}…`}
+                  value={aiInput}
+                  onChange={e => setAiInput(e.target.value)}
+                  onKeyDown={e => { if (e.key==="Enter"&&!e.shiftKey){e.preventDefault();sendAiMessage(aiInput);} }}
+                  rows={2}
+                />
+                <button
+                  onClick={() => sendAiMessage(aiInput)}
+                  disabled={!aiInput.trim()||aiLoading}
+                  style={{ position:"absolute", right:"10px", bottom:"10px", width:"32px", height:"32px", background:"#00FF00", border:"none", borderRadius:"9px", display:"flex", alignItems:"center", justifyContent:"center", cursor:"pointer", opacity:(!aiInput.trim()||aiLoading)?0.4:1 }}
+                >
+                  <span className="ms" style={{ fontSize:"18px", color:"#0f172a" }}>send</span>
+                </button>
+              </div>
+              <p style={{ fontSize:"9px", color:text3, textAlign:"center", marginTop:"6px" }}>Enter to send · Shift+Enter for new line</p>
+            </div>
+          </div>
+        </>
+      )}
     </>
   );
 }
