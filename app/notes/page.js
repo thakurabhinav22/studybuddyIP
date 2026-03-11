@@ -4,7 +4,7 @@ import { useState, useEffect } from "react";
 import { useRouter } from "next/navigation";
 import { auth, db } from "@/firebase";
 import { onAuthStateChanged, signOut } from "firebase/auth";
-import { ref, onValue } from "firebase/database";
+import { ref, onValue, get } from "firebase/database";  // ← added get
 
 /* ─────────────────────────────────────────
    THEME HOOK
@@ -85,21 +85,20 @@ function Skeleton({ w = "100%", h = "20px", r = "8px", isDark }) {
 }
 
 /* ─────────────────────────────────────────
-   ICON MAP — fallback icons per subject code
+   ICON MAP
 ───────────────────────────────────────── */
 const SUBJECT_ICON_MAP = {
-  CN:      { icon: "router",      color: "#3b82f6" },
-  COA:     { icon: "memory",      color: "#8b5cf6" },
-  MATHS3:  { icon: "functions",   color: "#00FF00" },
-  MATHS:   { icon: "functions",   color: "#00FF00" },
-  NOSQL:   { icon: "database",    color: "#f59e0b" },
-  MONOGPDB:{ icon: "database",    color: "#f59e0b" },
-  DSA:     { icon: "account_tree",color: "#ec4899" },
-  OS:      { icon: "terminal",    color: "#14b8a6" },
-  DBMS:    { icon: "storage",     color: "#f97316" },
-  DEFAULT: { icon: "description", color: "#64748b" },
+  CN:      { icon: "router",       color: "#3b82f6" },
+  COA:     { icon: "memory",       color: "#8b5cf6" },
+  MATHS3:  { icon: "functions",    color: "#00FF00" },
+  MATHS:   { icon: "functions",    color: "#00FF00" },
+  NOSQL:   { icon: "database",     color: "#f59e0b" },
+  MONOGPDB:{ icon: "database",     color: "#f59e0b" },
+  DSA:     { icon: "account_tree", color: "#ec4899" },
+  OS:      { icon: "terminal",     color: "#14b8a6" },
+  DBMS:    { icon: "storage",      color: "#f97316" },
+  DEFAULT: { icon: "description",  color: "#64748b" },
 };
-
 function getSubjectMeta(code) {
   return SUBJECT_ICON_MAP[code] || SUBJECT_ICON_MAP.DEFAULT;
 }
@@ -124,30 +123,28 @@ export default function NotesPage() {
   const { theme, setTheme, resolved } = useTheme();
   const isDark = resolved === "dark";
 
-  /* auth + user data */
   const [authUser,    setAuthUser]    = useState(null);
   const [userData,    setUserData]    = useState(null);
   const [authLoading, setAuthLoading] = useState(true);
 
-  /* notes data from Firebase */
-  const [subjects,     setSubjects]     = useState({});   // { CN: { Subject, Totalmodules, modules }, ... }
+  const [subjects,     setSubjects]     = useState({});
   const [notesLoading, setNotesLoading] = useState(false);
   const [notesError,   setNotesError]   = useState(null);
 
-  /* UI state */
   const [activeSubject, setActiveSubject] = useState(null);
   const [sidebarOpen,   setSidebarOpen]   = useState(true);
   const [search,        setSearch]        = useState("");
   const [hoveredFile,   setHoveredFile]   = useState(null);
   const [dlAnim,        setDlAnim]        = useState(null);
-  const [uploadHover,   setUploadHover]   = useState(false);
+
+  /* ── NEW: track which modules have chunked PDFs ── */
+  const [chunkedModules, setChunkedModules] = useState({}); // { module1: true, ... }
 
   /* ── Auth guard ── */
   useEffect(() => {
     const unsub = onAuthStateChanged(auth, (firebaseUser) => {
       if (!firebaseUser) { router.replace("/"); return; }
       setAuthUser(firebaseUser);
-
       const userRef = ref(db, `users/${firebaseUser.uid}`);
       const unsubDB = onValue(userRef, (snap) => {
         if (snap.exists()) setUserData(snap.val());
@@ -158,28 +155,21 @@ export default function NotesPage() {
     return () => unsub();
   }, [router]);
 
-  /* ── Fetch subjects when branch + sem are known ── */
+  /* ── Fetch subjects ── */
   useEffect(() => {
     if (!userData?.branch || !userData?.sem) return;
-
     const { branch, sem } = userData;
 
-    // Normalise sem value → Firebase key format is "Sem:3" (no space)
-    // User profile may store: "3", 3, "sem3", "Sem 3", "Sem:3", "Sem: 3", "semester 3", etc.
     const normaliseSem = (raw) => {
       const str = raw.toString().trim();
-      // Already exact format "Sem:3"
       if (/^Sem:\d+$/.test(str)) return str;
-      // Extract just the digits
       const num = str.replace(/[^0-9]/g, "");
-      if (!num) return str; // can't parse, pass through
-      return `Sem:${num}`;  // ← no space — matches Firebase key
+      if (!num) return str;
+      return `Sem:${num}`;
     };
 
     const semKey = normaliseSem(sem);
-    // Path: notes/<branch>/<semKey>/subjects  e.g. notes/IT/Sem:3/subjects
     const subjectsRef = ref(db, `notes/${branch}/${semKey}/subjects`);
-
     setNotesLoading(true);
     setNotesError(null);
 
@@ -187,36 +177,48 @@ export default function NotesPage() {
       subjectsRef,
       (snap) => {
         setNotesLoading(false);
-        if (!snap.exists()) {
-          setSubjects({});
-          setActiveSubject(null);
-          return;
-        }
-        const raw = snap.val(); // { CN: { Subject, Totalmodules, modules }, COA: true, ... }
-
-        // Normalise: boolean `true` entries become minimal objects
+        if (!snap.exists()) { setSubjects({}); setActiveSubject(null); return; }
+        const raw = snap.val();
         const normalised = {};
         Object.entries(raw).forEach(([code, val]) => {
-          if (val === true) {
-            normalised[code] = { Subject: code, Totalmodules: 0, modules: {} };
-          } else if (typeof val === "object" && val !== null) {
-            normalised[code] = val;
-          }
+          if (val === true) normalised[code] = { Subject: code, Totalmodules: 0, modules: {} };
+          else if (typeof val === "object" && val !== null) normalised[code] = val;
         });
-
         setSubjects(normalised);
-        // Auto-select first subject
         const firstCode = Object.keys(normalised)[0] || null;
         setActiveSubject((prev) => prev && normalised[prev] ? prev : firstCode);
       },
-      (err) => {
-        setNotesLoading(false);
-        setNotesError(err.message);
-      }
+      (err) => { setNotesLoading(false); setNotesError(err.message); }
     );
-
     return () => unsubNotes();
   }, [userData?.branch, userData?.sem]);
+
+  /* ── NEW: When active subject changes, check which modules have pdfMeta (chunked) ── */
+  useEffect(() => {
+    if (!activeSubject || !userData?.branch || !userData?.sem) return;
+    const { branch, sem } = userData;
+    const normaliseSem = (raw) => {
+      const str = raw.toString().trim();
+      if (/^Sem:\d+$/.test(str)) return str;
+      const num = str.replace(/[^0-9]/g, "");
+      return num ? `Sem:${num}` : str;
+    };
+    const semKey = normaliseSem(sem);
+    const modulesData = subjects[activeSubject]?.modules || {};
+
+    // Check each module for pdfMeta existence
+    const checks = Object.keys(modulesData).map(async (modKey) => {
+      const metaRef = ref(db, `notes/${branch}/${semKey}/subjects/${activeSubject}/modules/${modKey}/pdfMeta`);
+      const snap = await get(metaRef);
+      return [modKey, snap.exists()];
+    });
+
+    Promise.all(checks).then((results) => {
+      const map = {};
+      results.forEach(([key, hasChunks]) => { map[key] = hasChunks; });
+      setChunkedModules(map);
+    });
+  }, [activeSubject, subjects, userData?.branch, userData?.sem]);
 
   /* ── Derived values ── */
   const bg      = isDark ? "#080f1a"                 : "#f5f8f5";
@@ -229,22 +231,18 @@ export default function NotesPage() {
   const bdr      = isDark ? "rgba(0,255,0,0.1)"      : "rgba(0,200,0,0.1)";
   const inputBg  = isDark ? "rgba(255,255,255,0.05)" : "rgba(0,200,0,0.05)";
 
-  const firstName  = userData?.firstName || authUser?.displayName?.split(" ")[0] || "";
-  const fullName   = userData?.fullName  || authUser?.displayName || "";
-  const photoURL   = userData?.photoURL  || authUser?.photoURL    || "";
-  const branch     = userData?.branch    || "";
-  const sem        = userData?.sem       || "";
+  const firstName = userData?.firstName || authUser?.displayName?.split(" ")[0] || "";
+  const fullName  = userData?.fullName  || authUser?.displayName || "";
+  const photoURL  = userData?.photoURL  || authUser?.photoURL    || "";
+  const branch    = userData?.branch    || "";
+  const sem       = userData?.sem       || "";
 
-  /* Build module/resource list for active subject */
   const activeSubjectData = activeSubject ? subjects[activeSubject] : null;
   const allModules = activeSubjectData?.modules
     ? Object.entries(activeSubjectData.modules).map(([key, mod]) => ({ key, ...mod }))
     : [];
-
   const filteredModules = search.trim()
-    ? allModules.filter((m) =>
-        (m.Title || "").toLowerCase().includes(search.toLowerCase())
-      )
+    ? allModules.filter((m) => (m.Title || "").toLowerCase().includes(search.toLowerCase()))
     : allModules;
 
   const handleDownload = (idx) => {
@@ -252,7 +250,70 @@ export default function NotesPage() {
     setTimeout(() => setDlAnim(null), 1200);
   };
 
-  /* Avatar element */
+  /* ── NEW: Open PDF — routes to viewer if chunked, else opens URL ── */
+  const handleOpenPDF = (mod) => {
+    const isChunked = chunkedModules[mod.key];
+    const normaliseSem = (raw) => {
+      const str = raw.toString().trim();
+      if (/^Sem:\d+$/.test(str)) return str;
+      const num = str.replace(/[^0-9]/g, "");
+      return num ? `Sem:${num}` : str;
+    };
+    const semKey = normaliseSem(sem);
+
+    if (isChunked) {
+      // Route to our custom PDF viewer
+      router.push(
+        `/pdf-viewer?branch=${encodeURIComponent(branch)}&sem=${encodeURIComponent(semKey)}&subject=${encodeURIComponent(activeSubject)}&module=${encodeURIComponent(mod.key)}`
+      );
+    } else if (mod.resourcesPDF) {
+      // Fallback: open external URL
+      window.open(mod.resourcesPDF, "_blank");
+    }
+  };
+
+  /* ── NEW: Download PDF — reassemble from chunks if chunked ── */
+  const handleDownloadPDF = async (mod, idx) => {
+    const isChunked = chunkedModules[mod.key];
+    if (isChunked) {
+      handleDownload(idx);
+      try {
+        const normaliseSem = (raw) => {
+          const str = raw.toString().trim();
+          if (/^Sem:\d+$/.test(str)) return str;
+          const num = str.replace(/[^0-9]/g, "");
+          return num ? `Sem:${num}` : str;
+        };
+        const semKey = normaliseSem(sem);
+        const basePath = `notes/${branch}/${semKey}/subjects/${activeSubject}/modules/${mod.key}`;
+        const metaSnap = await get(ref(db, `${basePath}/pdfMeta`));
+        if (!metaSnap.exists()) return;
+        const { totalChunks, fileName } = metaSnap.val();
+        const chunks = [];
+        for (let i = 0; i < totalChunks; i++) {
+          const s = await get(ref(db, `${basePath}/pdfChunks/chunk_${i}`));
+          if (s.exists()) chunks.push(s.val());
+        }
+        const base64 = chunks.join("");
+        const binary = atob(base64);
+        const bytes  = new Uint8Array(binary.length);
+        for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+        const blob = new Blob([bytes], { type: "application/pdf" });
+        const url  = URL.createObjectURL(blob);
+        const a    = document.createElement("a");
+        a.href = url; a.download = fileName || `${mod.Title || mod.key}.pdf`; a.click();
+        setTimeout(() => URL.revokeObjectURL(url), 3000);
+      } catch (err) { console.error("Download failed:", err); }
+    } else if (mod.resourcesPDF) {
+      handleDownload(idx);
+      const a = document.createElement("a");
+      a.href = mod.resourcesPDF;
+      a.download = `${mod.Title || mod.key}.pdf`;
+      a.target = "_blank";
+      a.click();
+    }
+  };
+
   const AvatarEl = ({ size = 40 }) => (
     <div style={{ width: `${size}px`, height: `${size}px`, borderRadius: "9999px", border: "2.5px solid #00FF00", overflow: "hidden", background: isDark ? "rgba(255,255,255,0.1)" : "#e2e8f0", flexShrink: 0 }}>
       {photoURL
@@ -264,7 +325,6 @@ export default function NotesPage() {
     </div>
   );
 
-  /* ── Loading skeleton ── */
   if (authLoading) return (
     <>
       <style>{`
@@ -296,11 +356,11 @@ export default function NotesPage() {
             <Skeleton w="360px" h="40px" r="9999px" isDark={isDark} />
             <div style={{ marginLeft: "auto", display: "flex", gap: "12px" }}>
               <Skeleton w="120px" h="36px" r="9999px" isDark={isDark} />
-              <Skeleton w="40px"  h="40px" r="9999px" isDark={isDark} />
+              <Skeleton w="40px" h="40px" r="9999px" isDark={isDark} />
             </div>
           </div>
           <div style={{ flex: 1, padding: "32px", display: "flex", flexDirection: "column", gap: "32px" }}>
-            <Skeleton w="240px" h="32px" r="8px"    isDark={isDark} />
+            <Skeleton w="240px" h="32px" r="8px" isDark={isDark} />
             <div style={{ display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: "16px" }}>
               {[...Array(4)].map((_, i) => <Skeleton key={i} w="100%" h="160px" r="20px" isDark={isDark} />)}
             </div>
@@ -310,180 +370,81 @@ export default function NotesPage() {
     </>
   );
 
-  /* ─────────────────────────────────────────
-     RENDER
-  ───────────────────────────────────────── */
   return (
     <>
       <style>{`
         @import url('https://fonts.googleapis.com/css2?family=Lexend:wght@300;400;500;600;700&display=swap');
         @import url('https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:opsz,wght,FILL,GRAD@20..48,100..700,0..1,-50..200');
-
         *,*::before,*::after{box-sizing:border-box;margin:0;padding:0;}
         html,body{height:100%;}
         body{font-family:'Lexend',sans-serif;background:${bg};color:${text1};overflow:hidden;transition:background 0.3s,color 0.3s;}
-
         .ms{font-family:'Material Symbols Outlined'!important;font-weight:normal;font-style:normal;font-size:24px;line-height:1;letter-spacing:normal;text-transform:none;display:inline-block;white-space:nowrap;direction:ltr;}
-
         @keyframes fadeUp{from{opacity:0;transform:translateY(14px);}to{opacity:1;transform:translateY(0);}}
         @keyframes dlPulse{0%{transform:scale(1);}40%{transform:scale(0.82);}80%{transform:scale(1.12);}100%{transform:scale(1);}}
         @keyframes spin{to{transform:rotate(360deg);}}
         @keyframes skeletonPulse{0%,100%{opacity:1;}50%{opacity:0.4;}}
         @keyframes skeletonShimmer{0%{transform:translateX(-100%);}100%{transform:translateX(200%);}}
-
-        /* ── Root ── */
         .sb-root{display:flex;height:100vh;overflow:hidden;background:${bg};}
-
-        /* ── Sidebar ── */
-        .sb-sidebar{
-          width:260px;min-width:260px;height:100vh;
-          background:${sidebar};
-          backdrop-filter:blur(12px);-webkit-backdrop-filter:blur(12px);
-          border-right:1px solid ${bdr};
-          display:flex;flex-direction:column;padding:24px 20px;z-index:20;
-          transition:width 0.3s ease,min-width 0.3s ease;
-        }
+        .sb-sidebar{width:260px;min-width:260px;height:100vh;background:${sidebar};backdrop-filter:blur(12px);-webkit-backdrop-filter:blur(12px);border-right:1px solid ${bdr};display:flex;flex-direction:column;padding:24px 20px;z-index:20;transition:width 0.3s ease,min-width 0.3s ease;}
         .sb-sidebar.collapsed{width:72px;min-width:72px;}
         .sb-sidebar.collapsed .sl{display:none;}
-
-        .nav-link{
-          display:flex;align-items:center;gap:12px;
-          padding:12px 14px;border-radius:9999px;
-          font-size:13px;font-weight:600;color:${text2};
-          transition:all 0.2s ease;cursor:pointer;
-          border:none;background:none;width:100%;text-align:left;
-          font-family:'Lexend',sans-serif;text-decoration:none;
-        }
+        .nav-link{display:flex;align-items:center;gap:12px;padding:12px 14px;border-radius:9999px;font-size:13px;font-weight:600;color:${text2};transition:all 0.2s ease;cursor:pointer;border:none;background:none;width:100%;text-align:left;font-family:'Lexend',sans-serif;text-decoration:none;}
         .nav-link:hover{background:rgba(0,200,0,0.08);color:${text1};}
         .nav-link.active{background:#00FF00;color:#0f172a;box-shadow:0 6px 20px rgba(0,255,0,0.28);}
         .nav-link.active .ms{color:#0f172a;}
         .nav-link.danger{color:#f87171;}
         .nav-link.danger:hover{background:rgba(248,113,113,0.1);}
-
-        /* ── Main ── */
         .sb-main{flex:1;display:flex;flex-direction:column;height:100vh;overflow:hidden;}
-
-        /* ── Desktop header ── */
-        .sb-header{
-          height:72px;background:${header};
-          backdrop-filter:blur(12px);-webkit-backdrop-filter:blur(12px);
-          border-bottom:1px solid ${bdr};
-          padding:0 32px;display:flex;align-items:center;justify-content:space-between;
-          z-index:10;flex-shrink:0;
-        }
-        .search-box{
-          display:flex;align-items:center;gap:8px;
-          background:${inputBg};border:1px solid ${bdr};
-          border-radius:9999px;padding:10px 18px;
-          max-width:380px;flex:1;transition:border-color 0.2s,box-shadow 0.2s;
-        }
+        .sb-header{height:72px;background:${header};backdrop-filter:blur(12px);-webkit-backdrop-filter:blur(12px);border-bottom:1px solid ${bdr};padding:0 32px;display:flex;align-items:center;justify-content:space-between;z-index:10;flex-shrink:0;}
+        .search-box{display:flex;align-items:center;gap:8px;background:${inputBg};border:1px solid ${bdr};border-radius:9999px;padding:10px 18px;max-width:380px;flex:1;transition:border-color 0.2s,box-shadow 0.2s;}
         .search-box:focus-within{border-color:rgba(0,255,0,0.4);box-shadow:0 0 0 3px rgba(0,255,0,0.08);}
         .search-box input{background:transparent;border:none;outline:none;font-size:13px;font-family:'Lexend',sans-serif;color:${text1};flex:1;}
         .search-box input::placeholder{color:${text3};}
-
-        /* ── Mobile header ── */
-        .mob-header{
-          display:none;height:64px;background:${header};
-          backdrop-filter:blur(12px);-webkit-backdrop-filter:blur(12px);
-          border-bottom:1px solid ${bdr};
-          padding:0 16px;align-items:center;justify-content:space-between;gap:10px;
-          z-index:10;flex-shrink:0;
-        }
-        .mob-search{
-          display:flex;align-items:center;gap:8px;
-          background:${inputBg};border:1px solid ${bdr};
-          border-radius:9999px;padding:8px 14px;flex:1;transition:border-color 0.2s;
-        }
+        .mob-header{display:none;height:64px;background:${header};backdrop-filter:blur(12px);-webkit-backdrop-filter:blur(12px);border-bottom:1px solid ${bdr};padding:0 16px;align-items:center;justify-content:space-between;gap:10px;z-index:10;flex-shrink:0;}
+        .mob-search{display:flex;align-items:center;gap:8px;background:${inputBg};border:1px solid ${bdr};border-radius:9999px;padding:8px 14px;flex:1;transition:border-color 0.2s;}
         .mob-search:focus-within{border-color:rgba(0,255,0,0.4);}
         .mob-search input{background:transparent;border:none;outline:none;font-size:13px;font-family:'Lexend',sans-serif;color:${text1};flex:1;width:100%;}
         .mob-search input::placeholder{color:${text3};}
-
-        /* ── Scroll area ── */
         .sb-scroll{flex:1;overflow-y:auto;padding:32px;display:flex;flex-direction:column;gap:36px;}
         .sb-scroll::-webkit-scrollbar{width:4px;}
         .sb-scroll::-webkit-scrollbar-thumb{background:rgba(0,200,0,0.2);border-radius:2px;}
-
-        /* ── Subject grid ── */
         .subject-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:16px;}
-        .subject-card{
-          background:${card};padding:24px 20px;border-radius:20px;
-          border:2px solid ${bdr};cursor:pointer;
-          transition:all 0.22s cubic-bezier(0.34,1.56,0.64,1);
-          display:flex;flex-direction:column;gap:12px;
-          animation:fadeUp 0.35s ease both;
-        }
+        .subject-card{background:${card};padding:24px 20px;border-radius:20px;border:2px solid ${bdr};cursor:pointer;transition:all 0.22s cubic-bezier(0.34,1.56,0.64,1);display:flex;flex-direction:column;gap:12px;animation:fadeUp 0.35s ease both;}
         .subject-card:hover{transform:translateY(-4px);box-shadow:0 12px 32px rgba(0,255,0,0.1);}
         .subject-card.active{border-color:#00FF00;box-shadow:0 0 0 3px rgba(0,255,0,0.12),0 12px 32px rgba(0,255,0,0.1);}
-
-        /* ── Module rows ── */
-        .module-row{
-          background:${card};padding:14px 18px;border-radius:16px;
-          border:1px solid ${bdr};
-          display:flex;align-items:center;justify-content:space-between;gap:16px;
-          transition:all 0.2s ease;animation:fadeUp 0.3s ease both;
-        }
+        .module-row{background:${card};padding:14px 18px;border-radius:16px;border:1px solid ${bdr};display:flex;align-items:center;justify-content:space-between;gap:16px;transition:all 0.2s ease;animation:fadeUp 0.3s ease both;}
         .module-row:hover{background:${isDark?"rgba(0,255,0,0.03)":"rgba(0,200,0,0.04)"};border-color:rgba(0,255,0,0.22);}
         .module-title{font-size:13px;font-weight:600;color:${text1};margin:0 0 4px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:420px;}
         .module-meta{font-size:11px;color:${text3};margin:0;display:flex;align-items:center;gap:6px;flex-wrap:wrap;}
         .module-meta span{font-weight:600;color:${text2};}
         .dot{width:3px;height:3px;border-radius:9999px;background:${text3};display:inline-block;flex-shrink:0;}
 
-        /* ── Buttons ── */
+        /* ── UPDATED button styles ── */
         .btn-open{
-          padding:8px 16px;font-size:12px;font-weight:600;color:${text1};
-          background:none;border:1px solid ${bdr};border-radius:10px;
+          display:flex;align-items:center;gap:6px;
+          padding:8px 16px;font-size:12px;font-weight:700;
+          color:#ffffff;
+          background:#0f172a;
+          border:none;border-radius:10px;
           cursor:pointer;font-family:'Lexend',sans-serif;
           transition:all 0.18s;white-space:nowrap;
         }
-        .btn-open:hover{background:rgba(0,200,0,0.08);border-color:rgba(0,200,0,0.3);color:${isDark?"#00FF00":"#007700"};}
+        .btn-open:hover{background:#00FF00;color:#0f172a;}
         .btn-open:disabled{opacity:0.35;cursor:not-allowed;}
-        .btn-dl{
-          display:flex;align-items:center;gap:6px;
-          padding:8px 16px;font-size:12px;font-weight:700;
-          color:${isDark?"#f1f5f9":"#ffffff"};
-          background:${isDark?"rgba(255,255,255,0.08)":"#0f172a"};
-          border:none;border-radius:10px;cursor:pointer;
-          font-family:'Lexend',sans-serif;transition:background 0.2s,color 0.2s;white-space:nowrap;
-        }
+        .btn-dl{display:flex;align-items:center;gap:6px;padding:8px 16px;font-size:12px;font-weight:700;color:${isDark?"#f1f5f9":"#ffffff"};background:${isDark?"rgba(255,255,255,0.08)":"#334155"};border:none;border-radius:10px;cursor:pointer;font-family:'Lexend',sans-serif;transition:background 0.2s,color 0.2s;white-space:nowrap;}
         .btn-dl:hover{background:#00FF00!important;color:#0f172a!important;}
         .btn-dl.done{background:rgba(0,200,0,0.12)!important;color:#00AA00!important;animation:dlPulse 0.5s ease;}
         .btn-dl:disabled{opacity:0.35;cursor:not-allowed;}
-        .upload-btn{
-          display:flex;align-items:center;gap:8px;
-          background:#00FF00;color:#0f172a;
-          padding:10px 20px;border-radius:9999px;
-          font-size:13px;font-weight:700;border:none;cursor:pointer;
-          font-family:'Lexend',sans-serif;
-          box-shadow:0 4px 16px rgba(0,255,0,0.3);
-          transition:all 0.22s cubic-bezier(0.34,1.56,0.64,1);
-        }
-        .upload-btn:hover{transform:translateY(-2px);box-shadow:0 8px 24px rgba(0,255,0,0.45);}
 
-        /* ── Mobile bottom nav ── */
-        .mob-nav{
-          display:none;position:fixed;bottom:20px;left:50%;transform:translateX(-50%);
-          z-index:300;
-          background:${isDark?"rgba(14,20,36,0.95)":"rgba(255,255,255,0.92)"};
-          backdrop-filter:blur(28px);-webkit-backdrop-filter:blur(28px);
-          border:1px solid ${isDark?"rgba(255,255,255,0.12)":"rgba(0,0,0,0.07)"};
-          border-radius:9999px;padding:8px 20px;
-          align-items:center;gap:4px;
-          box-shadow:0 12px 48px rgba(0,0,0,0.22),0 2px 10px rgba(0,0,0,0.12);
-          min-width:320px;
-        }
-        .mob-tab{
-          width:52px;height:52px;border-radius:9999px;
-          display:flex;align-items:center;justify-content:center;
-          background:none;border:none;cursor:pointer;
-          -webkit-tap-highlight-color:transparent;
-          transition:transform 0.22s cubic-bezier(0.34,1.56,0.64,1),background 0.18s;flex-shrink:0;
-        }
+        /* ── chunked badge ── */
+        .badge-chunked{display:inline-flex;align-items:center;gap:4px;padding:2px 8px;background:rgba(0,200,0,0.1);border:1px solid rgba(0,200,0,0.25);border-radius:9999px;font-size:10px;font-weight:700;color:#009900;}
+
+        .mob-nav{display:none;position:fixed;bottom:20px;left:50%;transform:translateX(-50%);z-index:300;background:${isDark?"rgba(14,20,36,0.95)":"rgba(255,255,255,0.92)"};backdrop-filter:blur(28px);-webkit-backdrop-filter:blur(28px);border:1px solid ${isDark?"rgba(255,255,255,0.12)":"rgba(0,0,0,0.07)"};border-radius:9999px;padding:8px 20px;align-items:center;gap:4px;box-shadow:0 12px 48px rgba(0,0,0,0.22),0 2px 10px rgba(0,0,0,0.12);min-width:320px;}
+        .mob-tab{width:52px;height:52px;border-radius:9999px;display:flex;align-items:center;justify-content:center;background:none;border:none;cursor:pointer;-webkit-tap-highlight-color:transparent;transition:transform 0.22s cubic-bezier(0.34,1.56,0.64,1),background 0.18s;flex-shrink:0;}
         .mob-tab:active{transform:scale(0.8);}
         .mob-tab .ms{font-size:22px;color:${isDark?"rgba(255,255,255,0.35)":"rgba(0,0,0,0.32)"};transition:color 0.18s;}
         .mob-tab.active{background:#00FF00;box-shadow:0 4px 22px rgba(0,255,0,0.55);transform:scale(1.12);}
         .mob-tab.active .ms{color:#0a1a0a;}
-
-        /* ── Responsive ── */
         @media(max-width:768px){
           .sb-sidebar{display:none!important;}
           .sb-header{display:none!important;}
@@ -494,108 +455,72 @@ export default function NotesPage() {
           .module-row{flex-wrap:wrap;}
           .module-title{max-width:100%;}
         }
-        @media(max-width:480px){
-          .subject-grid{grid-template-columns:repeat(2,1fr);}
-        }
+        @media(max-width:480px){.subject-grid{grid-template-columns:repeat(2,1fr);}}
       `}</style>
 
       <div className="sb-root">
-
         {/* ══ SIDEBAR ══ */}
         <aside className={`sb-sidebar${sidebarOpen ? "" : " collapsed"}`}>
-          {/* Logo */}
-          <div style={{ display: "flex", alignItems: "center", gap: "12px", marginBottom: "40px", padding: "0 4px" }}>
-            <div style={{ width: "40px", height: "40px", background: "#00FF00", borderRadius: "10px", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0, boxShadow: "0 0 16px rgba(0,255,0,0.35)" }}>
-              <span className="ms" style={{ color: "#0f172a", fontSize: "22px" }}>school</span>
+          <div style={{ display:"flex", alignItems:"center", gap:"12px", marginBottom:"40px", padding:"0 4px" }}>
+            <div style={{ width:"40px", height:"40px", background:"#00FF00", borderRadius:"10px", display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0, boxShadow:"0 0 16px rgba(0,255,0,0.35)" }}>
+              <span className="ms" style={{ color:"#0f172a", fontSize:"22px" }}>school</span>
             </div>
             <div className="sl">
-              <h1 style={{ fontSize: "1.1rem", fontWeight: 700, letterSpacing: "-0.04em", color: text1, lineHeight: 1 }}>StudyBuddy</h1>
-              <p style={{ fontSize: "10px", fontWeight: 700, color: "#00AA00", textTransform: "uppercase", letterSpacing: "0.12em", marginTop: "3px" }}>Engineering AI</p>
+              <h1 style={{ fontSize:"1.1rem", fontWeight:700, letterSpacing:"-0.04em", color:text1, lineHeight:1 }}>StudyBuddy</h1>
+              <p style={{ fontSize:"10px", fontWeight:700, color:"#00AA00", textTransform:"uppercase", letterSpacing:"0.12em", marginTop:"3px" }}>Engineering AI</p>
             </div>
           </div>
-
-          {/* Nav */}
-          <nav style={{ flex: 1, display: "flex", flexDirection: "column", gap: "4px" }}>
+          <nav style={{ flex:1, display:"flex", flexDirection:"column", gap:"4px" }}>
             {NAV_ITEMS.slice(0, 4).map(({ id, icon, label, href }) => (
-              <button
-                key={id}
-                className={`nav-link${id === "notes" ? " active" : ""}`}
-                onClick={() => router.push(href)}
-              >
-                <span className="ms" style={{ fontSize: "20px", flexShrink: 0 }}>{icon}</span>
+              <button key={id} className={`nav-link${id === "notes" ? " active" : ""}`} onClick={() => router.push(href)}>
+                <span className="ms" style={{ fontSize:"20px", flexShrink:0 }}>{icon}</span>
                 <span className="sl">{label}</span>
               </button>
             ))}
-
-            <div style={{ padding: "16px 4px 8px", fontSize: "10px", fontWeight: 700, color: text3, textTransform: "uppercase", letterSpacing: "0.12em" }} className="sl">
-              Account
-            </div>
-
+            <div style={{ padding:"16px 4px 8px", fontSize:"10px", fontWeight:700, color:text3, textTransform:"uppercase", letterSpacing:"0.12em" }} className="sl">Account</div>
             {NAV_ITEMS.slice(4).map(({ id, icon, label, href }) => (
-              <button
-                key={id}
-                className="nav-link"
-                onClick={() => router.push(href)}
-              >
-                <span className="ms" style={{ fontSize: "20px", flexShrink: 0 }}>{icon}</span>
+              <button key={id} className="nav-link" onClick={() => router.push(href)}>
+                <span className="ms" style={{ fontSize:"20px", flexShrink:0 }}>{icon}</span>
                 <span className="sl">{label}</span>
               </button>
             ))}
-
-            <button
-              className="nav-link danger"
-              onClick={() => signOut(auth).then(() => router.replace("/"))}
-            >
-              <span className="ms" style={{ fontSize: "20px", flexShrink: 0 }}>logout</span>
+            <button className="nav-link danger" onClick={() => signOut(auth).then(() => router.replace("/"))}>
+              <span className="ms" style={{ fontSize:"20px", flexShrink:0 }}>logout</span>
               <span className="sl">Sign Out</span>
             </button>
           </nav>
-
         </aside>
 
         {/* ══ MAIN ══ */}
         <main className="sb-main">
-
           {/* Desktop header */}
           <header className="sb-header">
-            <div style={{ display: "flex", alignItems: "center", gap: "16px", flex: 1 }}>
+            <div style={{ display:"flex", alignItems:"center", gap:"16px", flex:1 }}>
               <button
                 onClick={() => setSidebarOpen((s) => !s)}
-                style={{ background: isDark ? "rgba(255,255,255,0.06)" : "rgba(0,200,0,0.08)", border: "none", borderRadius: "9999px", width: "36px", height: "36px", display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer", flexShrink: 0, transition: "background 0.2s" }}
-                onMouseEnter={(e) => (e.currentTarget.style.background = isDark ? "rgba(255,255,255,0.1)" : "rgba(0,200,0,0.14)")}
-                onMouseLeave={(e) => (e.currentTarget.style.background = isDark ? "rgba(255,255,255,0.06)" : "rgba(0,200,0,0.08)")}
+                style={{ background:isDark?"rgba(255,255,255,0.06)":"rgba(0,200,0,0.08)", border:"none", borderRadius:"9999px", width:"36px", height:"36px", display:"flex", alignItems:"center", justifyContent:"center", cursor:"pointer", flexShrink:0, transition:"background 0.2s" }}
+                onMouseEnter={(e) => (e.currentTarget.style.background = isDark?"rgba(255,255,255,0.1)":"rgba(0,200,0,0.14)")}
+                onMouseLeave={(e) => (e.currentTarget.style.background = isDark?"rgba(255,255,255,0.06)":"rgba(0,200,0,0.08)")}
               >
-                <span className="ms" style={{ fontSize: "20px", color: text2 }}>menu</span>
+                <span className="ms" style={{ fontSize:"20px", color:text2 }}>menu</span>
               </button>
-
               <div className="search-box">
-                <span className="ms" style={{ fontSize: "18px", color: text3 }}>search</span>
-                <input
-                  placeholder="Search modules or topics…"
-                  value={search}
-                  onChange={(e) => setSearch(e.target.value)}
-                  type="text"
-                />
+                <span className="ms" style={{ fontSize:"18px", color:text3 }}>search</span>
+                <input placeholder="Search modules or topics…" value={search} onChange={(e) => setSearch(e.target.value)} type="text" />
                 {search && (
-                  <button onClick={() => setSearch("")} style={{ background: "none", border: "none", cursor: "pointer", display: "flex", padding: 0 }}>
-                    <span className="ms" style={{ fontSize: "16px", color: text3 }}>close</span>
+                  <button onClick={() => setSearch("")} style={{ background:"none", border:"none", cursor:"pointer", display:"flex", padding:0 }}>
+                    <span className="ms" style={{ fontSize:"16px", color:text3 }}>close</span>
                   </button>
                 )}
               </div>
             </div>
-
-            <div style={{ display: "flex", alignItems: "center", gap: "12px", marginLeft: "24px" }}>
+            <div style={{ display:"flex", alignItems:"center", gap:"12px", marginLeft:"24px" }}>
               <ThemeSwitcher theme={theme} setTheme={setTheme} resolved={resolved} />
-
-
-              <div style={{ width: "1px", height: "32px", background: bdr }} />
-
-              <div style={{ display: "flex", alignItems: "center", gap: "10px", cursor: "pointer" }} onClick={() => router.push("/profile")}>
-                <div style={{ textAlign: "right" }}>
-                  <p style={{ fontSize: "12px", fontWeight: 700, color: text1, lineHeight: 1, margin: 0 }}>{fullName || "—"}</p>
-                  <p style={{ fontSize: "10px", color: text3, fontWeight: 500, marginTop: "2px", margin: 0 }}>
-                    {branch || "No branch"}{sem ? ` · ${sem}` : ""}
-                  </p>
+              <div style={{ width:"1px", height:"32px", background:bdr }} />
+              <div style={{ display:"flex", alignItems:"center", gap:"10px", cursor:"pointer" }} onClick={() => router.push("/profile")}>
+                <div style={{ textAlign:"right" }}>
+                  <p style={{ fontSize:"12px", fontWeight:700, color:text1, lineHeight:1, margin:0 }}>{fullName || "—"}</p>
+                  <p style={{ fontSize:"10px", color:text3, fontWeight:500, marginTop:"2px", margin:0 }}>{branch || "No branch"}{sem ? ` · ${sem}` : ""}</p>
                 </div>
                 <AvatarEl size={40} />
               </div>
@@ -604,28 +529,20 @@ export default function NotesPage() {
 
           {/* Mobile header */}
           <header className="mob-header">
-            <div style={{ width: "34px", height: "34px", background: "#00FF00", borderRadius: "9px", display: "flex", alignItems: "center", justifyContent: "center", boxShadow: "0 0 12px rgba(0,255,0,0.4)", flexShrink: 0 }}>
-              <span className="ms" style={{ color: "#0f172a", fontSize: "18px" }}>school</span>
+            <div style={{ width:"34px", height:"34px", background:"#00FF00", borderRadius:"9px", display:"flex", alignItems:"center", justifyContent:"center", boxShadow:"0 0 12px rgba(0,255,0,0.4)", flexShrink:0 }}>
+              <span className="ms" style={{ color:"#0f172a", fontSize:"18px" }}>school</span>
             </div>
             <div className="mob-search">
-              <span className="ms" style={{ fontSize: "16px", color: text3, flexShrink: 0 }}>search</span>
-              <input
-                placeholder="Search…"
-                value={search}
-                onChange={(e) => setSearch(e.target.value)}
-                type="text"
-              />
+              <span className="ms" style={{ fontSize:"16px", color:text3, flexShrink:0 }}>search</span>
+              <input placeholder="Search…" value={search} onChange={(e) => setSearch(e.target.value)} type="text" />
               {search && (
-                <button onClick={() => setSearch("")} style={{ background: "none", border: "none", cursor: "pointer", padding: 0 }}>
-                  <span className="ms" style={{ fontSize: "16px", color: text3 }}>close</span>
+                <button onClick={() => setSearch("")} style={{ background:"none", border:"none", cursor:"pointer", padding:0 }}>
+                  <span className="ms" style={{ fontSize:"16px", color:text3 }}>close</span>
                 </button>
               )}
             </div>
-            <div style={{ display: "flex", alignItems: "center", gap: "8px", flexShrink: 0 }}>
-              <button style={{ width: "36px", height: "36px", borderRadius: "9999px", background: isDark ? "rgba(255,255,255,0.06)" : "rgba(0,200,0,0.08)", border: "none", display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer" }}>
-                <span className="ms" style={{ fontSize: "20px", color: text2 }}>upload_file</span>
-              </button>
-              <button onClick={() => router.push("/profile")} style={{ background: "none", border: "none", padding: 0, cursor: "pointer" }}>
+            <div style={{ display:"flex", alignItems:"center", gap:"8px", flexShrink:0 }}>
+              <button onClick={() => router.push("/profile")} style={{ background:"none", border:"none", padding:0, cursor:"pointer" }}>
                 <AvatarEl size={36} />
               </button>
             </div>
@@ -633,63 +550,47 @@ export default function NotesPage() {
 
           {/* ══ CONTENT ══ */}
           <div className="sb-scroll">
-
             {/* Page heading */}
-            <div style={{ animation: "fadeUp 0.35s ease both" }}>
-              <h2 style={{ fontSize: "clamp(1.4rem,3vw,1.9rem)", fontWeight: 700, letterSpacing: "-0.03em", color: text1, marginBottom: "6px" }}>
-                Subjects
-              </h2>
-              <p style={{ fontSize: "14px", color: text2, fontWeight: 400, margin: 0, display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap" }}>
+            <div style={{ animation:"fadeUp 0.35s ease both" }}>
+              <h2 style={{ fontSize:"clamp(1.4rem,3vw,1.9rem)", fontWeight:700, letterSpacing:"-0.03em", color:text1, marginBottom:"6px" }}>Subjects</h2>
+              <p style={{ fontSize:"14px", color:text2, fontWeight:400, margin:0, display:"flex", alignItems:"center", gap:"8px", flexWrap:"wrap" }}>
                 Access lecture notes uploaded by your professors.
-                {branch && (
-                  <span style={{ padding: "2px 10px", background: "rgba(0,200,0,0.1)", border: "1px solid rgba(0,200,0,0.2)", borderRadius: "9999px", fontSize: "11px", fontWeight: 700, color: "#009900" }}>
-                    {branch}
-                  </span>
-                )}
-                {sem && (
-                  <span style={{ padding: "2px 10px", background: isDark ? "rgba(255,255,255,0.06)" : "rgba(0,0,0,0.04)", border: `1px solid ${bdr}`, borderRadius: "9999px", fontSize: "11px", fontWeight: 700, color: text2 }}>
-                    {sem}
-                  </span>
-                )}
+                {branch && <span style={{ padding:"2px 10px", background:"rgba(0,200,0,0.1)", border:"1px solid rgba(0,200,0,0.2)", borderRadius:"9999px", fontSize:"11px", fontWeight:700, color:"#009900" }}>{branch}</span>}
+                {sem && <span style={{ padding:"2px 10px", background:isDark?"rgba(255,255,255,0.06)":"rgba(0,0,0,0.04)", border:`1px solid ${bdr}`, borderRadius:"9999px", fontSize:"11px", fontWeight:700, color:text2 }}>{sem}</span>}
               </p>
             </div>
 
-            {/* ── No branch/sem warning ── */}
             {(!branch || !sem) && (
-              <div style={{ display: "flex", alignItems: "center", gap: "14px", padding: "18px 20px", background: isDark ? "rgba(245,158,11,0.08)" : "rgba(245,158,11,0.06)", border: "1px solid rgba(245,158,11,0.25)", borderRadius: "16px", animation: "fadeUp 0.3s ease both" }}>
-                <span className="ms" style={{ fontSize: "26px", color: "#f59e0b" }}>info</span>
+              <div style={{ display:"flex", alignItems:"center", gap:"14px", padding:"18px 20px", background:isDark?"rgba(245,158,11,0.08)":"rgba(245,158,11,0.06)", border:"1px solid rgba(245,158,11,0.25)", borderRadius:"16px", animation:"fadeUp 0.3s ease both" }}>
+                <span className="ms" style={{ fontSize:"26px", color:"#f59e0b" }}>info</span>
                 <div>
-                  <p style={{ fontSize: "13px", fontWeight: 700, color: text1, margin: "0 0 3px" }}>Branch or semester not set</p>
-                  <p style={{ fontSize: "12px", color: text2, margin: 0 }}>
-                    Please update your profile with your branch and semester to see your subjects.{" "}
-                    <button onClick={() => router.push("/profile")} style={{ background: "none", border: "none", cursor: "pointer", color: "#f59e0b", fontWeight: 700, fontSize: "12px", fontFamily: "'Lexend',sans-serif", textDecoration: "underline" }}>
-                      Go to Profile →
-                    </button>
+                  <p style={{ fontSize:"13px", fontWeight:700, color:text1, margin:"0 0 3px" }}>Branch or semester not set</p>
+                  <p style={{ fontSize:"12px", color:text2, margin:0 }}>
+                    Please update your profile.{" "}
+                    <button onClick={() => router.push("/profile")} style={{ background:"none", border:"none", cursor:"pointer", color:"#f59e0b", fontWeight:700, fontSize:"12px", fontFamily:"'Lexend',sans-serif", textDecoration:"underline" }}>Go to Profile →</button>
                   </p>
                 </div>
               </div>
             )}
 
-            {/* ── Subjects loading spinner ── */}
             {notesLoading && (
-              <div style={{ display: "flex", alignItems: "center", justifyContent: "center", padding: "60px 20px", gap: "14px" }}>
-                <div style={{ width: "28px", height: "28px", border: `3px solid ${bdr}`, borderTopColor: "#00FF00", borderRadius: "9999px", animation: "spin 0.7s linear infinite" }} />
-                <p style={{ fontSize: "14px", color: text2, fontWeight: 500 }}>Loading subjects…</p>
+              <div style={{ display:"flex", alignItems:"center", justifyContent:"center", padding:"60px 20px", gap:"14px" }}>
+                <div style={{ width:"28px", height:"28px", border:`3px solid ${bdr}`, borderTopColor:"#00FF00", borderRadius:"9999px", animation:"spin 0.7s linear infinite" }} />
+                <p style={{ fontSize:"14px", color:text2, fontWeight:500 }}>Loading subjects…</p>
               </div>
             )}
 
-            {/* ── Notes fetch error ── */}
             {notesError && (
-              <div style={{ display: "flex", alignItems: "center", gap: "14px", padding: "18px 20px", background: isDark ? "rgba(239,68,68,0.08)" : "rgba(239,68,68,0.05)", border: "1px solid rgba(239,68,68,0.2)", borderRadius: "16px" }}>
-                <span className="ms" style={{ fontSize: "26px", color: "#ef4444" }}>error</span>
+              <div style={{ display:"flex", alignItems:"center", gap:"14px", padding:"18px 20px", background:isDark?"rgba(239,68,68,0.08)":"rgba(239,68,68,0.05)", border:"1px solid rgba(239,68,68,0.2)", borderRadius:"16px" }}>
+                <span className="ms" style={{ fontSize:"26px", color:"#ef4444" }}>error</span>
                 <div>
-                  <p style={{ fontSize: "13px", fontWeight: 700, color: text1, margin: "0 0 3px" }}>Failed to load notes</p>
-                  <p style={{ fontSize: "12px", color: text2, margin: 0 }}>{notesError}</p>
+                  <p style={{ fontSize:"13px", fontWeight:700, color:text1, margin:"0 0 3px" }}>Failed to load notes</p>
+                  <p style={{ fontSize:"12px", color:text2, margin:0 }}>{notesError}</p>
                 </div>
               </div>
             )}
 
-            {/* ── Subject cards ── */}
+            {/* Subject cards */}
             {!notesLoading && !notesError && Object.keys(subjects).length > 0 && (
               <section>
                 <div className="subject-grid">
@@ -698,27 +599,21 @@ export default function NotesPage() {
                     const { icon, color } = getSubjectMeta(code);
                     const label = typeof data?.Subject === "string" ? data.Subject : code;
                     const totalModules = data?.Totalmodules ?? Object.keys(data?.modules || {}).length;
-
                     return (
-                      <div
-                        key={code}
-                        className={`subject-card${active ? " active" : ""}`}
-                        style={{ animationDelay: `${i * 0.06}s`, borderColor: active ? "#00FF00" : bdr }}
-                        onClick={() => { setActiveSubject(code); setSearch(""); }}
-                      >
-                        <div style={{ width: "56px", height: "56px", borderRadius: "14px", background: active ? "rgba(0,255,0,0.15)" : `${color}18`, display: "flex", alignItems: "center", justifyContent: "center", transition: "background 0.2s" }}>
-                          <span className="ms" style={{ fontSize: "30px", color: active ? "#00DD00" : color }}>{icon}</span>
+                      <div key={code} className={`subject-card${active ? " active" : ""}`} style={{ animationDelay:`${i*0.06}s`, borderColor:active?"#00FF00":bdr }} onClick={() => { setActiveSubject(code); setSearch(""); }}>
+                        <div style={{ width:"56px", height:"56px", borderRadius:"14px", background:active?"rgba(0,255,0,0.15)":`${color}18`, display:"flex", alignItems:"center", justifyContent:"center", transition:"background 0.2s" }}>
+                          <span className="ms" style={{ fontSize:"30px", color:active?"#00DD00":color }}>{icon}</span>
                         </div>
                         <div>
-                          <h3 style={{ fontSize: "17px", fontWeight: 700, color: active ? (isDark ? "#00FF00" : "#007700") : text1, marginBottom: "4px", transition: "color 0.2s" }}>{label}</h3>
-                          <p style={{ fontSize: "11px", color: text3, lineHeight: 1.5, margin: 0 }}>
-                            {totalModules > 0 ? `${totalModules} module${totalModules !== 1 ? "s" : ""}` : "No modules yet"}
+                          <h3 style={{ fontSize:"17px", fontWeight:700, color:active?(isDark?"#00FF00":"#007700"):text1, marginBottom:"4px", transition:"color 0.2s" }}>{label}</h3>
+                          <p style={{ fontSize:"11px", color:text3, lineHeight:1.5, margin:0 }}>
+                            {totalModules > 0 ? `${totalModules} module${totalModules!==1?"s":""}` : "No modules yet"}
                           </p>
                         </div>
                         {active && (
-                          <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
-                            <div style={{ width: "6px", height: "6px", borderRadius: "9999px", background: "#00FF00", boxShadow: "0 0 6px rgba(0,255,0,0.8)" }} />
-                            <span style={{ fontSize: "10px", fontWeight: 700, color: "#00AA00", textTransform: "uppercase", letterSpacing: "0.08em" }}>Selected</span>
+                          <div style={{ display:"flex", alignItems:"center", gap:"6px" }}>
+                            <div style={{ width:"6px", height:"6px", borderRadius:"9999px", background:"#00FF00", boxShadow:"0 0 6px rgba(0,255,0,0.8)" }} />
+                            <span style={{ fontSize:"10px", fontWeight:700, color:"#00AA00", textTransform:"uppercase", letterSpacing:"0.08em" }}>Selected</span>
                           </div>
                         )}
                       </div>
@@ -728,115 +623,89 @@ export default function NotesPage() {
               </section>
             )}
 
-            {/* ── No subjects found ── */}
             {!notesLoading && !notesError && branch && sem && Object.keys(subjects).length === 0 && (
-              <div style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", padding: "60px 20px", gap: "14px", opacity: 0.6, animation: "fadeUp 0.3s ease both" }}>
-                <span className="ms" style={{ fontSize: "48px", color: text3 }}>folder_off</span>
-                <p style={{ fontSize: "15px", fontWeight: 600, color: text2, margin: 0 }}>No subjects found</p>
-                <p style={{ fontSize: "12px", color: text3, margin: 0, textAlign: "center" }}>
-                  {/* No data at <code style={{ background: isDark ? "rgba(255,255,255,0.08)" : "rgba(0,0,0,0.06)", padding: "2px 6px", borderRadius: "4px", fontSize: "11px" }}>
-                    notes/{branch}/Sem:{String(sem).replace(/[^0-9]/g, "") || sem}/subjects
-                  </code> */}
-                </p>
-
+              <div style={{ display:"flex", flexDirection:"column", alignItems:"center", justifyContent:"center", padding:"60px 20px", gap:"14px", opacity:0.6, animation:"fadeUp 0.3s ease both" }}>
+                <span className="ms" style={{ fontSize:"48px", color:text3 }}>folder_off</span>
+                <p style={{ fontSize:"15px", fontWeight:600, color:text2, margin:0 }}>No subjects found</p>
               </div>
             )}
 
-            {/* ── Module / resource list ── */}
+            {/* Module list */}
             {activeSubject && activeSubjectData && (
               <section>
-                {/* Section header */}
-                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", borderBottom: `1px solid ${bdr}`, paddingBottom: "16px", marginBottom: "20px", flexWrap: "wrap", gap: "12px" }}>
-                  <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
-                    <div style={{ width: "8px", height: "8px", borderRadius: "9999px", background: "#00FF00", boxShadow: "0 0 8px rgba(0,255,0,0.7)" }} />
-                    <h3 style={{ fontSize: "16px", fontWeight: 700, color: text1, margin: 0 }}>
-                      Resources for {activeSubjectData?.Subject || activeSubject}
-                    </h3>
+                <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", borderBottom:`1px solid ${bdr}`, paddingBottom:"16px", marginBottom:"20px", flexWrap:"wrap", gap:"12px" }}>
+                  <div style={{ display:"flex", alignItems:"center", gap:"10px" }}>
+                    <div style={{ width:"8px", height:"8px", borderRadius:"9999px", background:"#00FF00", boxShadow:"0 0 8px rgba(0,255,0,0.7)" }} />
+                    <h3 style={{ fontSize:"16px", fontWeight:700, color:text1, margin:0 }}>Resources for {activeSubjectData?.Subject || activeSubject}</h3>
                   </div>
-                  <div style={{ display: "flex", alignItems: "center", gap: "12px" }}>
-                    <button style={{ background: "none", border: "none", cursor: "pointer", display: "flex", alignItems: "center", gap: "4px", color: text3, fontSize: "12px", fontFamily: "'Lexend',sans-serif", fontWeight: 500 }}>
-                      <span className="ms" style={{ fontSize: "18px" }}>filter_list</span>
-                      Filter
-                    </button>
-                    <span style={{ fontSize: "11px", fontWeight: 700, color: text3, background: isDark ? "rgba(255,255,255,0.05)" : "rgba(0,200,0,0.07)", padding: "4px 12px", borderRadius: "9999px", textTransform: "uppercase", letterSpacing: "0.08em" }}>
-                      {filteredModules.length} {filteredModules.length === 1 ? "Module" : "Modules"}
-                    </span>
-                  </div>
+                  <span style={{ fontSize:"11px", fontWeight:700, color:text3, background:isDark?"rgba(255,255,255,0.05)":"rgba(0,200,0,0.07)", padding:"4px 12px", borderRadius:"9999px", textTransform:"uppercase", letterSpacing:"0.08em" }}>
+                    {filteredModules.length} {filteredModules.length===1?"Module":"Modules"}
+                  </span>
                 </div>
 
-                {/* Modules list */}
                 {filteredModules.length === 0 && search ? (
-                  <div style={{ display: "flex", flexDirection: "column", alignItems: "center", padding: "60px 20px", gap: "14px", opacity: 0.5, animation: "fadeUp 0.3s ease both" }}>
-                    <span className="ms" style={{ fontSize: "48px", color: text3 }}>search_off</span>
-                    <p style={{ fontSize: "15px", fontWeight: 600, color: text2, margin: 0 }}>No modules match your search</p>
-                    <p style={{ fontSize: "12px", color: text3, margin: 0 }}>Try different keywords or clear the search.</p>
+                  <div style={{ display:"flex", flexDirection:"column", alignItems:"center", padding:"60px 20px", gap:"14px", opacity:0.5 }}>
+                    <span className="ms" style={{ fontSize:"48px", color:text3 }}>search_off</span>
+                    <p style={{ fontSize:"15px", fontWeight:600, color:text2, margin:0 }}>No modules match your search</p>
                   </div>
                 ) : filteredModules.length === 0 ? (
-                  <div style={{ display: "flex", flexDirection: "column", alignItems: "center", padding: "60px 20px", gap: "14px", opacity: 0.5, animation: "fadeUp 0.3s ease both" }}>
-                    <span className="ms" style={{ fontSize: "48px", color: text3 }}>folder_open</span>
-                    <p style={{ fontSize: "15px", fontWeight: 600, color: text2, margin: 0 }}>No modules yet</p>
-                    <p style={{ fontSize: "12px", color: text3, margin: 0 }}>No resources have been uploaded for this subject.</p>
+                  <div style={{ display:"flex", flexDirection:"column", alignItems:"center", padding:"60px 20px", gap:"14px", opacity:0.5 }}>
+                    <span className="ms" style={{ fontSize:"48px", color:text3 }}>folder_open</span>
+                    <p style={{ fontSize:"15px", fontWeight:600, color:text2, margin:0 }}>No modules yet</p>
                   </div>
                 ) : (
-                  <div style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
+                  <div style={{ display:"flex", flexDirection:"column", gap:"10px" }}>
                     {filteredModules.map((mod, i) => {
-                      const hasPDF = !!mod.resourcesPDF;
+                      const isChunked = chunkedModules[mod.key];
+                      const hasPDF    = isChunked || !!mod.resourcesPDF;
                       return (
-                        <div
-                          key={mod.key}
-                          className="module-row"
-                          style={{ animationDelay: `${i * 0.04}s` }}
-                          onMouseEnter={() => setHoveredFile(i)}
-                          onMouseLeave={() => setHoveredFile(null)}
-                        >
+                        <div key={mod.key} className="module-row" style={{ animationDelay:`${i*0.04}s` }} onMouseEnter={() => setHoveredFile(i)} onMouseLeave={() => setHoveredFile(null)}>
                           {/* Icon + info */}
-                          <div style={{ display: "flex", alignItems: "center", gap: "16px", flex: 1, minWidth: 0 }}>
-                            <div style={{ width: "48px", height: "48px", minWidth: "48px", borderRadius: "12px", background: hasPDF ? "rgba(239,68,68,0.08)" : (isDark ? "rgba(255,255,255,0.04)" : "rgba(0,0,0,0.04)"), display: "flex", alignItems: "center", justifyContent: "center", transition: "transform 0.2s", transform: hoveredFile === i ? "scale(1.08)" : "scale(1)" }}>
-                              <span className="ms" style={{ fontSize: "24px", color: hasPDF ? "#ef4444" : text3 }}>
+                          <div style={{ display:"flex", alignItems:"center", gap:"16px", flex:1, minWidth:0 }}>
+                            <div style={{ width:"48px", height:"48px", minWidth:"48px", borderRadius:"12px", background:hasPDF?"rgba(239,68,68,0.08)":(isDark?"rgba(255,255,255,0.04)":"rgba(0,0,0,0.04)"), display:"flex", alignItems:"center", justifyContent:"center", transition:"transform 0.2s", transform:hoveredFile===i?"scale(1.08)":"scale(1)" }}>
+                              <span className="ms" style={{ fontSize:"24px", color:hasPDF?"#ef4444":text3 }}>
                                 {hasPDF ? "picture_as_pdf" : "folder_open"}
                               </span>
                             </div>
-                            <div style={{ minWidth: 0, flex: 1 }}>
+                            <div style={{ minWidth:0, flex:1 }}>
                               <p className="module-title">
-                                {/* Module number badge */}
-                                <span style={{ display: "inline-flex", alignItems: "center", marginRight: "8px", padding: "2px 8px", background: "rgba(0,200,0,0.1)", border: "1px solid rgba(0,200,0,0.2)", borderRadius: "9999px", fontSize: "10px", fontWeight: 700, color: "#009900", letterSpacing: "0.04em" }}>
-                                  {mod.key.replace("module", "M")}
+                                <span style={{ display:"inline-flex", alignItems:"center", marginRight:"8px", padding:"2px 8px", background:"rgba(0,200,0,0.1)", border:"1px solid rgba(0,200,0,0.2)", borderRadius:"9999px", fontSize:"10px", fontWeight:700, color:"#009900", letterSpacing:"0.04em" }}>
+                                  {mod.key.replace("module","M")}
                                 </span>
                                 {mod.Title || "Untitled Module"}
                               </p>
                               <p className="module-meta">
-                                {hasPDF
-                                  ? <><span>PDF Available</span><span className="dot" />Resource uploaded</>
-                                  : <span style={{ color: "#f59e0b", fontWeight: 600 }}>No resource uploaded yet</span>
-                                }
+                                {isChunked ? (
+                                  <><span className="badge-chunked"><span className="ms" style={{ fontSize:"12px" }}>check_circle</span>PDF Ready</span><span className="dot" />Opens in StudyBuddy viewer</>
+                                ) : hasPDF ? (
+                                  <><span>PDF Available</span><span className="dot" />External link</>
+                                ) : (
+                                  <span style={{ color:"#f59e0b", fontWeight:600 }}>No resource uploaded yet</span>
+                                )}
                               </p>
                             </div>
                           </div>
 
-                          {/* Actions */}
-                          <div style={{ display: "flex", alignItems: "center", gap: "8px", flexShrink: 0 }}>
+                          {/* ── UPDATED Actions ── */}
+                          <div style={{ display:"flex", alignItems:"center", gap:"8px", flexShrink:0 }}>
                             <button
                               className="btn-open"
                               disabled={!hasPDF}
-                              onClick={() => hasPDF && window.open(mod.resourcesPDF, "_blank")}
+                              onClick={() => handleOpenPDF(mod)}
+                              title={isChunked ? "Open in StudyBuddy PDF Viewer" : "Open external PDF"}
                             >
+                              <span className="ms" style={{ fontSize:"16px" }}>
+                                {isChunked ? "open_in_full" : "open_in_new"}
+                              </span>
                               Open
                             </button>
                             <button
                               className={`btn-dl${dlAnim === i ? " done" : ""}`}
                               disabled={!hasPDF}
-                              onClick={() => {
-                                if (!hasPDF) return;
-                                handleDownload(i);
-                                const a = document.createElement("a");
-                                a.href = mod.resourcesPDF;
-                                a.download = `${mod.Title || mod.key}.pdf`;
-                                a.target = "_blank";
-                                a.click();
-                              }}
+                              onClick={() => handleDownloadPDF(mod, i)}
                             >
-                              <span className="ms" style={{ fontSize: "16px" }}>{dlAnim === i ? "check" : "download"}</span>
-                              {dlAnim === i ? "Saved!" : "Download"}
+                              <span className="ms" style={{ fontSize:"16px" }}>{dlAnim===i?"check":"download"}</span>
+                              {dlAnim===i?"Saved!":"Download"}
                             </button>
                           </div>
                         </div>
@@ -853,11 +722,7 @@ export default function NotesPage() {
       {/* ══ MOBILE BOTTOM NAV ══ */}
       <nav className="mob-nav">
         {NAV_ITEMS.slice(0, 4).map(({ id, icon, href }) => (
-          <button
-            key={id}
-            className={`mob-tab${id === "notes" ? " active" : ""}`}
-            onClick={() => router.push(href)}
-          >
+          <button key={id} className={`mob-tab${id==="notes"?" active":""}`} onClick={() => router.push(href)}>
             <span className="ms">{icon}</span>
           </button>
         ))}
