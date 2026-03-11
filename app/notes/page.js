@@ -264,7 +264,7 @@ export default function NotesPage() {
     if (isChunked) {
       // Route to our custom PDF viewer
       router.push(
-        `/pdf-viewer?branch=${encodeURIComponent(branch)}&sem=${encodeURIComponent(semKey)}&subject=${encodeURIComponent(activeSubject)}&module=${encodeURIComponent(mod.key)}`
+        `/pdfviewer?branch=${encodeURIComponent(branch)}&sem=${encodeURIComponent(semKey)}&subject=${encodeURIComponent(activeSubject)}&module=${encodeURIComponent(mod.key)}`
       );
     } else if (mod.resourcesPDF) {
       // Fallback: open external URL
