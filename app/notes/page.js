@@ -900,8 +900,8 @@ Give concise, exam-focused answers. Use bullet points when listing. Keep answers
                         </div>
                         {active && (
                           <div style={{ display:"flex", alignItems:"center", gap:"5px" }}>
-                            <div style={{ width:"5px", height:"5px", borderRadius:"9999px", background:"#00FF00", boxShadow:"0 0 5px rgba(0,255,0,0.8)" }} />
-                            <span style={{ fontSize:"9px", fontWeight:700, color:"#00AA00", textTransform:"uppercase", letterSpacing:"0.08em" }}>Selected</span>
+                            {/* <div style={{ width:"5px", height:"5px", borderRadius:"9999px", background:"#00FF00", boxShadow:"0 0 5px rgba(0,255,0,0.8)" }} /> */}
+                            
                           </div>
                         )}
                       </div>
@@ -982,10 +982,7 @@ Give concise, exam-focused answers. Use bullet points when listing. Keep answers
 
                           {/* Bottom: action buttons (stacked on mobile, inline on desktop) */}
                           <div className="module-actions">
-                            <button className="btn-ai" onClick={() => openAiPanel(mod)} title="Ask AI about this module">
-                              <span className="ms" style={{ fontSize:"15px" }}>psychology</span>
-                              AI
-                            </button>
+
                             <button className="btn-open" disabled={!hasPDF} onClick={() => handleOpenPDF(mod)}>
                               <span className="ms" style={{ fontSize:"15px" }}>{isChunked?"open_in_full":"open_in_new"}</span>
                               Open

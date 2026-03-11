@@ -153,7 +153,7 @@ function PDFViewerInner() {
   const [chatOpen,       setChatOpen]       = useState(false);
   const [chatInput,      setChatInput]      = useState("");
   const [messages,       setMessages]       = useState([
-    { role: "ai", text: "Hi! I've loaded your PDF. Ask me anything or use the quick tools below." }
+    { role: "ai", text: "Hi! I'm your Neural AI Assistant. How can I help you today with this Topic?" }
   ]);
   const [aiLoading,      setAiLoading]      = useState(false);
   const [sheetHeight,    setSheetHeight]    = useState(55); // % of screen height for mobile sheet
@@ -319,7 +319,7 @@ function PDFViewerInner() {
         body: JSON.stringify({
           model: "claude-sonnet-4-20250514",
           max_tokens: 1000,
-          system: `You are StudyBuddy AI — an engineering exam assistant embedded in a PDF viewer.
+          system: `You are Neural AI Assistant — an engineering exam assistant embedded in a PDF viewer.
 The student is viewing: "${moduleTitle || moduleKey}" from subject "${subject}", semester "${sem}".
 Current page: ${currentPage} of ${totalPages}.
 Give concise, exam-focused answers. Use bullet points when listing. Keep answers under 200 words unless asked to elaborate.`,
@@ -569,7 +569,7 @@ Give concise, exam-focused answers. Use bullet points when listing. Keep answers
               style={{ display:"flex", alignItems:"center", gap:"6px", padding:"8px 14px", background:chatOpen?"#00FF00":"none", border:`1px solid ${chatOpen?"#00FF00":bdr}`, borderRadius:"10px", cursor:"pointer", fontSize:"12px", fontWeight:700, color:chatOpen?"#0f172a":text2, fontFamily:"'Lexend',sans-serif", transition:"all 0.2s", flexShrink:0 }}
             >
               <span className="ms" style={{ fontSize:"18px" }}>psychology</span>
-              {chatOpen ? "Hide AI" : "AI Chat"}
+              {chatOpen ? "Hide Neural" : "Neural AI"}
             </button>
           )}
 
@@ -658,7 +658,7 @@ Give concise, exam-focused answers. Use bullet points when listing. Keep answers
                   {msg.role==="ai" && (
                     <div style={{ display:"flex", alignItems:"center", gap:"6px", marginBottom:"6px" }}>
                       <span className="ms" style={{ fontSize:"14px", color:"#00CC00" }}>auto_awesome</span>
-                      <span style={{ fontSize:"10px", fontWeight:700, color:"#00AA00", textTransform:"uppercase", letterSpacing:"0.08em" }}>StudyBuddy AI</span>
+                      <span style={{ fontSize:"10px", fontWeight:700, color:"#00AA00", textTransform:"uppercase", letterSpacing:"0.08em" }}>Neural AI Assistant</span>
                     </div>
                   )}
                   <p style={{ margin:0, whiteSpace:"pre-wrap" }}>{msg.text}</p>
@@ -849,7 +849,7 @@ Give concise, exam-focused answers. Use bullet points when listing. Keep answers
                   {msg.role==="ai" && (
                     <div style={{ display:"flex", alignItems:"center", gap:"6px", marginBottom:"6px" }}>
                       <span className="ms" style={{ fontSize:"14px", color:"#00CC00" }}>auto_awesome</span>
-                      <span style={{ fontSize:"10px", fontWeight:700, color:"#00AA00", textTransform:"uppercase", letterSpacing:"0.08em" }}>StudyBuddy AI</span>
+                      <span style={{ fontSize:"10px", fontWeight:700, color:"#00AA00", textTransform:"uppercase", letterSpacing:"0.08em" }}>Neural AI Assistant</span>
                     </div>
                   )}
                   <p style={{ margin:0, whiteSpace:"pre-wrap" }}>{msg.text}</p>
