@@ -8,18 +8,18 @@ import { ref, onValue, set } from "firebase/database";
 
 /* ── Time-based greeting messages ── */
 const TIME_GREETINGS = {
-  dawn:      { icon: "🌅", title: "The world wakes up with you.", sub: "Early birds catch more than worms — they catch clarity.",    color: "#00FF00" },
-  morning:   { icon: "☀️", title: "Morning light, sharp mind.",  sub: "A fresh day to learn something extraordinary.",               color: "#00FF00" },
-  afternoon: { icon: "🌤️", title: "Keep the momentum going.",   sub: "Afternoon energy is a gift — don't let it drift away.",       color: "#00FF00" },
-  evening:   { icon: "🌇", title: "The golden hour is yours.",   sub: "Wind down, reflect, and let knowledge settle in.",            color: "#00FF00" },
-  night:     { icon: "🌙", title: "Night has a quiet magic.",    sub: "The stars are out. Your focus is unmatched right now.",        color: "#00FF00" },
-  midnight:  { icon: "✨", title: "The world sleeps. You glow.", sub: "Midnight scholars write their own history. Stay the course.", color: "#00FF00" },
+  dawn: { icon: "🌅", title: "The world wakes up with you.", sub: "Early birds catch more than worms — they catch clarity.", color: "#00FF00" },
+  morning: { icon: "☀️", title: "Morning light, sharp mind.", sub: "A fresh day to learn something extraordinary.", color: "#00FF00" },
+  afternoon: { icon: "🌤️", title: "Keep the momentum going.", sub: "Afternoon energy is a gift — don't let it drift away.", color: "#00FF00" },
+  evening: { icon: "🌇", title: "The golden hour is yours.", sub: "Wind down, reflect, and let knowledge settle in.", color: "#00FF00" },
+  night: { icon: "🌙", title: "Night has a quiet magic.", sub: "The stars are out. Your focus is unmatched right now.", color: "#00FF00" },
+  midnight: { icon: "✨", title: "The world sleeps. You glow.", sub: "Midnight scholars write their own history. Stay the course.", color: "#00FF00" },
 };
 
 function getTimeOfDay() {
   const h = new Date().getHours();
-  if (h >= 4  && h < 6)  return "dawn";
-  if (h >= 6  && h < 12) return "morning";
+  if (h >= 4 && h < 6) return "dawn";
+  if (h >= 6 && h < 12) return "morning";
   if (h >= 12 && h < 17) return "afternoon";
   if (h >= 17 && h < 20) return "evening";
   if (h >= 20 && h < 24) return "night";
@@ -104,10 +104,10 @@ function IOSNotifToasts({ uid, isDark, onDone }) {
       get(nRef).then(snap => {
         if (!snap.exists()) {
           const demos = [
-            { title: "Test Reminder",       body: "Your DSA quiz is scheduled for tomorrow at 10 AM.", icon: "quiz",         color: "#f59e0b", createdAt: Date.now(),          read: false },
+            { title: "Test Reminder", body: "Your DSA quiz is scheduled for tomorrow at 10 AM.", icon: "quiz", color: "#f59e0b", createdAt: Date.now(), read: false },
             { title: "New Notes Available", body: "CN Module 4 notes have been uploaded by your peer.", icon: "auto_stories", color: "#22c55e", createdAt: Date.now() - 120000, read: false },
-            { title: "7-Day Streak! 🔥",    body: "You've maintained a 7-day study streak. Keep going!", icon: "emoji_events", color: "#818cf8", createdAt: Date.now() - 3600000, read: true },
-            { title: "Neural AI is ready",  body: "Your last AI session summary has been saved.",        icon: "psychology",   color: "#00CC00", createdAt: Date.now() - 86400000, read: true },
+            { title: "7-Day Streak! 🔥", body: "You've maintained a 7-day study streak. Keep going!", icon: "emoji_events", color: "#818cf8", createdAt: Date.now() - 3600000, read: true },
+            { title: "Neural AI is ready", body: "Your last AI session summary has been saved.", icon: "psychology", color: "#00CC00", createdAt: Date.now() - 86400000, read: true },
           ];
           Promise.all(demos.map(d => push(nRef, d))).then(() => setReady(true));
         } else { setReady(true); }
@@ -134,10 +134,10 @@ function IOSNotifToasts({ uid, isDark, onDone }) {
     if (!items.length) return;
     items.forEach((_, i) => setTimeout(() =>
       setItems(p => p.map((it, idx) => idx === i ? { ...it, visible: true } : it)), i * 150));
-  // eslint-disable-next-line react-hooks/exhaustive-deps
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [ready]);
 
-  const fmt = ts => { const d = Date.now()-ts; if(d<60000) return "just now"; if(d<3600000) return `${Math.floor(d/60000)}m ago`; if(d<86400000) return `${Math.floor(d/3600000)}h ago`; return `${Math.floor(d/86400000)}d ago`; };
+  const fmt = ts => { const d = Date.now() - ts; if (d < 60000) return "just now"; if (d < 3600000) return `${Math.floor(d / 60000)}m ago`; if (d < 86400000) return `${Math.floor(d / 3600000)}h ago`; return `${Math.floor(d / 86400000)}d ago`; };
 
   const dismiss = id => {
     setItems(p => p.map(it => it.id === id ? { ...it, exiting: true } : it));
@@ -178,8 +178,8 @@ function ThemeSwitcher({ theme, setTheme, resolved }) {
   const isDark = resolved === "dark";
   const [hovered, setHovered] = useState(null);
   const opts = [
-    { value: "light",  icon: "light_mode",     label: "Light"  },
-    { value: "dark",   icon: "dark_mode",       label: "Dark"   },
+    { value: "light", icon: "light_mode", label: "Light" },
+    { value: "dark", icon: "dark_mode", label: "Dark" },
     { value: "system", icon: "desktop_windows", label: "System" },
   ];
   return (
@@ -211,9 +211,9 @@ function useTheme() {
   const [theme, setThemeState] = useState("system");
   const [resolved, setResolved] = useState("light");
 
-  useEffect(() => { try { setThemeState(localStorage.getItem(KEY) || "system"); } catch {} }, []);
+  useEffect(() => { try { setThemeState(localStorage.getItem(KEY) || "system"); } catch { } }, []);
 
-  const setTheme = (val) => { try { localStorage.setItem(KEY, val); } catch {} setThemeState(val); };
+  const setTheme = (val) => { try { localStorage.setItem(KEY, val); } catch { } setThemeState(val); };
 
   useEffect(() => {
     const mq = window.matchMedia("(prefers-color-scheme: dark)");
@@ -268,45 +268,58 @@ function NoteCardSkeleton({ isDark }) {
   );
 }
 
+const SEMESTERS = [1, 2, 3, 4, 5, 6];
+
 /* ── Branch Popup ── */
 const BRANCHES = [
-  { code: "IT",    label: "Information Technology",  icon: "computer"     },
-  { code: "CS",    label: "Computer Science",         icon: "code"         },
-  { code: "EXTC",  label: "Electronics & Telecomm.", icon: "memory"       },
-  { code: "MECH",  label: "Mechanical Engineering",  icon: "settings"     },
-  { code: "CIVIL", label: "Civil Engineering",        icon: "architecture" },
-  { code: "ELEC",  label: "Electrical Engineering",  icon: "bolt"         },
+  { code: "IT", label: "Information Technology", icon: "computer" },
+  { code: "CS", label: "Computer Science", icon: "code" },
+  { code: "EXTC", label: "Electronics & Telecomm.", icon: "memory" },
+  { code: "MECH", label: "Mechanical Engineering", icon: "settings" },
+  { code: "CIVIL", label: "Civil Engineering", icon: "architecture" },
+  { code: "ELEC", label: "Electrical Engineering", icon: "bolt" },
 ];
 
 function BranchPopup({ uid, isDark, onComplete }) {
   const [selected, setSelected] = useState("");
+  const [semester, setSemester] = useState(null);
+  const [step, setStep] = useState("select"); // "select" | "confirm"
   const [saving, setSaving] = useState(false);
-
-  const save = async () => {
-    if (!selected) return;
-    setSaving(true);
-    await set(ref(db, `users/${uid}/branch`), selected);
-    setSaving(false);
-    onComplete(selected);
-  };
 
   const bg = isDark ? "rgba(15,23,42,0.98)" : "rgba(255,255,255,0.98)";
   const text1 = isDark ? "#f1f5f9" : "#0f172a";
   const text2 = isDark ? "#64748b" : "#64748b";
-  const cardBg  = (on) => on ? "rgba(0,255,0,0.12)" : (isDark ? "rgba(255,255,255,0.04)" : "rgba(0,0,0,0.02)");
-  const cardBdr = (on) => on ? "rgba(0,255,0,0.6)"  : (isDark ? "rgba(255,255,255,0.08)" : "rgba(0,0,0,0.08)");
+  const text3 = isDark ? "#475569" : "#94a3b8";
+  const cardBg = (on) => on ? "rgba(0,255,0,0.12)" : (isDark ? "rgba(255,255,255,0.04)" : "rgba(0,0,0,0.02)");
+  const cardBdr = (on) => on ? "rgba(0,255,0,0.6)" : (isDark ? "rgba(255,255,255,0.08)" : "rgba(0,0,0,0.08)");
 
-  return (
+  const canProceed = selected && semester;
+
+  const save = async () => {
+    if (!canProceed) return;
+    setSaving(true);
+    await set(ref(db, `users/${uid}/branch`), selected);
+    await set(ref(db, `users/${uid}/semester`), semester);
+    setSaving(false);
+    onComplete({ branch: selected, semester });
+  };
+
+  /* ── Step 1: Select ── */
+  if (step === "select") return (
     <div style={{ position: "fixed", inset: 0, zIndex: 999, background: isDark ? "rgba(8,15,26,0.8)" : "rgba(15,23,42,0.55)", backdropFilter: "blur(20px)", WebkitBackdropFilter: "blur(20px)", display: "flex", alignItems: "center", justifyContent: "center", padding: "16px" }}>
-      <div style={{ width: "100%", maxWidth: "520px", background: bg, borderRadius: "28px", border: `1px solid ${isDark ? "rgba(0,255,0,0.2)" : "rgba(0,200,0,0.2)"}`, padding: "44px 36px", boxShadow: "0 40px 100px rgba(0,0,0,0.3)", animation: "popIn 0.35s cubic-bezier(0.34,1.56,0.64,1)" }}>
+      <div style={{ width: "100%", maxWidth: "540px", background: bg, borderRadius: "28px", border: `1px solid ${isDark ? "rgba(0,255,0,0.2)" : "rgba(0,200,0,0.2)"}`, padding: "44px 36px", boxShadow: "0 40px 100px rgba(0,0,0,0.3)", animation: "popIn 0.35s cubic-bezier(0.34,1.56,0.64,1)", maxHeight: "90vh", overflowY: "auto" }}>
+        {/* Header */}
         <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: "8px", marginBottom: "32px" }}>
           <div style={{ width: "56px", height: "56px", background: "#00FF00", borderRadius: "14px", display: "flex", alignItems: "center", justifyContent: "center", boxShadow: "0 0 24px rgba(0,255,0,0.4)", marginBottom: "8px" }}>
             <span style={{ fontFamily: "'Material Symbols Outlined'", fontSize: "30px", color: "#0f172a", lineHeight: 1 }}>school</span>
           </div>
-          <h2 style={{ fontSize: "22px", fontWeight: 900, color: text1, margin: 0, letterSpacing: "-0.03em" }}>Choose Your Branch</h2>
-          <p style={{ fontSize: "13px", color: text2, fontWeight: 500, margin: 0, textAlign: "center" }}>We'll personalise your StudyBuddy experience based on your branch.</p>
+          <h2 style={{ fontSize: "22px", fontWeight: 900, color: text1, margin: 0, letterSpacing: "-0.03em" }}>Set Up Your Profile</h2>
+          <p style={{ fontSize: "13px", color: text2, fontWeight: 500, margin: 0, textAlign: "center" }}>Choose your branch and semester. <strong style={{ color: "#f87171" }}>This cannot be changed later.</strong></p>
         </div>
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(2,1fr)", gap: "12px", marginBottom: "28px" }}>
+
+        {/* Branch grid */}
+        <p style={{ fontSize: "11px", fontWeight: 800, color: text3, textTransform: "uppercase", letterSpacing: "0.1em", margin: "0 0 12px" }}>Branch</p>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(2,1fr)", gap: "10px", marginBottom: "28px" }}>
           {BRANCHES.map(({ code, label, icon }) => {
             const on = selected === code;
             return (
@@ -324,14 +337,86 @@ function BranchPopup({ uid, isDark, onComplete }) {
             );
           })}
         </div>
-        <button onClick={save} disabled={!selected || saving}
-          style={{ width: "100%", height: "52px", background: selected ? "#00FF00" : (isDark ? "rgba(255,255,255,0.06)" : "rgba(0,0,0,0.05)"), color: selected ? "#0f172a" : (isDark ? "#475569" : "#94a3b8"), border: "none", borderRadius: "14px", fontSize: "15px", fontWeight: 900, cursor: selected ? "pointer" : "not-allowed", fontFamily: "'Inter',sans-serif", transition: "all 0.25s cubic-bezier(0.34,1.56,0.64,1)", boxShadow: selected ? "0 8px 28px rgba(0,255,0,0.38)" : "none", display: "flex", alignItems: "center", justifyContent: "center", gap: "8px" }}>
-          {saving && <div style={{ width: "20px", height: "20px", border: "2px solid rgba(0,0,0,0.2)", borderTopColor: "#0f172a", borderRadius: "9999px", animation: "spin 0.7s linear infinite" }} />}
-          {saving ? "Saving…" : "Continue to Dashboard"}
+
+        {/* Semester selector */}
+        <p style={{ fontSize: "11px", fontWeight: 800, color: text3, textTransform: "uppercase", letterSpacing: "0.1em", margin: "0 0 12px" }}>Current Semester</p>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(6,1fr)", gap: "8px", marginBottom: "32px" }}>
+          {SEMESTERS.map(s => {
+            const on = semester === s;
+            return (
+              <button key={s} onClick={() => setSemester(s)}
+                style={{ height: "48px", borderRadius: "12px", border: `1.5px solid ${cardBdr(on)}`, background: cardBg(on), cursor: "pointer", fontSize: "14px", fontWeight: 900, color: on ? "#00FF00" : text2, transition: "all 0.2s cubic-bezier(0.34,1.56,0.64,1)", boxShadow: on ? "0 0 14px rgba(0,255,0,0.25)" : "none", transform: on ? "scale(1.08)" : "scale(1)", fontFamily: "'Inter',sans-serif" }}>
+                {s}
+              </button>
+            );
+          })}
+        </div>
+
+        {/* CTA */}
+        <button onClick={() => setStep("confirm")} disabled={!canProceed}
+          style={{ width: "100%", height: "52px", background: canProceed ? "#00FF00" : (isDark ? "rgba(255,255,255,0.06)" : "rgba(0,0,0,0.05)"), color: canProceed ? "#0f172a" : (isDark ? "#475569" : "#94a3b8"), border: "none", borderRadius: "14px", fontSize: "15px", fontWeight: 900, cursor: canProceed ? "pointer" : "not-allowed", fontFamily: "'Inter',sans-serif", transition: "all 0.25s cubic-bezier(0.34,1.56,0.64,1)", boxShadow: canProceed ? "0 8px 28px rgba(0,255,0,0.38)" : "none" }}>
+          Review & Confirm →
         </button>
       </div>
     </div>
   );
+
+  /* ── Step 2: Confirmation ── */
+  return (
+  <div style={{ position: "fixed", inset: 0, zIndex: 999, background: isDark ? "rgba(8,15,26,0.88)" : "rgba(15,23,42,0.6)", backdropFilter: "blur(20px)", WebkitBackdropFilter: "blur(20px)", display: "flex", alignItems: "center", justifyContent: "center", padding: "16px" }}>
+    <div style={{ width: "100%", maxWidth: "420px", background: bg, borderRadius: "28px", border: "1px solid rgba(0,255,0,0.25)", padding: "44px 36px", boxShadow: "0 40px 100px rgba(0,0,0,0.35), 0 0 0 1px rgba(0,255,0,0.08)", animation: "popIn 0.32s cubic-bezier(0.34,1.56,0.64,1)" }}>
+
+      {/* Header */}
+      <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: "10px", marginBottom: "32px" }}>
+        <div style={{ width: "60px", height: "60px", borderRadius: "16px", background: "rgba(0,255,0,0.1)", border: "1.5px solid rgba(0,255,0,0.3)", display: "flex", alignItems: "center", justifyContent: "center", marginBottom: "4px", boxShadow: "0 0 20px rgba(0,255,0,0.15)" }}>
+          <span style={{ fontFamily: "'Material Symbols Outlined'", fontSize: "32px", color: "#00FF00", lineHeight: 1 }}>lock</span>
+        </div>
+        <h2 style={{ fontSize: "21px", fontWeight: 900, color: text1, margin: 0, letterSpacing: "-0.03em", textAlign: "center" }}>Confirm Your Details</h2>
+        <p style={{ fontSize: "13px", color: text2, fontWeight: 600, margin: 0, textAlign: "center", lineHeight: 1.6, maxWidth: "280px" }}>
+          ⚠️ These details are <span style={{ color: "#00FF00", fontWeight: 800 }}>permanent</span> and cannot be changed after confirmation.
+        </p>
+      </div>
+
+      {/* Summary card */}
+      <div style={{ background: isDark ? "rgba(0,255,0,0.04)" : "rgba(0,200,0,0.04)", border: isDark ? "1px solid rgba(0,255,0,0.12)" : "1px solid rgba(0,200,0,0.15)", borderRadius: "16px", padding: "20px 24px", marginBottom: "28px", display: "flex", flexDirection: "column", gap: "16px" }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+          <span style={{ fontSize: "11px", fontWeight: 800, color: text3, textTransform: "uppercase", letterSpacing: "0.1em" }}>Branch</span>
+          <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+            <span style={{ fontSize: "15px", fontWeight: 900, color: "#00FF00" }}>{selected}</span>
+            <span style={{ fontSize: "11px", color: text2, fontWeight: 600 }}>{BRANCHES.find(b => b.code === selected)?.label}</span>
+          </div>
+        </div>
+        <div style={{ height: "1px", background: isDark ? "rgba(0,255,0,0.08)" : "rgba(0,200,0,0.12)" }} />
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+          <span style={{ fontSize: "11px", fontWeight: 800, color: text3, textTransform: "uppercase", letterSpacing: "0.1em" }}>Semester</span>
+          <span style={{ fontSize: "15px", fontWeight: 900, color: "#00FF00" }}>Semester {semester}</span>
+        </div>
+        <div style={{ height: "1px", background: isDark ? "rgba(0,255,0,0.08)" : "rgba(0,200,0,0.12)" }} />
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+          <span style={{ fontSize: "11px", fontWeight: 800, color: text3, textTransform: "uppercase", letterSpacing: "0.1em" }}>College</span>
+          <span style={{ fontSize: "13px", fontWeight: 800, color: text2 }}>TCET</span>
+        </div>
+      </div>
+
+      {/* Buttons */}
+      <div style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
+        <button onClick={save} disabled={saving}
+          style={{ width: "100%", height: "52px", background: "#00FF00", color: "#0f172a", border: "none", borderRadius: "14px", fontSize: "15px", fontWeight: 900, cursor: saving ? "not-allowed" : "pointer", fontFamily: "'Inter',sans-serif", transition: "all 0.22s", boxShadow: "0 8px 28px rgba(0,255,0,0.38)", display: "flex", alignItems: "center", justifyContent: "center", gap: "8px" }}
+          onMouseEnter={e => { if (!saving) { e.currentTarget.style.boxShadow = "0 12px 36px rgba(0,255,0,0.5)"; e.currentTarget.style.transform = "translateY(-1px)"; } }}
+          onMouseLeave={e => { if (!saving) { e.currentTarget.style.boxShadow = "0 8px 28px rgba(0,255,0,0.38)"; e.currentTarget.style.transform = "translateY(0)"; } }}>
+          {saving && <div style={{ width: "18px", height: "18px", border: "2px solid rgba(0,0,0,0.2)", borderTopColor: "#0f172a", borderRadius: "9999px", animation: "spin 0.7s linear infinite" }} />}
+          {saving ? "Saving…" : "Confirm & Lock In"}
+        </button>
+        <button onClick={() => setStep("select")} disabled={saving}
+          style={{ width: "100%", height: "44px", background: "none", border: isDark ? "1px solid rgba(255,255,255,0.1)" : "1px solid rgba(0,0,0,0.08)", borderRadius: "12px", fontSize: "13px", fontWeight: 700, color: text2, cursor: "pointer", fontFamily: "'Inter',sans-serif", transition: "border-color 0.18s, color 0.18s" }}
+          onMouseEnter={e => { e.currentTarget.style.borderColor = "rgba(0,255,0,0.4)"; e.currentTarget.style.color = text1; }}
+          onMouseLeave={e => { e.currentTarget.style.borderColor = isDark ? "rgba(255,255,255,0.1)" : "rgba(0,0,0,0.08)"; e.currentTarget.style.color = text2; }}>
+          ← Go Back & Edit
+        </button>
+      </div>
+    </div>
+  </div>
+);
 }
 
 /* ── Stat Card ── */
@@ -385,18 +470,18 @@ export default function Dashboard() {
   const { theme, setTheme, resolved } = useTheme();
   const isDark = resolved === "dark";
 
-  const [authUser,      setAuthUser]      = useState(null);
-  const [userData,      setUserData]      = useState(null);
-  const [loading,       setLoading]       = useState(true);
-  const [showBranch,    setShowBranch]    = useState(false);
-  const [activePage,    setActivePage]    = useState("dashboard");
-  const [sidebarOpen,   setSidebarOpen]   = useState(true);
-  const [showGreeting,  setShowGreeting]  = useState(false);
-  const [showNotifs,    setShowNotifs]    = useState(false);
+  const [authUser, setAuthUser] = useState(null);
+  const [userData, setUserData] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [showBranch, setShowBranch] = useState(false);
+  const [activePage, setActivePage] = useState("dashboard");
+  const [sidebarOpen, setSidebarOpen] = useState(true);
+  const [showGreeting, setShowGreeting] = useState(false);
+  const [showNotifs, setShowNotifs] = useState(false);
   const [showIOSNotifs, setShowIOSNotifs] = useState(false);
-  const [mobileSearch,  setMobileSearch]  = useState(false);
-  const notifRef  = useRef(null);
-  const notifBtn  = useRef(null);
+  const [mobileSearch, setMobileSearch] = useState(false);
+  const notifRef = useRef(null);
+  const notifBtn = useRef(null);
   const searchRef = useRef(null);
 
   /* Close notifs on outside click */
@@ -442,43 +527,43 @@ export default function Dashboard() {
   }, [router]);
 
   /* Derived colours */
-  const bg      = isDark ? "#080f1a"             : "#f5f8f5";
-  const sidebar  = isDark ? "rgba(8,15,26,0.96)" : "rgba(255,255,255,0.75)";
-  const header   = isDark ? "rgba(8,15,26,0.92)" : "rgba(255,255,255,0.75)";
-  const card     = isDark ? "rgba(15,23,42,0.8)" : "#ffffff";
-  const text1    = isDark ? "#f1f5f9"            : "#0f172a";
-  const text2    = isDark ? "#94a3b8"            : "#475569";
-  const text3    = isDark ? "#475569"            : "#94a3b8";
-  const bdr      = isDark ? "rgba(0,255,0,0.1)"  : "rgba(0,200,0,0.1)";
-  const inputBg  = isDark ? "rgba(255,255,255,0.05)" : "rgba(0,200,0,0.05)";
-  const rightBg  = isDark ? "rgba(8,15,26,0.6)"  : "rgba(255,255,255,0.5)";
+  const bg = isDark ? "#080f1a" : "#f5f8f5";
+  const sidebar = isDark ? "rgba(8,15,26,0.96)" : "rgba(255,255,255,0.75)";
+  const header = isDark ? "rgba(8,15,26,0.92)" : "rgba(255,255,255,0.75)";
+  const card = isDark ? "rgba(15,23,42,0.8)" : "#ffffff";
+  const text1 = isDark ? "#f1f5f9" : "#0f172a";
+  const text2 = isDark ? "#94a3b8" : "#475569";
+  const text3 = isDark ? "#475569" : "#94a3b8";
+  const bdr = isDark ? "rgba(0,255,0,0.1)" : "rgba(0,200,0,0.1)";
+  const inputBg = isDark ? "rgba(255,255,255,0.05)" : "rgba(0,200,0,0.05)";
+  const rightBg = isDark ? "rgba(8,15,26,0.6)" : "rgba(255,255,255,0.5)";
 
-  const firstName     = userData?.firstName || authUser?.displayName?.split(" ")[0] || "";
-  const fullName      = userData?.fullName  || authUser?.displayName || "";
-  const photoURL      = userData?.photoURL  || authUser?.photoURL    || "";
-  const branch        = userData?.branch    || null;
-  const email         = userData?.email     || authUser?.email       || "";
-  const studyHours    = userData?.stats?.studyHours     ?? 0;
-  const aiQuestions   = userData?.stats?.aiQuestions    ?? 0;
-  const solvedProblems= userData?.stats?.solvedProblems ?? 0;
-  const streak        = userData?.stats?.streak         ?? 0;
+  const firstName = userData?.firstName || authUser?.displayName?.split(" ")[0] || "";
+  const fullName = userData?.fullName || authUser?.displayName || "";
+  const photoURL = userData?.photoURL || authUser?.photoURL || "";
+  const branch = userData?.branch || null;
+  const email = userData?.email || authUser?.email || "";
+  const studyHours = userData?.stats?.studyHours ?? 0;
+  const aiQuestions = userData?.stats?.aiQuestions ?? 0;
+  const solvedProblems = userData?.stats?.solvedProblems ?? 0;
+  const streak = userData?.stats?.streak ?? 0;
 
   const stats = [
-    { icon: "schedule",              label: "Study Hours",     value: studyHours     ? `${studyHours}h` : "—", subtext: studyHours     ? "+12% vs last week" : "No data yet", progress: Math.min((studyHours/50)*100,100)     },
-    { icon: "question_answer",       label: "AI Questions",    value: aiQuestions    || "—",                   subtext: aiQuestions     ? "+5% vs last week"  : "No data yet", progress: Math.min((aiQuestions/200)*100,100)   },
-    { icon: "task_alt",              label: "Solved Problems", value: solvedProblems || "—",                   subtext: solvedProblems  ? "+8% vs last week"  : "No data yet", progress: Math.min((solvedProblems/100)*100,100)},
-    { icon: "local_fire_department", label: "Active Streak",   value: streak         ? `${streak} days` : "—", subtext: streak         ? "Keep it up!"       : "Start today!", progress: Math.min((streak/30)*100,100)         },
+    { icon: "schedule", label: "Study Hours", value: studyHours ? `${studyHours}h` : "—", subtext: studyHours ? "+12% vs last week" : "No data yet", progress: Math.min((studyHours / 50) * 100, 100) },
+    { icon: "question_answer", label: "AI Questions", value: aiQuestions || "—", subtext: aiQuestions ? "+5% vs last week" : "No data yet", progress: Math.min((aiQuestions / 200) * 100, 100) },
+    { icon: "task_alt", label: "Solved Problems", value: solvedProblems || "—", subtext: solvedProblems ? "+8% vs last week" : "No data yet", progress: Math.min((solvedProblems / 100) * 100, 100) },
+    { icon: "local_fire_department", label: "Active Streak", value: streak ? `${streak} days` : "—", subtext: streak ? "Keep it up!" : "Start today!", progress: Math.min((streak / 30) * 100, 100) },
   ];
 
   const recentNotes = userData?.recentNotes ? Object.values(userData.recentNotes) : [];
 
   const navItems = [
-    { id: "dashboard", icon: "dashboard",   label: "Dashboard" },
-    { id: "notes",     icon: "description", label: "Notes"     },
-    { id: "test",      icon: "quiz",        label: "Test"      },
-    { id: "ai",        icon: "psychology",  label: "Neural AI" },
-    { id: "profile",   icon: "person",      label: "Profile"   },
-    { id: "settings",  icon: "settings",    label: "Settings"  },
+    { id: "dashboard", icon: "dashboard", label: "Dashboard" },
+    { id: "notes", icon: "description", label: "Notes" },
+    { id: "test", icon: "quiz", label: "Test" },
+    { id: "ai", icon: "psychology", label: "Neural AI" },
+    { id: "profile", icon: "person", label: "Profile" },
+    { id: "settings", icon: "settings", label: "Settings" },
   ];
 
   const hour = new Date().getHours();
@@ -487,11 +572,11 @@ export default function Dashboard() {
   /* Page title map */
   const pageTitles = {
     dashboard: "Dashboard",
-    notes:     "My Notes",
-    test:      "Tests & Quizzes",
-    ai:        "Neural AI",
-    profile:   "Profile",
-    settings:  "Settings",
+    notes: "My Notes",
+    test: "Tests & Quizzes",
+    ai: "Neural AI",
+    profile: "Profile",
+    settings: "Settings",
   };
 
   /* Loading skeleton */
@@ -617,12 +702,12 @@ export default function Dashboard() {
             </section>
           </>
         );
-      case "notes":    return <PagePlaceholder title="My Notes"       icon="description" isDark={isDark} />;
-      case "test":     return <PagePlaceholder title="Tests & Quizzes" icon="quiz"        isDark={isDark} />;
-      case "ai":       return <PagePlaceholder title="Neural AI"       icon="psychology"  isDark={isDark} />;
-      case "profile":  return <PagePlaceholder title="My Profile"      icon="person"      isDark={isDark} />;
-      case "settings": return <PagePlaceholder title="Settings"        icon="settings"    isDark={isDark} />;
-      default:         return null;
+      case "notes": return <PagePlaceholder title="My Notes" icon="description" isDark={isDark} />;
+      case "test": return <PagePlaceholder title="Tests & Quizzes" icon="quiz" isDark={isDark} />;
+      case "ai": return <PagePlaceholder title="Neural AI" icon="psychology" isDark={isDark} />;
+      case "profile": return <PagePlaceholder title="My Profile" icon="person" isDark={isDark} />;
+      case "settings": return <PagePlaceholder title="Settings" icon="settings" isDark={isDark} />;
+      default: return null;
     }
   };
 
@@ -632,8 +717,8 @@ export default function Dashboard() {
       {photoURL
         ? <img src={photoURL} alt={fullName} style={{ width: "100%", height: "100%", objectFit: "cover" }} referrerPolicy="no-referrer" />
         : <div style={{ width: "100%", height: "100%", display: "flex", alignItems: "center", justifyContent: "center", background: "#00FF00", color: "#0f172a", fontSize: `${size * 0.4}px`, fontWeight: 900, fontFamily: "'Inter',sans-serif" }}>
-            {firstName ? firstName.charAt(0).toUpperCase() : "?"}
-          </div>
+          {firstName ? firstName.charAt(0).toUpperCase() : "?"}
+        </div>
       }
     </div>
   );
@@ -784,7 +869,11 @@ export default function Dashboard() {
       )}
 
       {showBranch && authUser && (
-        <BranchPopup uid={authUser.uid} isDark={isDark} onComplete={b => { setUserData(prev => ({ ...prev, branch: b })); setShowBranch(false); }} />
+        <BranchPopup uid={authUser.uid} isDark={isDark} // In BranchPopup usage — update the onComplete handler:
+          onComplete={({ branch: b, semester: s }) => {
+            setUserData(prev => ({ ...prev, branch: b, semester: s }));
+            setShowBranch(false);
+          }} />
       )}
 
       <div className="dash-root">
