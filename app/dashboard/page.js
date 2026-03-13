@@ -282,7 +282,7 @@ const BRANCHES = [
 
 function BranchPopup({ uid, isDark, onComplete }) {
   const [selected, setSelected] = useState("");
-  const [semester, setSemester] = useState(null);
+  const [sem, setSemester] = useState(null);
   const [step, setStep] = useState("select"); // "select" | "confirm"
   const [saving, setSaving] = useState(false);
 
@@ -293,15 +293,15 @@ function BranchPopup({ uid, isDark, onComplete }) {
   const cardBg = (on) => on ? "rgba(0,255,0,0.12)" : (isDark ? "rgba(255,255,255,0.04)" : "rgba(0,0,0,0.02)");
   const cardBdr = (on) => on ? "rgba(0,255,0,0.6)" : (isDark ? "rgba(255,255,255,0.08)" : "rgba(0,0,0,0.08)");
 
-  const canProceed = selected && semester;
+  const canProceed = selected && sem;
 
   const save = async () => {
     if (!canProceed) return;
     setSaving(true);
     await set(ref(db, `users/${uid}/branch`), selected);
-    await set(ref(db, `users/${uid}/semester`), semester);
+    await set(ref(db, `users/${uid}/sem`), sem);
     setSaving(false);
-    onComplete({ branch: selected, semester });
+    onComplete({ branch: selected, sem });
   };
 
   /* ── Step 1: Select ── */
@@ -314,7 +314,7 @@ function BranchPopup({ uid, isDark, onComplete }) {
             <span style={{ fontFamily: "'Material Symbols Outlined'", fontSize: "30px", color: "#0f172a", lineHeight: 1 }}>school</span>
           </div>
           <h2 style={{ fontSize: "22px", fontWeight: 900, color: text1, margin: 0, letterSpacing: "-0.03em" }}>Set Up Your Profile</h2>
-          <p style={{ fontSize: "13px", color: text2, fontWeight: 500, margin: 0, textAlign: "center" }}>Choose your branch and semester. <strong style={{ color: "#f87171" }}>This cannot be changed later.</strong></p>
+          <p style={{ fontSize: "13px", color: text2, fontWeight: 500, margin: 0, textAlign: "center" }}>Choose your branch and sem. <strong style={{ color: "#f87171" }}>This cannot be changed later.</strong></p>
         </div>
 
         {/* Branch grid */}
@@ -338,11 +338,11 @@ function BranchPopup({ uid, isDark, onComplete }) {
           })}
         </div>
 
-        {/* Semester selector */}
-        <p style={{ fontSize: "11px", fontWeight: 800, color: text3, textTransform: "uppercase", letterSpacing: "0.1em", margin: "0 0 12px" }}>Current Semester</p>
+        {/* sem selector */}
+        <p style={{ fontSize: "11px", fontWeight: 800, color: text3, textTransform: "uppercase", letterSpacing: "0.1em", margin: "0 0 12px" }}>Current sem</p>
         <div style={{ display: "grid", gridTemplateColumns: "repeat(6,1fr)", gap: "8px", marginBottom: "32px" }}>
           {SEMESTERS.map(s => {
-            const on = semester === s;
+            const on = sem === s;
             return (
               <button key={s} onClick={() => setSemester(s)}
                 style={{ height: "48px", borderRadius: "12px", border: `1.5px solid ${cardBdr(on)}`, background: cardBg(on), cursor: "pointer", fontSize: "14px", fontWeight: 900, color: on ? "#00FF00" : text2, transition: "all 0.2s cubic-bezier(0.34,1.56,0.64,1)", boxShadow: on ? "0 0 14px rgba(0,255,0,0.25)" : "none", transform: on ? "scale(1.08)" : "scale(1)", fontFamily: "'Inter',sans-serif" }}>
@@ -388,8 +388,8 @@ function BranchPopup({ uid, isDark, onComplete }) {
         </div>
         <div style={{ height: "1px", background: isDark ? "rgba(0,255,0,0.08)" : "rgba(0,200,0,0.12)" }} />
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-          <span style={{ fontSize: "11px", fontWeight: 800, color: text3, textTransform: "uppercase", letterSpacing: "0.1em" }}>Semester</span>
-          <span style={{ fontSize: "15px", fontWeight: 900, color: "#00FF00" }}>Semester {semester}</span>
+          <span style={{ fontSize: "11px", fontWeight: 800, color: text3, textTransform: "uppercase", letterSpacing: "0.1em" }}>sem</span>
+          <span style={{ fontSize: "15px", fontWeight: 900, color: "#00FF00" }}>sem {sem}</span>
         </div>
         <div style={{ height: "1px", background: isDark ? "rgba(0,255,0,0.08)" : "rgba(0,200,0,0.12)" }} />
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
@@ -870,8 +870,8 @@ export default function Dashboard() {
 
       {showBranch && authUser && (
         <BranchPopup uid={authUser.uid} isDark={isDark} // In BranchPopup usage — update the onComplete handler:
-          onComplete={({ branch: b, semester: s }) => {
-            setUserData(prev => ({ ...prev, branch: b, semester: s }));
+          onComplete={({ branch: b, se: s }) => {
+            setUserData(prev => ({ ...prev, branch: b, sem: s }));
             setShowBranch(false);
           }} />
       )}
