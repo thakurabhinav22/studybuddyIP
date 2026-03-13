@@ -63,20 +63,52 @@ async function loadPDF(db, branch, sem, subject, moduleKey, onProgress) {
 }
 
 /* ─────────────────────────────────────────
-   GROQ API
+   GROQ API  — proxied through /api/groq
+   Key lives in GROQ_API_KEY (server-only,
+   no NEXT_PUBLIC_ prefix needed).
 ───────────────────────────────────────── */
-const GROQ_KEY          = process.env.NEXT_PUBLIC_GROQ_API_KEY ?? "";
 const GROQ_VISION_MODEL = "meta-llama/llama-4-scout-17b-16e-instruct";
 const GROQ_TEXT_MODEL   = "llama-3.3-70b-versatile";
 
 async function callGroq({ messages, model, max_tokens = 1200 }) {
-  const res = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+  const res = await fetch("/api/groq", {
     method: "POST",
-    headers: { "Content-Type": "application/json", "Authorization": `Bearer ${GROQ_KEY}` },
+    headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ model, messages, max_tokens, temperature: 0.4 }),
   });
-  if (!res.ok) { const e = await res.json().catch(() => ({})); throw new Error(e?.error?.message || `Groq ${res.status}`); }
+  if (!res.ok) { const e = await res.json().catch(() => ({})); throw new Error(e?.error?.message || `API error ${res.status}`); }
   return (await res.json()).choices?.[0]?.message?.content || "No response.";
+}
+
+/* ─────────────────────────────────────────
+   SHORT ANSWER AI GRADER
+   Returns 0-100 similarity score
+───────────────────────────────────────── */
+async function gradeShortAnswers(questions, userAnswers) {
+  const pairs = questions.map((q, i) => ({
+    q: q.q,
+    model: q.answer,
+    user: userAnswers[i] || "(no answer)",
+    idx: i,
+  }));
+  const prompt = `You are a strict but fair exam grader. Grade each student answer vs the model answer.
+Return ONLY a JSON array — no markdown, no prose:
+[{"idx":0,"score":85,"feedback":"Brief 1-line feedback"},...]
+Score 0-100: 100=perfect match in meaning, 70+=mostly correct, 40-69=partially correct, 0-39=wrong/missing.
+Be strict — penalize vague or incomplete answers. Award partial credit for correct concepts.
+Questions to grade:
+${JSON.stringify(pairs, null, 1)}`;
+  try {
+    const res = await callGroq({
+      model: GROQ_TEXT_MODEL,
+      max_tokens: 800,
+      messages: [{ role: "user", content: prompt }],
+    });
+    const cleaned = res.trim().replace(/^```json?\s*/i,"").replace(/```\s*$/i,"").trim();
+    const match = cleaned.match(/\[[\s\S]*\]/);
+    if (!match) return null;
+    return JSON.parse(match[0]);
+  } catch { return null; }
 }
 
 async function renderPageToBase64(pdfDoc, pageNum, scale = 1.5) {
@@ -92,10 +124,42 @@ async function renderPageToBase64(pdfDoc, pageNum, scale = 1.5) {
 /* ─────────────────────────────────────────
    /command PARSER
 ───────────────────────────────────────── */
+/* ─────────────────────────────────────────
+   SLASH COMMANDS REGISTRY
+───────────────────────────────────────── */
+const SLASH_COMMANDS = [
+  { cmd:"/current",     icon:"pin",          desc:"Page-only strict answer — no extra context",          color:"#00CC00" },
+  { cmd:"/draw",        icon:"draw",         desc:"Draw an ASCII diagram of the concept on this page",   color:"#a78bfa" },
+  { cmd:"/explain",     icon:"school",       desc:"Explain with a real-world example",                   color:"#38bdf8" },
+  { cmd:"/fullexplain", icon:"auto_stories", desc:"Full detailed explanation with flow + exam tips",     color:"#fb923c" },
+  { cmd:"/diagram",     icon:"account_tree", desc:"Generate a structured flowchart / diagram",           color:"#34d399" },
+];
+
 function parseCommand(input) {
   const t = input.trim();
-  if (t.startsWith("/current")) return { command: "current", query: t.slice(8).trim() };
+  for (const { cmd } of SLASH_COMMANDS) {
+    if (t.startsWith(cmd + " ") || t === cmd) return { command: cmd.slice(1), query: t.slice(cmd.length).trim() };
+  }
   return { command: null, query: t };
+}
+
+function buildSystemPrompt(command, moduleTitle, moduleKey, subject, sem, currentPage, totalPages) {
+  const base = `You are Neural AI — expert engineering exam assistant in a PDF viewer.
+Module: "${moduleTitle || moduleKey}" · Subject: ${subject} · Semester: ${sem} · Page: ${currentPage}/${totalPages}.`;
+  switch (command) {
+    case "current":
+      return base + `\nSTRICT PAGE-ONLY MODE: Answer ONLY from what is visible on the current page image. No outside knowledge.\nBe concise. Bullet points where needed. Max 250 words.`;
+    case "draw":
+      return base + `\nDRAW MODE: Create a clear ASCII/text diagram of the concept from the page.\nUse box-drawing characters, arrows (→ ← ↑ ↓), labeled boxes [  ], and structured layouts.\nMake it educational with a ## Title. Show relationships and flow visually.`;
+    case "explain":
+      return base + `\nEXPLAIN WITH EXAMPLE MODE: Explain the concept then give ONE concrete real-world example.\nFormat:\n## Concept\n[clear explanation]\n## Real-world Example\n[relatable scenario]\n## How It Applies\n[connection back to the engineering topic]\nMax 300 words.`;
+    case "fullexplain":
+      return base + `\nFULL EXPLANATION MODE: Give a thorough structured explanation of the entire topic on this page.\nInclude: overview, step-by-step working, key formulas/rules, worked example, and ## Exam Tips.\nUse ## headings, bullet points, and examples. Max 600 words.`;
+    case "diagram":
+      return base + `\nDIAGRAM MODE: Generate a detailed structured diagram using ASCII art.\nUse → arrows, [Box] labels, ┌─┐ borders where helpful, indentation for hierarchy.\nAdd ## Title and ## Legend. Make every element clearly labeled.`;
+    default:
+      return base + `\nGive concise, exam-focused answers. Use bullet points when listing. Max 250 words unless asked.`;
+  }
 }
 
 /* ─────────────────────────────────────────
@@ -257,10 +321,12 @@ function QuizModal({ isDark, onClose, pdfDoc, currentPage, totalPages, moduleTit
   const [mode, setMode]         = useState(null);    // "mcq" | "short"
   const [count, setCount]       = useState(5);
   const [scope, setScope]       = useState("page");  // "page" | "pdf"
-  const [questions, setQuestions] = useState([]);
-  const [answers, setAnswers]   = useState({});
-  const [revealed, setRevealed] = useState(false);
-  const [genError, setGenError] = useState("");
+  const [questions, setQuestions]   = useState([]);
+  const [answers, setAnswers]       = useState({});
+  const [revealed, setRevealed]     = useState(false);
+  const [grading,  setGrading]      = useState(false);
+  const [grades,   setGrades]       = useState(null); // [{idx, score, feedback}]
+  const [genError, setGenError]     = useState("");
   const [genProgress, setGenProgress] = useState("");
 
   const canStart = !!mode;
@@ -330,6 +396,19 @@ function QuizModal({ isDark, onClose, pdfDoc, currentPage, totalPages, moduleTit
 
   const score = questions.reduce((acc, q, i) => acc + (mode === "mcq" && answers[i] === q.answer ? 1 : 0), 0);
   const answeredCount = Object.keys(answers).length;
+
+  // Short answer: avg AI grade score
+  const shortScore = grades ? Math.round(grades.reduce((s, g) => s + g.score, 0) / grades.length) : null;
+
+  const handleReveal = async () => {
+    if (mode === "short") {
+      setGrading(true);
+      const result = await gradeShortAnswers(questions, answers);
+      setGrades(result);
+      setGrading(false);
+    }
+    setRevealed(true);
+  };
 
   /* ── SETUP ── */
   if (phase === "setup") return (
@@ -428,16 +507,35 @@ function QuizModal({ isDark, onClose, pdfDoc, currentPage, totalPages, moduleTit
         {/* Questions */}
         <div style={{ flex:1, overflowY:"auto", padding:"16px 0", display:"flex", flexDirection:"column", gap:"16px" }}>
           {questions.map((q, i) => {
-            const userAns  = answers[i];
+            const userAns   = answers[i];
             const isCorrect = userAns === q.answer;
+            const grade     = grades?.find(g => g.idx === i);
+            const gradeScore = grade?.score ?? null;
+            const gradeColor = gradeScore === null ? "#00CC00"
+              : gradeScore >= 70 ? "#00CC00"
+              : gradeScore >= 40 ? "#f59e0b"
+              : "#ef4444";
+
+            const cardBorder = revealed
+              ? mode === "mcq"
+                ? (isCorrect ? "rgba(0,255,0,0.35)" : "rgba(239,68,68,0.35)")
+                : gradeScore !== null
+                  ? (gradeScore >= 70 ? "rgba(0,255,0,0.35)" : gradeScore >= 40 ? "rgba(245,158,11,0.35)" : "rgba(239,68,68,0.35)")
+                  : "rgba(0,255,0,0.35)"
+              : (userAns !== undefined ? "rgba(0,255,0,0.2)" : bdr);
+            const cardBg = revealed
+              ? mode === "mcq"
+                ? (isCorrect ? "rgba(0,255,0,0.05)" : "rgba(239,68,68,0.05)")
+                : gradeScore !== null
+                  ? (gradeScore >= 70 ? "rgba(0,255,0,0.05)" : gradeScore >= 40 ? "rgba(245,158,11,0.05)" : "rgba(239,68,68,0.05)")
+                  : "rgba(0,255,0,0.05)"
+              : (isDark ? "rgba(255,255,255,0.02)" : "rgba(0,200,0,0.02)");
 
             return (
               <div key={i} style={{
                 padding:"16px", borderRadius:"14px",
-                border:`1px solid ${revealed ? (isCorrect||mode==="short" ? "rgba(0,255,0,0.35)" : "rgba(239,68,68,0.35)") : (userAns!==undefined?"rgba(0,255,0,0.2)":bdr)}`,
-                background: revealed
-                  ? (isCorrect||mode==="short" ? "rgba(0,255,0,0.05)" : "rgba(239,68,68,0.05)")
-                  : (isDark?"rgba(255,255,255,0.02)":"rgba(0,200,0,0.02)"),
+                border:`1px solid ${cardBorder}`,
+                background: cardBg,
                 transition:"all 0.25s",
               }}>
                 {/* Question */}
@@ -491,18 +589,40 @@ function QuizModal({ isDark, onClose, pdfDoc, currentPage, totalPages, moduleTit
 
                 {/* Revealed answer block */}
                 {revealed && (
-                  <div style={{ marginTop:"10px", padding:"12px 14px", background:"rgba(0,200,0,0.07)", borderRadius:"10px", borderLeft:"3px solid #00CC00" }}>
-                    <p style={{ fontSize:"10px", fontWeight:700, color:"#00AA00", margin:"0 0 5px", textTransform:"uppercase", letterSpacing:"0.08em" }}>
-                      {mode==="mcq" ? "Correct Answer" : "Model Answer"}
-                    </p>
-                    <p style={{ fontSize:"12px", fontWeight:700, color:isDark?"#00FF00":"#007700", margin:"0 0 6px", lineHeight:1.5 }}>{q.answer}</p>
-                    {q.explanation && <p style={{ fontSize:"11px", color:text2, margin:0, lineHeight:1.6 }}>{q.explanation}</p>}
-                    {mode==="short" && answers[i] && (
-                      <div style={{ marginTop:"8px", paddingTop:"8px", borderTop:`1px solid ${bdr}` }}>
-                        <p style={{ fontSize:"10px", fontWeight:700, color:text3, margin:"0 0 3px", textTransform:"uppercase", letterSpacing:"0.08em" }}>Your Answer</p>
-                        <p style={{ fontSize:"12px", color:text2, margin:0, lineHeight:1.5 }}>{answers[i]}</p>
+                  <div style={{ marginTop:"10px", borderRadius:"10px", overflow:"hidden", border:`1px solid ${gradeColor}33` }}>
+                    {/* Short answer grade bar */}
+                    {mode === "short" && gradeScore !== null && (
+                      <div style={{ padding:"10px 14px", background:`${gradeColor}15`, borderBottom:`1px solid ${gradeColor}33`, display:"flex", alignItems:"center", justifyContent:"space-between" }}>
+                        <div style={{ display:"flex", alignItems:"center", gap:"8px" }}>
+                          <span className="ms" style={{ fontSize:"16px", color:gradeColor }}>{gradeScore>=70?"check_circle":gradeScore>=40?"info":"cancel"}</span>
+                          <span style={{ fontSize:"12px", fontWeight:700, color:gradeColor }}>
+                            {gradeScore>=70?"Correct":gradeScore>=40?"Partially Correct":"Incorrect"}
+                          </span>
+                        </div>
+                        <div style={{ display:"flex", alignItems:"center", gap:"8px" }}>
+                          <div style={{ width:"80px", height:"6px", background:isDark?"rgba(255,255,255,0.1)":"rgba(0,0,0,0.08)", borderRadius:"9999px", overflow:"hidden" }}>
+                            <div style={{ height:"100%", width:`${gradeScore}%`, background:gradeColor, borderRadius:"9999px", transition:"width 0.6s ease" }} />
+                          </div>
+                          <span style={{ fontSize:"13px", fontWeight:800, color:gradeColor, minWidth:"36px", textAlign:"right" }}>{gradeScore}%</span>
+                        </div>
                       </div>
                     )}
+                    <div style={{ padding:"12px 14px", background:`${gradeColor}08` }}>
+                      <p style={{ fontSize:"10px", fontWeight:700, color:gradeColor, margin:"0 0 5px", textTransform:"uppercase", letterSpacing:"0.08em" }}>
+                        {mode==="mcq" ? "Correct Answer" : "Model Answer"}
+                      </p>
+                      <p style={{ fontSize:"12px", fontWeight:700, color:gradeColor, margin:"0 0 6px", lineHeight:1.5 }}>{q.answer}</p>
+                      {q.explanation && <p style={{ fontSize:"11px", color:text2, margin:0, lineHeight:1.6 }}>{q.explanation}</p>}
+                      {mode==="short" && (
+                        <div style={{ marginTop:"8px", paddingTop:"8px", borderTop:`1px solid ${bdr}` }}>
+                          <p style={{ fontSize:"10px", fontWeight:700, color:text3, margin:"0 0 3px", textTransform:"uppercase", letterSpacing:"0.08em" }}>Your Answer</p>
+                          <p style={{ fontSize:"12px", color:text2, margin:"0 0 6px", lineHeight:1.5 }}>{answers[i] || <em style={{opacity:0.5}}>No answer given</em>}</p>
+                          {grade?.feedback && (
+                            <p style={{ fontSize:"11px", color:gradeColor, margin:0, fontStyle:"italic", lineHeight:1.5 }}>💬 {grade.feedback}</p>
+                          )}
+                        </div>
+                      )}
+                    </div>
                   </div>
                 )}
               </div>
@@ -512,17 +632,23 @@ function QuizModal({ isDark, onClose, pdfDoc, currentPage, totalPages, moduleTit
 
         {/* Footer */}
         <div style={{ paddingTop:"14px", borderTop:`1px solid ${bdr}`, flexShrink:0 }}>
-          {!revealed ? (
+          {grading ? (
+            <div style={{ display:"flex", alignItems:"center", justifyContent:"center", gap:"12px", padding:"14px" }}>
+              <div style={{ width:"20px", height:"20px", border:"2px solid rgba(0,255,0,0.2)", borderTopColor:"#00FF00", borderRadius:"9999px", animation:"spin 0.8s linear infinite" }} />
+              <p style={{ fontSize:"13px", fontWeight:600, color:text2, margin:0 }}>Grading your answers with AI…</p>
+            </div>
+          ) : !revealed ? (
             <div style={{ display:"flex", gap:"10px" }}>
               <button onClick={() => { setPhase("setup"); setQuestions([]); setAnswers({}); }} style={{ flex:1, padding:"12px", borderRadius:"11px", border:`1px solid ${bdr}`, background:"transparent", color:text2, fontWeight:700, fontSize:"12px", cursor:"pointer", fontFamily:"'Lexend',sans-serif" }}>
                 ← Back
               </button>
-              <button onClick={() => setRevealed(true)} style={{ flex:2, padding:"12px", borderRadius:"11px", border:"none", background:"#00FF00", color:"#0f172a", fontWeight:700, fontSize:"13px", cursor:"pointer", fontFamily:"'Lexend',sans-serif", boxShadow:"0 4px 20px rgba(0,255,0,0.3)" }}>
-                {mode==="mcq" ? "Reveal Answers & Score" : "Show Model Answers"}
+              <button onClick={handleReveal} style={{ flex:2, padding:"12px", borderRadius:"11px", border:"none", background:"#00FF00", color:"#0f172a", fontWeight:700, fontSize:"13px", cursor:"pointer", fontFamily:"'Lexend',sans-serif", boxShadow:"0 4px 20px rgba(0,255,0,0.3)" }}>
+                {mode==="mcq" ? "Reveal Answers & Score" : "Grade My Answers"}
               </button>
             </div>
           ) : (
             <div style={{ display:"flex", flexDirection:"column", gap:"10px" }}>
+              {/* MCQ score */}
               {mode === "mcq" && (
                 <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", padding:"14px 18px", background:"rgba(0,255,0,0.08)", borderRadius:"12px", border:"1px solid rgba(0,255,0,0.2)" }}>
                   <div>
@@ -530,15 +656,31 @@ function QuizModal({ isDark, onClose, pdfDoc, currentPage, totalPages, moduleTit
                     <p style={{ fontSize:"24px", fontWeight:700, color:isDark?"#00FF00":"#007700", margin:0 }}>{score} <span style={{ fontSize:"14px", color:text3 }}>/ {questions.length}</span></p>
                   </div>
                   <div style={{ textAlign:"right" }}>
-                    <p style={{ fontSize:"20px", fontWeight:700, color:isDark?"#00FF00":"#007700", margin:"0 0 4px" }}>{Math.round((score/questions.length)*100)}%</p>
-                    <p style={{ fontSize:"12px", color:text3, margin:0 }}>
-                      {score===questions.length?"🏆 Perfect!":score>=questions.length*0.7?"✅ Great work!":score>=questions.length*0.5?"📚 Keep studying":"💪 More revision needed"}
-                    </p>
+                    <p style={{ fontSize:"22px", fontWeight:700, color:isDark?"#00FF00":"#007700", margin:"0 0 3px" }}>{Math.round((score/questions.length)*100)}%</p>
+                    <p style={{ fontSize:"11px", color:text3, margin:0 }}>{score===questions.length?"🏆 Perfect!":score>=questions.length*0.7?"✅ Great work!":score>=questions.length*0.5?"📚 Keep studying":"💪 More revision needed"}</p>
                   </div>
                 </div>
               )}
+              {/* Short answer score */}
+              {mode === "short" && shortScore !== null && (
+                <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", padding:"14px 18px", background: shortScore>=70?"rgba(0,255,0,0.08)":shortScore>=40?"rgba(245,158,11,0.08)":"rgba(239,68,68,0.08)", borderRadius:"12px", border:`1px solid ${shortScore>=70?"rgba(0,255,0,0.2)":shortScore>=40?"rgba(245,158,11,0.2)":"rgba(239,68,68,0.2)"}` }}>
+                  <div>
+                    <p style={{ fontSize:"11px", fontWeight:700, color:shortScore>=70?"#00AA00":shortScore>=40?"#f59e0b":"#ef4444", margin:"0 0 3px", textTransform:"uppercase", letterSpacing:"0.08em" }}>Overall Score</p>
+                    <p style={{ fontSize:"13px", fontWeight:600, color:text2, margin:0 }}>AI-graded · {questions.length} questions</p>
+                  </div>
+                  <div style={{ textAlign:"right" }}>
+                    <p style={{ fontSize:"28px", fontWeight:800, color:shortScore>=70?"#00CC00":shortScore>=40?"#f59e0b":"#ef4444", margin:"0 0 2px", lineHeight:1 }}>{shortScore}%</p>
+                    <p style={{ fontSize:"11px", color:text3, margin:0 }}>{shortScore>=70?"✅ Strong answers":shortScore>=40?"📝 Needs detail":"💪 Review needed"}</p>
+                  </div>
+                </div>
+              )}
+              {mode === "short" && !grades && (
+                <div style={{ padding:"10px 14px", background:isDark?"rgba(255,255,255,0.04)":"rgba(0,0,0,0.03)", borderRadius:"10px", textAlign:"center" }}>
+                  <p style={{ fontSize:"11px", color:text3, margin:0 }}>Grading unavailable — AI returned no score. Review answers manually above.</p>
+                </div>
+              )}
               <div style={{ display:"flex", gap:"10px" }}>
-                <button onClick={() => { setPhase("setup"); setQuestions([]); setAnswers({}); setRevealed(false); }} style={{ flex:1, padding:"12px", borderRadius:"11px", border:`1px solid ${bdr}`, background:"transparent", color:text2, fontWeight:700, fontSize:"12px", cursor:"pointer", fontFamily:"'Lexend',sans-serif" }}>New Quiz</button>
+                <button onClick={() => { setPhase("setup"); setQuestions([]); setAnswers({}); setRevealed(false); setGrades(null); }} style={{ flex:1, padding:"12px", borderRadius:"11px", border:`1px solid ${bdr}`, background:"transparent", color:text2, fontWeight:700, fontSize:"12px", cursor:"pointer", fontFamily:"'Lexend',sans-serif" }}>New Quiz</button>
                 <button onClick={onClose} style={{ flex:1, padding:"12px", borderRadius:"11px", border:"none", background:"#00FF00", color:"#0f172a", fontWeight:700, fontSize:"12px", cursor:"pointer", fontFamily:"'Lexend',sans-serif" }}>Done</button>
               </div>
             </div>
@@ -910,7 +1052,7 @@ function PDFViewerInner() {
   const [chatInput,      setChatInput]      = useState("");
   const [messages,       setMessages]       = useState([{
     role: "ai",
-    text: "Hi! I'm your **Neural AI Assistant**.\n\nI can see your current page and answer questions about it.\n\nTip: Type `/current` for strict page-only answers, or press **Quiz me** for an interactive quiz, or **Analyze PDF** for a full module breakdown.",
+    text: "Hi! I'm your **Neural AI Assistant**.\n\nI can see your current page and answer questions about it.\n\n**Slash Commands:**\n- `/current` — Page-only strict answer\n- `/draw` — ASCII diagram of the concept\n- `/explain` — Concept + real-world example\n- `/diagram` — Structured flowchart\n- `/fullexplain` — Detailed explanation + exam tips\n\nOr use the quick action buttons above ↑",
   }]);
   const [aiLoading, setAiLoading] = useState(false);
 
@@ -1032,47 +1174,46 @@ function PDFViewerInner() {
     requestAnimationFrame(() => chatInputRef.current?.focus());
     setMessages(m => [...m, { role: "user", text: rawText.trim(), command }]);
     setAiLoading(true);
-    const sysPrompt = command === "current"
-      ? `You are Neural AI — engineering exam assistant in a PDF viewer.
-Module: "${moduleTitle || moduleKey}" · Subject: ${subject} · Semester: ${sem} · Page: ${currentPage}/${totalPages}
-STRICT PAGE-ONLY MODE: Answer ONLY from what is visible in the current page image. No extra context.
-Be concise. Use bullet points when listing. Max 250 words.`
-      : `You are Neural AI — engineering exam assistant in a PDF viewer.
-Module: "${moduleTitle || moduleKey}" · Subject: ${subject} · Semester: ${sem}.
-Current page: ${currentPage} of ${totalPages}.
-Give concise, exam-focused answers. Use bullet points when listing. Max 250 words unless asked.`;
+    const sysPrompt = buildSystemPrompt(command, moduleTitle, moduleKey, subject, sem, currentPage, totalPages);
+    const userQuery = query || rawText.trim();
+    const cmdLabels = { draw:"✏️ Drawing diagram…", diagram:"📐 Building diagram…", explain:"💡 Explaining with example…", fullexplain:"📖 Full explanation loading…" };
+    const tempMsg = cmdLabels[command] || `📄 Reading page ${currentPage}…`;
     try {
       if (pdfDoc) {
-        setMessages(m => [...m, { role: "ai", text: `📄 Reading page ${currentPage}…`, temp: true }]);
+        setMessages(m => [...m, { role: "ai", text: tempMsg, temp: true }]);
         try {
           const img = await renderPageToBase64(pdfDoc, currentPage, 1.5);
           setMessages(m => m.filter(x => !x.temp));
+          const maxTok = (command === "fullexplain" || command === "diagram" || command === "draw") ? 2000 : 1200;
           const reply = await callGroq({
             model: GROQ_VISION_MODEL,
+            max_tokens: maxTok,
             messages: [
               { role: "system", content: sysPrompt },
               { role: "user", content: [
-                { type: "text", text: query || rawText.trim() },
+                { type: "text", text: userQuery || "Respond based on this page." },
                 { type: "text", text: `--- Page ${currentPage}/${totalPages} ---` },
                 { type: "image_url", image_url: { url: `data:image/jpeg;base64,${img}` } },
               ]},
             ],
           });
-          setMessages(m => [...m, { role: "ai", text: reply }]);
+          setMessages(m => [...m, { role: "ai", text: reply, command }]);
           return;
         } catch (e) {
           console.warn("Vision failed, fallback:", e);
           setMessages(m => m.filter(x => !x.temp));
         }
       }
+      const maxTok = (command === "fullexplain" || command === "diagram" || command === "draw") ? 2000 : 1200;
       const reply = await callGroq({
         model: GROQ_TEXT_MODEL,
+        max_tokens: maxTok,
         messages: [
           { role: "system", content: sysPrompt },
-          { role: "user", content: query || rawText.trim() },
+          { role: "user", content: userQuery },
         ],
       });
-      setMessages(m => [...m, { role: "ai", text: reply }]);
+      setMessages(m => [...m, { role: "ai", text: reply, command }]);
     } catch (err) {
       setMessages(m => m.filter(x => !x.temp));
       setMessages(m => [...m, { role: "ai", text: `⚠️ ${err.message || "Network error."}` }]);
@@ -1083,21 +1224,25 @@ Give concise, exam-focused answers. Use bullet points when listing. Max 250 word
 
   /* Quick actions */
   const quickActions = useMemo(() => [
-    { icon:"summarize",            label:"Summarize",    prompt:`Summarize the key points of "${moduleTitle||moduleKey}" in bullet points for exam prep.` },
-    { icon:"quiz",                 label:"Quiz me",      isQuiz:true },
-    { icon:"analytics",            label:"Analyze PDF",  isAnalyze:true },
-    { icon:"lightbulb",            label:"Key concepts", prompt:`List the most important concepts from "${moduleTitle||moduleKey}" for exams.` },
-    { icon:"article",              label:"This page",    prompt:`/current Summarize what this page is about and list exam key points.` },
-    { icon:"format_list_numbered", label:"So far",       prompt:`I've read up to page ${currentPage} of "${moduleTitle||moduleKey}". Give a running summary so far.` },
+    { icon:"summarize",    label:"Summarize",     prompt:`Summarize the key points of "${moduleTitle||moduleKey}" in bullet points for exam prep.` },
+    { icon:"quiz",         label:"Quiz me",       isQuiz:true },
+    { icon:"analytics",    label:"Analyze PDF",   isAnalyze:true },
+    { icon:"draw",         label:"Draw it",       prompt:`/draw the main concept on this page as a clear labeled diagram` },
+    { icon:"school",       label:"Explain",       prompt:`/explain the main concept on this page` },
+    { icon:"auto_stories", label:"Full explain",  prompt:`/fullexplain the entire topic on this page with examples and exam tips` },
+    { icon:"account_tree", label:"Diagram",       prompt:`/diagram of the main topic or process on this page` },
+    { icon:"article",      label:"This page",     prompt:`/current Summarize what this page is about and list exam key points.` },
   ], [moduleTitle, moduleKey, currentPage]);
 
   /* Context menu AI actions */
   const ctxAiActions = useMemo(() => [
-    { icon:"article",   label:"Summarize this page", prompt:`/current Summarize page ${currentPage} of "${moduleTitle||moduleKey}" for exam revision.` },
-    { icon:"quiz",      label:"Quiz this page",      isQuiz:true },
-    { icon:"analytics", label:"Analyze entire PDF",  isAnalyze:true },
-    { icon:"lightbulb", label:"Key points here",     prompt:`/current List the most important exam points on this page.` },
-    { icon:"translate", label:"Simplify this page",  prompt:`/current Explain this page in the simplest possible terms.` },
+    { icon:"article",      label:"Summarize this page",   prompt:`/current Summarize page ${currentPage} of "${moduleTitle||moduleKey}" for exam revision.` },
+    { icon:"quiz",         label:"Quiz this page",        isQuiz:true },
+    { icon:"analytics",    label:"Analyze entire PDF",    isAnalyze:true },
+    { icon:"draw",         label:"Draw concept",          prompt:`/draw the main concept on this page as a labeled diagram` },
+    { icon:"school",       label:"Explain with example",  prompt:`/explain the main concept visible on this page` },
+    { icon:"account_tree", label:"Flowchart this page",   prompt:`/diagram of the process or system shown on this page` },
+    { icon:"lightbulb",    label:"Key points here",       prompt:`/current List the most important exam points on this page.` },
   ], [currentPage, moduleTitle, moduleKey]);
 
   /* Mobile sheet drag */
@@ -1120,22 +1265,27 @@ Give concise, exam-focused answers. Use bullet points when listing. Max 250 word
 
   const SlashHint = useCallback(() => {
     if (!chatInput.startsWith("/")) return null;
-    const cmds = [{ cmd:"/current", desc:"Page-only strict answer — no extra context" }];
-    const filtered = cmds.filter(c => c.cmd.startsWith(chatInput.split(" ")[0]));
+    const typed = chatInput.split(" ")[0].toLowerCase();
+    const filtered = SLASH_COMMANDS.filter(c => c.cmd.startsWith(typed));
     if (!filtered.length) return null;
     return (
-      <div style={{ position:"absolute", bottom:"calc(100% + 6px)", left:0, right:0, background:isDark?"#0f172a":"#fff", border:`1px solid ${bdr}`, borderRadius:"12px", overflow:"hidden", boxShadow:"0 8px 28px rgba(0,0,0,0.25)", zIndex:10 }}>
-        {filtered.map(({ cmd, desc }) => (
+      <div style={{ position:"absolute", bottom:"calc(100% + 6px)", left:0, right:0, background:isDark?"#0d1626":"#fff", border:`1px solid ${bdr}`, borderRadius:"14px", overflow:"hidden", boxShadow:"0 12px 40px rgba(0,0,0,0.3)", zIndex:10 }}>
+        <div style={{ padding:"6px 12px 4px", fontSize:"9px", fontWeight:800, color:text3, textTransform:"uppercase", letterSpacing:"0.1em", borderBottom:`1px solid ${bdr}` }}>
+          Commands
+        </div>
+        {filtered.map(({ cmd, icon, desc, color }) => (
           <button key={cmd}
             onMouseDown={e => { e.preventDefault(); setChatInput(cmd + " "); chatInputRef.current?.focus(); }}
-            style={{ width:"100%", display:"flex", alignItems:"center", gap:"10px", padding:"10px 14px", background:"none", border:"none", cursor:"pointer", fontFamily:"'Lexend',sans-serif", textAlign:"left" }}
-            onMouseEnter={e => e.currentTarget.style.background=isDark?"rgba(0,255,0,0.07)":"rgba(0,200,0,0.05)"}
+            style={{ width:"100%", display:"flex", alignItems:"center", gap:"10px", padding:"9px 12px", background:"none", border:"none", cursor:"pointer", fontFamily:"'Lexend',sans-serif", textAlign:"left" }}
+            onMouseEnter={e => e.currentTarget.style.background=isDark?"rgba(255,255,255,0.05)":"rgba(0,0,0,0.04)"}
             onMouseLeave={e => e.currentTarget.style.background="none"}
           >
-            <span className="ms" style={{ fontSize:"15px", color:"#00CC00" }}>terminal</span>
-            <div>
-              <p style={{ fontSize:"12px", fontWeight:700, color:"#00CC00", margin:0, fontFamily:"'Lexend',sans-serif" }}>{cmd}</p>
-              <p style={{ fontSize:"10px", color:text3, margin:"1px 0 0", fontFamily:"'Lexend',sans-serif" }}>{desc}</p>
+            <div style={{ width:"28px", height:"28px", borderRadius:"8px", background:`${color}20`, display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0 }}>
+              <span className="ms" style={{ fontSize:"15px", color }}>{icon}</span>
+            </div>
+            <div style={{ flex:1, minWidth:0 }}>
+              <p style={{ fontSize:"12px", fontWeight:700, color, margin:0, fontFamily:"'Lexend',sans-serif" }}>{cmd}</p>
+              <p style={{ fontSize:"10px", color:text3, margin:"1px 0 0", fontFamily:"'Lexend',sans-serif", whiteSpace:"nowrap", overflow:"hidden", textOverflow:"ellipsis" }}>{desc}</p>
             </div>
           </button>
         ))}
@@ -1169,16 +1319,31 @@ Give concise, exam-focused answers. Use bullet points when listing. Max 250 word
             <span style={{ fontSize:"9px", fontWeight:700, padding:"1px 6px", background:"rgba(0,200,0,0.1)", border:"1px solid rgba(0,200,0,0.2)", borderRadius:"9999px", color:"#00AA00" }}>GROQ</span>
           </div>
         )}
-        {!isAI && msg.command === "current" && (
-          <div style={{ display:"inline-flex", alignItems:"center", gap:"4px", padding:"2px 8px", background:"rgba(0,0,0,0.15)", borderRadius:"9999px", fontSize:"10px", fontWeight:700, color:"#0f172a", marginBottom:"5px", fontFamily:"'Lexend',sans-serif" }}>
-            <span className="ms" style={{ fontSize:"11px" }}>terminal</span>
-            /current · p.{currentPage}
-          </div>
-        )}
+        {!isAI && msg.command && (() => {
+          const sc = SLASH_COMMANDS.find(c => c.cmd === "/" + msg.command);
+          const col = sc?.color || "#00CC00";
+          const ico = sc?.icon || "terminal";
+          return (
+            <div style={{ display:"inline-flex", alignItems:"center", gap:"4px", padding:"2px 8px", background:"rgba(0,0,0,0.18)", borderRadius:"9999px", fontSize:"10px", fontWeight:700, color:"#0f172a", marginBottom:"5px", fontFamily:"'Lexend',sans-serif" }}>
+              <span className="ms" style={{ fontSize:"11px" }}>{ico}</span>
+              /{msg.command} · p.{currentPage}
+            </div>
+          );
+        })()}
+        {isAI && msg.command && (() => {
+          const sc = SLASH_COMMANDS.find(c => c.cmd === "/" + msg.command);
+          if (!sc) return null;
+          return (
+            <div style={{ display:"inline-flex", alignItems:"center", gap:"5px", padding:"2px 9px", background:`${sc.color}18`, border:`1px solid ${sc.color}44`, borderRadius:"9999px", fontSize:"10px", fontWeight:700, color:sc.color, marginBottom:"7px" }}>
+              <span className="ms" style={{ fontSize:"11px" }}>{sc.icon}</span>
+              {sc.cmd}
+            </div>
+          );
+        })()}
         {isAI
           ? <MarkdownText text={msg.text} color={msgColor} />
           : <p style={{ margin:0, fontSize:"12px", fontWeight:600, lineHeight:1.65, whiteSpace:"pre-wrap" }}>
-              {msg.command === "current" && msg.text.startsWith("/current") ? msg.text.slice(8).trim() : msg.text}
+              {msg.command && msg.text.startsWith("/" + msg.command) ? msg.text.slice(msg.command.length + 1).trim() : msg.text}
             </p>
         }
       </div>
@@ -1414,11 +1579,14 @@ Give concise, exam-focused answers. Use bullet points when listing. Max 250 word
               ))}
             </div>
 
-            {/* /current hint */}
+            {/* slash commands hint */}
             <div style={{ padding:"7px 14px", borderBottom:`1px solid ${bdr}`, display:"flex", alignItems:"center", gap:"7px", flexShrink:0, background:isDark?"rgba(0,200,0,0.025)":"rgba(0,200,0,0.02)" }}>
               <span className="ms" style={{ fontSize:"13px", color:"#00AA00", flexShrink:0 }}>terminal</span>
               <p style={{ fontSize:"10px", color:text3, margin:0 }}>
-                Type <span style={{ fontWeight:700, color:"#00CC00", fontFamily:"monospace" }}>/current</span> for strict page-only mode
+                Type <span style={{ fontWeight:700, color:"#00CC00", fontFamily:"monospace" }}>/</span> for commands:&nbsp;
+                {["/draw","current","explain","diagram"].map(c => (
+                  <span key={c} style={{ fontWeight:700, color:"#00BB00", fontFamily:"monospace", marginRight:"4px" }}>/{c}</span>
+                ))}
               </p>
             </div>
 
@@ -1440,7 +1608,7 @@ Give concise, exam-focused answers. Use bullet points when listing. Max 250 word
                 <textarea
                   ref={chatInputRef}
                   className="chat-input"
-                  placeholder="Ask anything… or /current for page-only"
+                  placeholder="Ask anything… or type / for commands"
                   value={chatInput}
                   onChange={e => setChatInput(e.target.value)}
                   onKeyDown={e => { if (e.key==="Enter"&&!e.shiftKey){e.preventDefault();sendMessage(chatInput);} }}
@@ -1451,7 +1619,7 @@ Give concise, exam-focused answers. Use bullet points when listing. Max 250 word
                   <span className="ms" style={{ fontSize:"18px", color:"#0f172a" }}>send</span>
                 </button>
               </div>
-              <p style={{ fontSize:"9px", color:text3, textAlign:"center", marginTop:"6px" }}>Enter · Shift+Enter new line · /current page-only</p>
+              <p style={{ fontSize:"9px", color:text3, textAlign:"center", marginTop:"6px" }}>Enter to send · Shift+Enter new line · type / for commands</p>
             </div>
           </aside>
         </div>
@@ -1558,7 +1726,7 @@ Give concise, exam-focused answers. Use bullet points when listing. Max 250 word
                 <textarea
                   ref={chatInputRef}
                   className="chat-input"
-                  placeholder="Ask anything… or /current"
+                  placeholder="Ask anything… or type / for commands"
                   value={chatInput}
                   onChange={e => setChatInput(e.target.value)}
                   onKeyDown={e => { if (e.key==="Enter"&&!e.shiftKey){e.preventDefault();sendMessage(chatInput);} }}
