@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import { auth, db } from "@/firebase";
 import { onAuthStateChanged, signOut } from "firebase/auth";
 import { ref, onValue } from "firebase/database";
+import { flushPendingUsageStats, flushUsageStats } from "@/lib/usageStats";
 
 /* ═══════════════════════════════════════════
    SUBJECT ICON MAP  (matches NotesPage)
@@ -133,6 +134,8 @@ export default function AiPage() {
   const [aiLoading,   setAiLoading]   = useState(false);
   const [importedMod, setImportedMod] = useState(null); // { subject, modKey, title }
   const bottomRef = useRef(null);
+  const sessionStartRef = useRef(null);
+  const aiQuestionsRef = useRef(0);
 
   /* ── Import sheet ── */
   const [importOpen,       setImportOpen]       = useState(false);
@@ -172,6 +175,50 @@ export default function AiPage() {
 
   /* ── Auto scroll ── */
   useEffect(() => { bottomRef.current?.scrollIntoView({ behavior:"smooth" }); }, [messages, aiLoading]);
+
+  const flushAiStats = useCallback(async () => {
+    if (!authUser?.uid || !sessionStartRef.current) return;
+    const now = Date.now();
+    const studyMs = Math.max(0, now - sessionStartRef.current);
+    const aiQuestions = aiQuestionsRef.current;
+    if (studyMs < 1000 && aiQuestions === 0) return;
+
+    sessionStartRef.current = now;
+    aiQuestionsRef.current = 0;
+    await flushUsageStats(db, authUser.uid, { studyMs, aiQuestions, solvedProblems: 0 });
+  }, [authUser?.uid]);
+
+  useEffect(() => {
+    if (!authUser?.uid || authLoading) return;
+    if (!sessionStartRef.current) sessionStartRef.current = Date.now();
+    flushPendingUsageStats(db, authUser.uid);
+  }, [authUser?.uid, authLoading]);
+
+  useEffect(() => {
+    if (!authUser?.uid || authLoading) return;
+
+    const onVisibility = () => {
+      if (document.visibilityState === "hidden") {
+        flushAiStats();
+      } else if (!sessionStartRef.current) {
+        sessionStartRef.current = Date.now();
+      }
+    };
+
+    const onPageHide = () => { flushAiStats(); };
+    const onBeforeUnload = () => { flushAiStats(); };
+
+    document.addEventListener("visibilitychange", onVisibility);
+    window.addEventListener("pagehide", onPageHide);
+    window.addEventListener("beforeunload", onBeforeUnload);
+
+    return () => {
+      document.removeEventListener("visibilitychange", onVisibility);
+      window.removeEventListener("pagehide", onPageHide);
+      window.removeEventListener("beforeunload", onBeforeUnload);
+      flushAiStats();
+    };
+  }, [authUser?.uid, authLoading, flushAiStats]);
 
   /* ── Load subjects when import sheet opens ── */
   useEffect(() => {
@@ -219,6 +266,7 @@ export default function AiPage() {
     setInput("");
     const userMsg = { role:"user", text:msg, ts:Date.now() };
     setMessages(p => [...p, userMsg]);
+    aiQuestionsRef.current += 1;
     setAiLoading(true);
 
     try {

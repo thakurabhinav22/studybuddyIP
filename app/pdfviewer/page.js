@@ -5,6 +5,7 @@ import { useRouter, useSearchParams } from "next/navigation";
 import { auth, db } from "@/firebase";
 import { onAuthStateChanged } from "firebase/auth";
 import { ref as dbRef, get } from "firebase/database";
+import { flushPendingUsageStats, flushUsageStats } from "@/lib/usageStats";
 
 /* ─────────────────────────────────────────
    IN-MEMORY PDF CACHE
@@ -80,6 +81,54 @@ async function callGroq({ messages, model, max_tokens = 1200 }) {
   return (await res.json()).choices?.[0]?.message?.content || "No response.";
 }
 
+const BLOOM_LEVELS = ["Remember", "Understand", "Analyze"];
+
+function normalizeQuestionLevel(level, fallback = "Understand") {
+  const raw = (level || "").toString().trim().toLowerCase();
+  if (!raw) return fallback;
+  if (raw.includes("remember")) return "Remember";
+  if (raw.includes("understand") || raw.includes("compreh")) return "Understand";
+  if (raw.includes("analy")) return "Analyze";
+  return fallback;
+}
+
+function extractJsonBlock(text, kind) {
+  const cleaned = (text || "").trim().replace(/^```json?\s*/i, "").replace(/```\s*$/i, "").trim();
+  const regex = kind === "object" ? /\{[\s\S]*\}/ : /\[[\s\S]*\]/;
+  const match = cleaned.match(regex);
+  return match ? match[0] : "";
+}
+
+function sanitizeJsonCandidate(raw) {
+  return (raw || "")
+    .replace(/[“”]/g, '"')
+    .replace(/[‘’]/g, "'")
+    .replace(/,\s*([}\]])/g, "$1")
+    .trim();
+}
+
+async function parseModelJson(rawText, { kind = "array", label = "response" } = {}) {
+  const block = extractJsonBlock(rawText, kind);
+  if (!block) throw new Error(`${label} returned an unexpected format.`);
+
+  const tryDirect = sanitizeJsonCandidate(block);
+  try {
+    return JSON.parse(tryDirect);
+  } catch {}
+
+  const repaired = await callGroq({
+    model: GROQ_TEXT_MODEL,
+    max_tokens: 1800,
+    messages: [{
+      role: "user",
+      content: `Fix this into strict valid JSON (${kind}) and return ONLY JSON. Do not add explanation:\n${block}`,
+    }],
+  });
+
+  const repairedBlock = sanitizeJsonCandidate(extractJsonBlock(repaired, kind) || repaired);
+  return JSON.parse(repairedBlock);
+}
+
 /* ─────────────────────────────────────────
    SHORT ANSWER AI GRADER
    Returns 0-100 similarity score
@@ -104,10 +153,8 @@ ${JSON.stringify(pairs, null, 1)}`;
       max_tokens: 800,
       messages: [{ role: "user", content: prompt }],
     });
-    const cleaned = res.trim().replace(/^```json?\s*/i,"").replace(/```\s*$/i,"").trim();
-    const match = cleaned.match(/\[[\s\S]*\]/);
-    if (!match) return null;
-    return JSON.parse(match[0]);
+    const parsed = await parseModelJson(res, { kind: "array", label: "Grading" });
+    return Array.isArray(parsed) ? parsed : null;
   } catch { return null; }
 }
 
@@ -316,7 +363,7 @@ function ChoiceCard({ id, icon, label, sub, selected, onSelect, isDark, bdr, tex
 /* ─────────────────────────────────────────
    QUIZ MODAL  (setup → generate → live quiz → results)
 ───────────────────────────────────────── */
-function QuizModal({ isDark, onClose, pdfDoc, currentPage, totalPages, moduleTitle, moduleKey, subject, sem, text1, text2, text3, bdr, panel }) {
+function QuizModal({ isDark, onClose, onComplete, weakByLevel, askedByLevel, pdfDoc, currentPage, totalPages, moduleTitle, moduleKey, subject, sem, text1, text2, text3, bdr, panel }) {
   const [phase, setPhase]       = useState("setup"); // setup | generating | quiz | results
   const [mode, setMode]         = useState(null);    // "mcq" | "short"
   const [count, setCount]       = useState(5);
@@ -328,6 +375,21 @@ function QuizModal({ isDark, onClose, pdfDoc, currentPage, totalPages, moduleTit
   const [grades,   setGrades]       = useState(null); // [{idx, score, feedback}]
   const [genError, setGenError]     = useState("");
   const [genProgress, setGenProgress] = useState("");
+  const completionReportedRef = useRef(false);
+
+  const weakFocusLevel = useMemo(() => {
+    const weak = weakByLevel || {};
+    const asked = askedByLevel || {};
+    let best = { level: "Understand", score: -1 };
+    for (const level of BLOOM_LEVELS) {
+      const wrong = Number(weak[level]) || 0;
+      const total = Number(asked[level]) || 0;
+      const rate = total > 0 ? wrong / total : 0;
+      const weighted = rate * 100 + wrong;
+      if (weighted > best.score) best = { level, score: weighted };
+    }
+    return best.level;
+  }, [weakByLevel, askedByLevel]);
 
   const canStart = !!mode;
 
@@ -356,10 +418,11 @@ function QuizModal({ isDark, onClose, pdfDoc, currentPage, totalPages, moduleTit
         : `Page ${currentPage} of "${moduleTitle || moduleKey}" (${subject}, ${sem}).`;
 
       const formatInstructions = mode === "mcq"
-        ? `Generate exactly ${count} MCQ questions. Return ONLY a raw JSON array (no markdown, no code fences, no prose):
-[{"q":"Question text","options":["A) option","B) option","C) option","D) option"],"answer":"A) correct option text","explanation":"1-sentence explanation"}]`
+        ? `Generate exactly ${count} MCQ questions with Bloom levels. Return ONLY a raw JSON array (no markdown, no code fences, no prose):
+      [{"q":"Question text","level":"Remember|Understand|Analyze","options":["A) option","B) option","C) option","D) option"],"answer":"A) correct option text","explanation":"1-sentence explanation"}]
+      Ensure a balanced mix and prioritize more questions from level "${weakFocusLevel}".`
         : `Generate exactly ${count} short-answer exam questions. Return ONLY a raw JSON array (no markdown, no code fences, no prose):
-[{"q":"Question text","answer":"Precise one-line answer","explanation":"1-sentence context"}]`;
+      [{"q":"Question text","level":"Remember|Understand|Analyze","answer":"Precise one-line answer","explanation":"1-sentence context"}]`;
 
       const res = await callGroq({
         model: GROQ_VISION_MODEL,
@@ -379,12 +442,14 @@ function QuizModal({ isDark, onClose, pdfDoc, currentPage, totalPages, moduleTit
         ]
       });
 
-      let cleaned = res.trim().replace(/^```json?\s*/i, "").replace(/```\s*$/i, "").trim();
-      const match = cleaned.match(/\[[\s\S]*\]/);
-      if (!match) throw new Error("AI returned an unexpected format. Please try again.");
-      const parsed = JSON.parse(match[0]);
+      const parsed = await parseModelJson(res, { kind: "array", label: "Quiz generation" });
       if (!Array.isArray(parsed) || parsed.length === 0) throw new Error("No questions were generated.");
-      setQuestions(parsed);
+      const defaults = ["Remember", "Understand", "Analyze"];
+      const normalized = parsed.map((item, idx) => ({
+        ...item,
+        level: normalizeQuestionLevel(item?.level, defaults[idx % defaults.length]),
+      }));
+      setQuestions(normalized);
       setAnswers({});
       setRevealed(false);
       setPhase("quiz");
@@ -401,11 +466,37 @@ function QuizModal({ isDark, onClose, pdfDoc, currentPage, totalPages, moduleTit
   const shortScore = grades ? Math.round(grades.reduce((s, g) => s + g.score, 0) / grades.length) : null;
 
   const handleReveal = async () => {
+    const askedInc = { Remember: 0, Understand: 0, Analyze: 0 };
+    const weakInc = { Remember: 0, Understand: 0, Analyze: 0 };
+    questions.forEach((q) => {
+      const level = normalizeQuestionLevel(q?.level);
+      askedInc[level] += 1;
+    });
+
     if (mode === "short") {
       setGrading(true);
       const result = await gradeShortAnswers(questions, answers);
       setGrades(result);
+      if (!completionReportedRef.current) {
+        if (Array.isArray(result)) {
+          result.forEach((g) => {
+            const level = normalizeQuestionLevel(questions[g.idx]?.level);
+            if ((Number(g?.score) || 0) < 70) weakInc[level] += 1;
+          });
+        }
+        const solvedFromShort = Array.isArray(result) ? result.filter(g => Number(g?.score) >= 70).length : 0;
+        onComplete?.({ solvedProblems: solvedFromShort, weakByLevelIncrement: weakInc, askedByLevelIncrement: askedInc });
+        completionReportedRef.current = true;
+      }
       setGrading(false);
+    } else if (!completionReportedRef.current) {
+      const solvedFromMcq = questions.reduce((acc, q, i) => acc + (answers[i] === q.answer ? 1 : 0), 0);
+      questions.forEach((q, i) => {
+        const level = normalizeQuestionLevel(q?.level);
+        if (answers[i] !== q.answer) weakInc[level] += 1;
+      });
+      onComplete?.({ solvedProblems: solvedFromMcq, weakByLevelIncrement: weakInc, askedByLevelIncrement: askedInc });
+      completionReportedRef.current = true;
     }
     setRevealed(true);
   };
@@ -543,7 +634,12 @@ function QuizModal({ isDark, onClose, pdfDoc, currentPage, totalPages, moduleTit
                   <span style={{ width:"26px", height:"26px", borderRadius:"8px", background:"rgba(0,200,0,0.15)", display:"flex", alignItems:"center", justifyContent:"center", fontSize:"11px", fontWeight:700, color:"#00AA00", flexShrink:0 }}>
                     {i+1}
                   </span>
-                  <p style={{ fontSize:"13px", fontWeight:600, color:text1, margin:0, lineHeight:1.6 }}>{q.q}</p>
+                  <div style={{ flex:1 }}>
+                    <p style={{ fontSize:"13px", fontWeight:600, color:text1, margin:0, lineHeight:1.6 }}>{q.q}</p>
+                    <span style={{ display:"inline-flex", marginTop:"6px", fontSize:"9px", fontWeight:700, letterSpacing:"0.08em", textTransform:"uppercase", color:"#00AA00", padding:"2px 7px", borderRadius:"9999px", background:"rgba(0,255,0,0.09)", border:"1px solid rgba(0,255,0,0.2)" }}>
+                      {normalizeQuestionLevel(q.level)}
+                    </span>
+                  </div>
                 </div>
 
                 {/* MCQ Options */}
@@ -757,10 +853,7 @@ Analyze ALL provided pages and return ONLY a valid JSON object — no markdown, 
 
       setPct(90);
       setProgress("Parsing analysis…");
-      let cleaned = res.trim().replace(/^```json?\s*/i,"").replace(/```\s*$/i,"").trim();
-      const match = cleaned.match(/\{[\s\S]*\}/);
-      if (!match) throw new Error("Analysis returned an unexpected format.");
-      const parsed = JSON.parse(match[0]);
+      const parsed = await parseModelJson(res, { kind: "object", label: "Analysis" });
       setResult(parsed);
       setPhase("done");
       setPct(100);
@@ -1065,6 +1158,11 @@ function PDFViewerInner() {
   const chatEndRef     = useRef(null);
 
   const [ctxMenu, setCtxMenu] = useState(null);
+  const sessionStartRef = useRef(null);
+  const aiQuestionsRef = useRef(0);
+  const solvedProblemsRef = useRef(0);
+  const weakByLevelRef = useRef({ Remember: 0, Understand: 0, Analyze: 0 });
+  const askedByLevelRef = useRef({ Remember: 0, Understand: 0, Analyze: 0 });
 
   const [isMobile, setIsMobile] = useState(false);
   useEffect(() => {
@@ -1092,6 +1190,58 @@ function PDFViewerInner() {
     });
     return () => unsub();
   }, [router, branch, sem, subject, moduleKey]);
+
+  const flushViewerStats = useCallback(async () => {
+    if (!authUser?.uid || !sessionStartRef.current) return;
+    const now = Date.now();
+    const studyMs = Math.max(0, now - sessionStartRef.current);
+    const aiQuestions = aiQuestionsRef.current;
+    const solvedProblems = solvedProblemsRef.current;
+    const weakByLevelIncrement = { ...weakByLevelRef.current };
+    const askedByLevelIncrement = { ...askedByLevelRef.current };
+    const weakSum = Object.values(weakByLevelIncrement).reduce((s, v) => s + (Number(v) || 0), 0);
+    const askedSum = Object.values(askedByLevelIncrement).reduce((s, v) => s + (Number(v) || 0), 0);
+    if (studyMs < 1000 && aiQuestions === 0 && solvedProblems === 0 && weakSum === 0 && askedSum === 0) return;
+
+    sessionStartRef.current = now;
+    aiQuestionsRef.current = 0;
+    solvedProblemsRef.current = 0;
+    weakByLevelRef.current = { Remember: 0, Understand: 0, Analyze: 0 };
+    askedByLevelRef.current = { Remember: 0, Understand: 0, Analyze: 0 };
+    await flushUsageStats(db, authUser.uid, { studyMs, aiQuestions, solvedProblems, weakByLevelIncrement, askedByLevelIncrement });
+  }, [authUser?.uid]);
+
+  useEffect(() => {
+    if (!authUser?.uid || authLoading || accessDenied) return;
+    if (!sessionStartRef.current) sessionStartRef.current = Date.now();
+    flushPendingUsageStats(db, authUser.uid);
+  }, [authUser?.uid, authLoading, accessDenied]);
+
+  useEffect(() => {
+    if (!authUser?.uid || authLoading || accessDenied) return;
+
+    const onVisibility = () => {
+      if (document.visibilityState === "hidden") {
+        flushViewerStats();
+      } else if (!sessionStartRef.current) {
+        sessionStartRef.current = Date.now();
+      }
+    };
+
+    const onPageHide = () => { flushViewerStats(); };
+    const onBeforeUnload = () => { flushViewerStats(); };
+
+    document.addEventListener("visibilitychange", onVisibility);
+    window.addEventListener("pagehide", onPageHide);
+    window.addEventListener("beforeunload", onBeforeUnload);
+
+    return () => {
+      document.removeEventListener("visibilitychange", onVisibility);
+      window.removeEventListener("pagehide", onPageHide);
+      window.removeEventListener("beforeunload", onBeforeUnload);
+      flushViewerStats();
+    };
+  }, [authUser?.uid, authLoading, accessDenied, flushViewerStats]);
 
   /* ── Module title + filename ── */
   useEffect(() => {
@@ -1173,6 +1323,7 @@ function PDFViewerInner() {
     setChatInput("");
     requestAnimationFrame(() => chatInputRef.current?.focus());
     setMessages(m => [...m, { role: "user", text: rawText.trim(), command }]);
+    aiQuestionsRef.current += 1;
     setAiLoading(true);
     const sysPrompt = buildSystemPrompt(command, moduleTitle, moduleKey, subject, sem, currentPage, totalPages);
     const userQuery = query || rawText.trim();
@@ -1788,6 +1939,17 @@ function PDFViewerInner() {
           <QuizModal
             isDark={isDark}
             onClose={() => setQuizOpen(false)}
+            onComplete={({ solvedProblems = 0, weakByLevelIncrement = {}, askedByLevelIncrement = {} }) => {
+              solvedProblemsRef.current += Math.max(0, Number(solvedProblems) || 0);
+              weakByLevelRef.current.Remember += Math.max(0, Number(weakByLevelIncrement.Remember) || 0);
+              weakByLevelRef.current.Understand += Math.max(0, Number(weakByLevelIncrement.Understand) || 0);
+              weakByLevelRef.current.Analyze += Math.max(0, Number(weakByLevelIncrement.Analyze) || 0);
+              askedByLevelRef.current.Remember += Math.max(0, Number(askedByLevelIncrement.Remember) || 0);
+              askedByLevelRef.current.Understand += Math.max(0, Number(askedByLevelIncrement.Understand) || 0);
+              askedByLevelRef.current.Analyze += Math.max(0, Number(askedByLevelIncrement.Analyze) || 0);
+            }}
+            weakByLevel={userData?.stats?.weakByLevel}
+            askedByLevel={userData?.stats?.askedByLevel}
             pdfDoc={pdfDoc}
             currentPage={currentPage}
             totalPages={totalPages}
