@@ -4,7 +4,7 @@ import { useState, useEffect, useRef, useCallback, Suspense, useMemo } from "rea
 import { useRouter, useSearchParams } from "next/navigation";
 import { auth, db } from "@/firebase";
 import { onAuthStateChanged } from "firebase/auth";
-import { ref as dbRef, get } from "firebase/database";
+import { ref as dbRef, get, update } from "firebase/database";
 import { flushPendingUsageStats, flushUsageStats } from "@/lib/usageStats";
 
 /* ─────────────────────────────────────────
@@ -13,6 +13,29 @@ import { flushPendingUsageStats, flushUsageStats } from "@/lib/usageStats";
 const PDF_CACHE = new Map();
 function getCacheKey(branch, sem, subject, moduleKey) {
   return `${branch}|${sem}|${subject}|${moduleKey}`;
+}
+
+function patchDashboardRecentNote(uid, note) {
+  if (!uid || !note || typeof window === "undefined") return;
+  try {
+    const key = `studybuddy:dashboard-cache:v1:${uid}`;
+    const raw = localStorage.getItem(key);
+    if (!raw) return;
+    const cached = JSON.parse(raw);
+    if (!cached?.data) return;
+    const data = cached.data;
+    const prev = data.recentNotes && typeof data.recentNotes === "object" ? data.recentNotes : {};
+    const noteKey = `${note.subject || "GEN"}_${note.key || note.title || "note"}`.replace(/[.#$\[\]/]/g, "_");
+    data.recentNotes = {
+      ...prev,
+      [noteKey]: {
+        ...(prev[noteKey] || {}),
+        ...note,
+        updatedAt: Date.now(),
+      },
+    };
+    localStorage.setItem(key, JSON.stringify({ ...cached, data, updatedAt: Date.now() }));
+  } catch {}
 }
 
 /* ─────────────────────────────────────────
@@ -1163,6 +1186,7 @@ function PDFViewerInner() {
   const solvedProblemsRef = useRef(0);
   const weakByLevelRef = useRef({ Remember: 0, Understand: 0, Analyze: 0 });
   const askedByLevelRef = useRef({ Remember: 0, Understand: 0, Analyze: 0 });
+  const recentNoteWrittenRef = useRef(false);
 
   const [isMobile, setIsMobile] = useState(false);
   useEffect(() => {
@@ -1249,6 +1273,27 @@ function PDFViewerInner() {
     get(dbRef(db, `notes/${branch}/${sem}/subjects/${subject}/modules/${moduleKey}/Title`)).then(s => { if (s.exists()) setModuleTitle(s.val()); });
     get(dbRef(db, `notes/${branch}/${sem}/subjects/${subject}/modules/${moduleKey}/pdfMeta`)).then(s => { if (s.exists()) setFileName(s.val().fileName || `${moduleKey}.pdf`); });
   }, [branch, sem, subject, moduleKey]);
+
+  useEffect(() => {
+    if (!authUser?.uid || !subject || !moduleKey || recentNoteWrittenRef.current) return;
+    const safeKey = `${subject}_${moduleKey}`.replace(/[.#$\[\]/]/g, "_");
+    const recentNotePayload = {
+      key: moduleKey,
+      module: moduleKey,
+      subject,
+      branch,
+      sem,
+      title: moduleTitle || moduleKey,
+      desc: "Recently opened from PDF viewer",
+      icon: "description",
+      updatedAt: Date.now(),
+    };
+    update(dbRef(db, `users/${authUser.uid}/recentNotes/${safeKey}`), {
+      ...recentNotePayload,
+    }).catch(() => {});
+    patchDashboardRecentNote(authUser.uid, recentNotePayload);
+    recentNoteWrittenRef.current = true;
+  }, [authUser?.uid, subject, moduleKey, moduleTitle]);
 
   /* ── Load PDF ── */
   const initPDFJS = useCallback(async (buffer) => {

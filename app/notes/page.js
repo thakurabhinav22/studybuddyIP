@@ -4,7 +4,7 @@ import { useState, useEffect, useRef, useCallback } from "react";
 import { useRouter } from "next/navigation";
 import { auth, db } from "@/firebase";
 import { onAuthStateChanged, signOut } from "firebase/auth";
-import { ref, onValue, get } from "firebase/database";
+import { ref, get, update } from "firebase/database";
 
 /* ═══════════════════════════════════════════
    PERSISTENT CACHE  (localStorage + in-memory L1)
@@ -24,6 +24,11 @@ import { ref, onValue, get } from "firebase/database";
 function notesKey(branch, sem)               { return `sb_notes|${branch}|${sem}`; }
 function chunkedKey(branch, sem, sub, modKey){ return `sb_chunk|${branch}|${sem}|${sub}|${modKey}`; }
 function modFpKey(branch, sem, sub, modKey)  { return `sb_modfp|${branch}|${sem}|${sub}|${modKey}`; }
+function userProfileKey(uid)                  { return `sb_user_profile|${uid}`; }
+function dashboardCacheKey(uid)               { return `studybuddy:dashboard-cache:v1:${uid}`; }
+
+const USER_CACHE_TTL_MS = 3 * 60 * 1000;
+const NOTES_CACHE_TTL_MS = 5 * 60 * 1000;
 
 /* ── Fast djb2 hash (string → hex) ── */
 function hashStr(str) {
@@ -36,6 +41,7 @@ function hashStr(str) {
 const MEM_NOTES   = new Map();   // cKey → { subjects, hash, timestamp }
 const MEM_CHUNKED = new Map();   // ck   → boolean
 const MEM_MODFP   = new Map();   // fpk  → fingerprint string
+const MEM_USER    = new Map();   // uKey → { data, timestamp }
 
 /* ── L2 localStorage helpers (silent on quota errors) ── */
 const LS = {
@@ -68,6 +74,29 @@ function cacheSet(memMap, key, val) {
 function cacheDel(memMap, key) {
   memMap.delete(key);
   LS.del(key);
+}
+
+function patchDashboardRecentNote(uid, note) {
+  if (!uid || !note || typeof window === "undefined") return;
+  try {
+    const key = dashboardCacheKey(uid);
+    const raw = localStorage.getItem(key);
+    if (!raw) return;
+    const cached = JSON.parse(raw);
+    if (!cached?.data) return;
+    const data = cached.data;
+    const prev = data.recentNotes && typeof data.recentNotes === "object" ? data.recentNotes : {};
+    const noteKey = `${note.subject || "GEN"}_${note.key || note.title || "note"}`.replace(/[.#$\[\]/]/g, "_");
+    data.recentNotes = {
+      ...prev,
+      [noteKey]: {
+        ...(prev[noteKey] || {}),
+        ...note,
+        updatedAt: Date.now(),
+      },
+    };
+    localStorage.setItem(key, JSON.stringify({ ...cached, data, updatedAt: Date.now() }));
+  } catch {}
 }
 
 /* ─────────────────────────────────────────
@@ -208,9 +237,6 @@ export default function NotesPage() {
   const [aiLoading,    setAiLoading]    = useState(false);
   const aiChatEndRef = useRef(null);
 
-  const listenerRef      = useRef(null);
-  const chunkedListeners = useRef({});  // modKey → unsubscribe fn
-
   const normaliseSem = useCallback((raw) => {
     if (!raw) return "";
     const str = raw.toString().trim();
@@ -221,19 +247,36 @@ export default function NotesPage() {
 
   /* ── Auth guard ── */
   useEffect(() => {
-    const unsub = onAuthStateChanged(auth, (u) => {
+    const unsub = onAuthStateChanged(auth, async (u) => {
       if (!u) { router.replace("/"); return; }
       setAuthUser(u);
-      const unsubDB = onValue(ref(db, `users/${u.uid}`), (snap) => {
-        if (snap.exists()) setUserData(snap.val());
+
+      const uKey = userProfileKey(u.uid);
+      const cached = cacheGet(MEM_USER, uKey);
+      const isFresh = !!cached?.timestamp && (Date.now() - cached.timestamp) < USER_CACHE_TTL_MS;
+
+      if (cached?.data) {
+        setUserData(cached.data);
         setAuthLoading(false);
-      });
-      return () => unsubDB();
+      }
+
+      if (!cached?.data || !isFresh) {
+        try {
+          const snap = await get(ref(db, `users/${u.uid}`));
+          if (snap.exists()) {
+            const data = snap.val();
+            cacheSet(MEM_USER, uKey, { data, timestamp: Date.now() });
+            setUserData(data);
+          }
+        } finally {
+          setAuthLoading(false);
+        }
+      }
     });
     return () => unsub();
   }, [router]);
 
-  /* ── Smart notes listener with persistent cache ── */
+  /* ── Smart notes fetch with persistent cache ── */
   useEffect(() => {
     if (!userData?.branch || !userData?.sem) return;
     const { branch, sem } = userData;
@@ -252,66 +295,67 @@ export default function NotesPage() {
     }
     setNotesError(null);
 
-    /* Detach previous listener */
-    if (listenerRef.current) { listenerRef.current(); listenerRef.current = null; }
+    const isFresh = !!cached?.timestamp && (Date.now() - cached.timestamp) < NOTES_CACHE_TTL_MS;
+    if (isFresh) return;
 
-    const subjectsRef = ref(db, `notes/${branch}/${semKey}/subjects`);
-
-    const unsubNotes = onValue(
-      subjectsRef,
-      (snap) => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const snap = await get(ref(db, `notes/${branch}/${semKey}/subjects`));
+        if (cancelled) return;
         setNotesLoading(false);
 
         if (!snap.exists()) {
-          cacheDel(MEM_NOTES, cKey);
+          if (cached?.subjects) {
+            setSubjects(cached.subjects);
+            setActiveSubject((p) => p && cached.subjects[p] ? p : Object.keys(cached.subjects)[0] || null);
+            setCacheStatus("hit");
+            return;
+          }
           setSubjects({});
           setActiveSubject(null);
           setCacheStatus("fresh");
           return;
         }
 
-        /* Normalise */
         const raw = snap.val();
         const normalised = {};
         Object.entries(raw).forEach(([code, val]) => {
-          if (val === true) normalised[code] = { Subject:code, Totalmodules:0, modules:{} };
+          if (val === true) normalised[code] = { Subject: code, Totalmodules: 0, modules: {} };
           else if (typeof val === "object" && val !== null) normalised[code] = val;
         });
 
-        /* Hash-based change detection — skip state update if data unchanged */
         const incomingHash = hashStr(JSON.stringify(normalised));
-        const existing     = cacheGet(MEM_NOTES, cKey);
-
+        const existing = cacheGet(MEM_NOTES, cKey);
         if (existing?.hash === incomingHash) {
-          /* Data identical to cache — no re-render needed */
           setCacheStatus("hit");
           return;
         }
 
-        /* Data changed (or first load) — update cache + state */
         const ts = Date.now();
-        cacheSet(MEM_NOTES, cKey, { subjects:normalised, hash:incomingHash, timestamp:ts });
+        cacheSet(MEM_NOTES, cKey, { subjects: normalised, hash: incomingHash, timestamp: ts });
         setSubjects(normalised);
         setCacheStatus(existing ? "updated" : "fresh");
         setLastUpdated(ts);
         setActiveSubject((p) => p && normalised[p] ? p : Object.keys(normalised)[0] || null);
-      },
-      (err) => { setNotesLoading(false); setNotesError(err.message); }
-    );
+      } catch (err) {
+        if (!cancelled) {
+          setNotesLoading(false);
+          setNotesError(err.message);
+        }
+      }
+    })();
 
-    listenerRef.current = unsubNotes;
-    return () => { unsubNotes(); listenerRef.current = null; };
+    return () => { cancelled = true; };
   }, [userData?.branch, userData?.sem, normaliseSem]);
 
-  /* ── Chunked PDF listeners — persistent cache + live invalidation ──
+  /* ── Chunked PDF fetch — persistent cache + fingerprint invalidation ──
      For each module in the active subject we:
      1. Serve immediately from cache (L1 → L2) keyed by BOTH the module
         key AND a fingerprint of the module's own data.  If the module
         data changed (professor re-uploaded) the fingerprint won't match
         so we treat it as a cache miss and re-subscribe.
-     2. Subscribe onValue to pdfMeta — fires once immediately from
-        Firebase's local cache, then again only if the server changes it.
-     3. On unmount / subject switch, detach all listeners cleanly.
+      2. Fetch pdfMeta only for cache misses / fingerprint changes.
   ── */
   useEffect(() => {
     if (!activeSubject || !userData?.branch || !userData?.sem) return;
@@ -320,18 +364,11 @@ export default function NotesPage() {
     const modulesData = subjects[activeSubject]?.modules || {};
     const moduleKeys  = Object.keys(modulesData);
 
-    /* Detach listeners for modules no longer in this subject */
-    const active = new Set(moduleKeys);
-    Object.keys(chunkedListeners.current).forEach((mk) => {
-      if (!active.has(mk)) {
-        chunkedListeners.current[mk]?.();
-        delete chunkedListeners.current[mk];
-      }
-    });
-
     if (!moduleKeys.length) return;
 
-    moduleKeys.forEach((modKey) => {
+    let cancelled = false;
+
+    moduleKeys.forEach(async (modKey) => {
       const ck    = chunkedKey(branch, semKey, activeSubject, modKey);
       const fpk   = modFpKey(branch, semKey, activeSubject, modKey);
 
@@ -347,37 +384,19 @@ export default function NotesPage() {
           if (prev[modKey] === cachedHas) return prev;
           return { ...prev, [modKey]: cachedHas };
         });
-        /* Still attach a lightweight listener so server changes propagate */
-        if (chunkedListeners.current[modKey]) return; // already listening
+        return;
       }
 
-      /* Attach onValue listener for this module's pdfMeta */
-      if (chunkedListeners.current[modKey]) return; // already attached
-
       const metaRef = ref(db, `notes/${branch}/${semKey}/subjects/${activeSubject}/modules/${modKey}/pdfMeta`);
-      const unsub   = onValue(metaRef, (snap) => {
-        const has    = snap.exists();
-        const prevHas = cacheGet(MEM_CHUNKED, ck);
-
-        /* Only update state + cache when value actually changed */
-        if (prevHas !== has) {
-          cacheSet(MEM_CHUNKED, ck,  has);
-          cacheSet(MEM_MODFP,   fpk, modFp);
-          setChunkedModules((prev) => ({ ...prev, [modKey]: has }));
-        } else if (cachedFp !== modFp) {
-          /* Module data changed but pdfMeta same — still refresh fingerprint */
-          cacheSet(MEM_MODFP, fpk, modFp);
-        }
-      });
-
-      chunkedListeners.current[modKey] = unsub;
+      const snap = await get(metaRef).catch(() => null);
+      if (cancelled) return;
+      const has = !!snap?.exists?.();
+      cacheSet(MEM_CHUNKED, ck, has);
+      cacheSet(MEM_MODFP, fpk, modFp);
+      setChunkedModules((prev) => ({ ...prev, [modKey]: has }));
     });
 
-    /* Cleanup: detach all listeners when subject changes or component unmounts */
-    return () => {
-      Object.values(chunkedListeners.current).forEach((fn) => fn?.());
-      chunkedListeners.current = {};
-    };
+    return () => { cancelled = true; };
   }, [activeSubject, subjects, userData?.branch, userData?.sem, normaliseSem]);
 
   /* ── AI chat scroll ── */
@@ -456,6 +475,24 @@ Give concise, exam-focused answers. Use bullet points when listing. Keep answers
   const handleOpenPDF = (mod) => {
     const isChunked = chunkedModules[mod.key];
     const semKey    = normaliseSem(sem);
+    const recentNotePayload = {
+      key: mod.key,
+      module: mod.key,
+      subject: activeSubject || "General",
+      branch,
+      sem: semKey,
+      title: mod.Title || mod.key,
+      desc: mod.description || mod.desc || "Recently opened module",
+      icon: "description",
+      updatedAt: Date.now(),
+    };
+    if (authUser?.uid) {
+      const safeKey = `${activeSubject || "GEN"}_${mod.key}`.replace(/[.#$\[\]/]/g, "_");
+      update(ref(db, `users/${authUser.uid}/recentNotes/${safeKey}`), {
+        ...recentNotePayload,
+      }).catch(() => {});
+      patchDashboardRecentNote(authUser.uid, recentNotePayload);
+    }
     if (isChunked) {
       router.push(`/pdfviewer?branch=${encodeURIComponent(branch)}&sem=${encodeURIComponent(semKey)}&subject=${encodeURIComponent(activeSubject)}&module=${encodeURIComponent(mod.key)}`);
     } else if (mod.resourcesPDF) {

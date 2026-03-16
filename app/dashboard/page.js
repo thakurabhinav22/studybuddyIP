@@ -1,10 +1,46 @@
 "use client";
 
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import { useRouter } from "next/navigation";
 import { auth, db } from "@/firebase";
 import { onAuthStateChanged, signOut } from "firebase/auth";
-import { ref, onValue, set } from "firebase/database";
+import { ref, get, set } from "firebase/database";
+
+const DASH_CACHE_VERSION = 1;
+const DASH_CACHE_TTL_MS = 3 * 60 * 1000;
+const DASH_MIN_FETCH_GAP_MS = 20 * 1000;
+
+function getDashCacheKey(uid) {
+  return `studybuddy:dashboard-cache:v${DASH_CACHE_VERSION}:${uid}`;
+}
+
+function readDashCache(uid) {
+  if (!uid || typeof window === "undefined") return null;
+  try {
+    const raw = localStorage.getItem(getDashCacheKey(uid));
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    if (!parsed?.data) return null;
+    return { ...parsed, updatedAt: parsed.updatedAt || Date.now() };
+  } catch {
+    return null;
+  }
+}
+
+function normalizeSem(raw) {
+  if (!raw) return "";
+  const str = raw.toString().trim();
+  if (/^Sem:\d+$/.test(str)) return str;
+  const num = str.replace(/[^0-9]/g, "");
+  return num ? `Sem:${num}` : str;
+}
+
+function writeDashCache(uid, data) {
+  if (!uid || typeof window === "undefined") return;
+  try {
+    localStorage.setItem(getDashCacheKey(uid), JSON.stringify({ data, updatedAt: Date.now() }));
+  } catch {}
+}
 
 /* ── Time-based greeting messages ── */
 const TIME_GREETINGS = {
@@ -480,9 +516,43 @@ export default function Dashboard() {
   const [showNotifs, setShowNotifs] = useState(false);
   const [showIOSNotifs, setShowIOSNotifs] = useState(false);
   const [mobileSearch, setMobileSearch] = useState(false);
+  const [cacheHydrated, setCacheHydrated] = useState(false);
+  const [lastSyncedAt, setLastSyncedAt] = useState(null);
   const notifRef = useRef(null);
   const notifBtn = useRef(null);
   const searchRef = useRef(null);
+  const inFlightFetchRef = useRef(false);
+  const lastFetchAtRef = useRef(0);
+
+  const applyUserData = useCallback((uid, data, source = "live") => {
+    if (!data) return;
+    setUserData(data);
+    setShowBranch(!data.branch);
+    setLoading(false);
+    if (source === "live") {
+      writeDashCache(uid, data);
+      setLastSyncedAt(Date.now());
+    }
+  }, []);
+
+  const fetchUserData = useCallback(async (uid, { force = false } = {}) => {
+    if (!uid || inFlightFetchRef.current) return;
+    const now = Date.now();
+    if (!force && now - lastFetchAtRef.current < DASH_MIN_FETCH_GAP_MS) return;
+
+    inFlightFetchRef.current = true;
+    try {
+      const snap = await get(ref(db, `users/${uid}`));
+      if (snap.exists()) {
+        applyUserData(uid, snap.val(), "live");
+      } else {
+        setLoading(false);
+      }
+      lastFetchAtRef.current = Date.now();
+    } finally {
+      inFlightFetchRef.current = false;
+    }
+  }, [applyUserData]);
 
   /* Close notifs on outside click */
   useEffect(() => {
@@ -502,29 +572,40 @@ export default function Dashboard() {
 
   /* Auth guard */
   useEffect(() => {
-    const unsub = onAuthStateChanged(auth, (firebaseUser) => {
+    const unsub = onAuthStateChanged(auth, async (firebaseUser) => {
       if (!firebaseUser) { router.replace("/"); return; }
       setAuthUser(firebaseUser);
-      const userRef = ref(db, `users/${firebaseUser.uid}`);
-      const unsubDB = onValue(userRef, (snap) => {
-        if (snap.exists()) {
-          const data = snap.val();
-          setUserData(data);
-          if (!data.branch) setShowBranch(true);
-          else setShowBranch(false);
-        }
-        setLoading(false);
-        /* Show greeting once per browser session */
-        if (!sessionStorage.getItem("sb_greeted")) {
-          sessionStorage.setItem("sb_greeted", "1");
-          setTimeout(() => setShowGreeting(true), 600);
-          setTimeout(() => setShowIOSNotifs(true), 1400);
-        }
-      });
-      return () => unsubDB();
+
+      const cached = readDashCache(firebaseUser.uid);
+      if (cached?.data) {
+        applyUserData(firebaseUser.uid, cached.data, "cache");
+        setCacheHydrated(true);
+      }
+
+      const cacheFresh = cached?.updatedAt && (Date.now() - cached.updatedAt) < DASH_CACHE_TTL_MS;
+      await fetchUserData(firebaseUser.uid, { force: !cacheFresh });
+
+      if (!sessionStorage.getItem("sb_greeted")) {
+        sessionStorage.setItem("sb_greeted", "1");
+        setTimeout(() => setShowGreeting(true), 600);
+        setTimeout(() => setShowIOSNotifs(true), 1400);
+      }
     });
     return () => unsub();
-  }, [router]);
+  }, [router, applyUserData, fetchUserData]);
+
+  useEffect(() => {
+    if (!authUser?.uid) return;
+
+    const onVisible = () => {
+      if (document.visibilityState === "visible") {
+        fetchUserData(authUser.uid, { force: false });
+      }
+    };
+
+    document.addEventListener("visibilitychange", onVisible);
+    return () => document.removeEventListener("visibilitychange", onVisible);
+  }, [authUser?.uid, fetchUserData]);
 
   /* Derived colours */
   const bg = isDark ? "#080f1a" : "#f5f8f5";
@@ -550,12 +631,17 @@ export default function Dashboard() {
 
   const stats = [
     { icon: "schedule", label: "Study Hours", value: studyHours ? `${studyHours}h` : "—", subtext: studyHours ? "+12% vs last week" : "No data yet", progress: Math.min((studyHours / 50) * 100, 100) },
-    { icon: "question_answer", label: "AI Questions", value: aiQuestions || "—", subtext: aiQuestions ? "+5% vs last week" : "No data yet", progress: Math.min((aiQuestions / 200) * 100, 100) },
+    { icon: "question_answer", label: "AI Questions", value: aiQuestions, subtext: aiQuestions ? "Active with Neural AI" : "Ask your first question", progress: Math.min((aiQuestions / 200) * 100, 100) },
     { icon: "task_alt", label: "Solved Problems", value: solvedProblems || "—", subtext: solvedProblems ? "+8% vs last week" : "No data yet", progress: Math.min((solvedProblems / 100) * 100, 100) },
     { icon: "local_fire_department", label: "Active Streak", value: streak ? `${streak} days` : "—", subtext: streak ? "Keep it up!" : "Start today!", progress: Math.min((streak / 30) * 100, 100) },
   ];
 
-  const recentNotes = userData?.recentNotes ? Object.values(userData.recentNotes) : [];
+  const recentNotes = useMemo(() => {
+    if (!userData?.recentNotes) return [];
+    return Object.values(userData.recentNotes)
+      .sort((a, b) => (Number(b?.updatedAt || b?.createdAt || 0) - Number(a?.updatedAt || a?.createdAt || 0)))
+      .slice(0, 6);
+  }, [userData?.recentNotes]);
 
   const navItems = [
     { id: "dashboard", icon: "dashboard", label: "Dashboard" },
@@ -656,7 +742,9 @@ export default function Dashboard() {
             <section style={{ animation: "fadeUp 0.4s ease 0.05s both" }}>
               <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "20px" }}>
                 <h3 style={{ fontSize: "18px", fontWeight: 800, letterSpacing: "-0.02em", color: text1, margin: 0 }}>Academic Overview</h3>
-                <span style={{ fontSize: "10px", fontWeight: 800, color: text3, background: isDark ? "rgba(255,255,255,0.05)" : "rgba(0,200,0,0.06)", padding: "4px 12px", borderRadius: "9999px", textTransform: "uppercase", letterSpacing: "0.1em" }}>Live</span>
+                <span style={{ fontSize: "10px", fontWeight: 800, color: text3, background: isDark ? "rgba(255,255,255,0.05)" : "rgba(0,200,0,0.06)", padding: "4px 12px", borderRadius: "9999px", textTransform: "uppercase", letterSpacing: "0.1em" }}>
+                  {cacheHydrated && !lastSyncedAt ? "Cached" : "Live"}
+                </span>
               </div>
               <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(220px,1fr))", gap: "16px" }}>
                 {stats.map(s => <StatCard key={s.label} {...s} isDark={isDark} />)}
@@ -690,7 +778,17 @@ export default function Dashboard() {
                           <p style={{ fontSize: "11px", color: text2, lineHeight: 1.5, margin: 0 }}>{note.desc}</p>
                         </div>
                         <div style={{ display: "flex", alignItems: "center", justifyContent: "flex-end", marginTop: "12px" }}>
-                          <button style={{ display: "flex", alignItems: "center", gap: "6px", padding: "8px 14px", background: isDark ? "#f1f5f9" : "#0f172a", color: isDark ? "#0f172a" : "#fff", border: "none", borderRadius: "10px", fontSize: "11px", fontWeight: 800, cursor: "pointer", fontFamily: "'Inter',sans-serif" }}>
+                          <button onClick={() => {
+                            const noteBranch = note.branch || branch;
+                            const noteSem = normalizeSem(note.sem || userData?.sem);
+                            const noteSubject = note.subject;
+                            const noteModule = note.key || note.module || note.moduleKey;
+                            if (noteBranch && noteSem && noteSubject && noteModule) {
+                              router.push(`/pdfviewer?branch=${encodeURIComponent(noteBranch)}&sem=${encodeURIComponent(noteSem)}&subject=${encodeURIComponent(noteSubject)}&module=${encodeURIComponent(noteModule)}`);
+                              return;
+                            }
+                            router.push("/notes");
+                          }} style={{ display: "flex", alignItems: "center", gap: "6px", padding: "8px 14px", background: isDark ? "#f1f5f9" : "#0f172a", color: isDark ? "#0f172a" : "#fff", border: "none", borderRadius: "10px", fontSize: "11px", fontWeight: 800, cursor: "pointer", fontFamily: "'Inter',sans-serif" }}>
                             Open Note <span className="ms" style={{ fontSize: "14px" }}>arrow_forward</span>
                           </button>
                         </div>
