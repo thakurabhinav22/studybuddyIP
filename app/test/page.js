@@ -5,13 +5,14 @@ import { auth, db } from "@/firebase";
 import { onAuthStateChanged, signOut } from "firebase/auth";
 import { ref, onValue } from "firebase/database";
 
+
 // ── Theme Hook ──
 function useTheme() {
   const KEY = "studybuddy_theme";
   const [theme, setThemeState] = useState("system");
   const [resolved, setResolved] = useState("light");
-  useEffect(() => { try { setThemeState(localStorage.getItem(KEY) || "system"); } catch {} }, []);
-  const setTheme = (val) => { try { localStorage.setItem(KEY, val); } catch {} setThemeState(val); };
+  useEffect(() => { try { setThemeState(localStorage.getItem(KEY) || "system"); } catch { } }, []);
+  const setTheme = (val) => { try { localStorage.setItem(KEY, val); } catch { } setThemeState(val); };
   useEffect(() => {
     const mq = window.matchMedia("(prefers-color-scheme: dark)");
     const update = () => setResolved(theme === "system" ? (mq.matches ? "dark" : "light") : theme);
@@ -110,6 +111,9 @@ export default function TestPage() {
   const text3 = isDark ? "#475569" : "#94a3b8";
   const bdr = isDark ? "rgba(0,255,0,0.1)" : "rgba(0,200,0,0.1)";
 
+  const [userName, setUserName] = useState(null);
+  const [userAvatar, setUserAvatar] = useState(null);
+
   const navItems = [
     { id: "dashboard", icon: "dashboard", label: "Dashboard" },
     { id: "notes", icon: "description", label: "Notes" },
@@ -127,27 +131,32 @@ export default function TestPage() {
         return;
       }
 
-      const userRef = ref(db, `users/${user.uid}`);
+      const userRef = ref(db, `users/${user.uid}`);  // ✅ declared BEFORE onValue
       onValue(userRef, (snap) => {
         if (snap.exists()) {
           const data = snap.val();
-          const branch = data.branch;           // e.g. "IT", "CS", "EXTC"
-          const semRaw = data.sem;              // e.g. 3, "3", "Sem:3"
+          const branch = data.branch;
+          const semRaw = data.sem;
           const sem = semRaw ? Number(semRaw.toString().replace(/\D/g, "")) : null;
 
           setUserBranch(branch);
           setUserSem(sem);
 
+          // ✅ Set name & avatar here, right after reading data
+          const name = data.displayName || data.name || user.displayName || "User";
+          const avatar = data.photoURL || user.photoURL || null;
+          setUserName(name);
+          setUserAvatar(avatar);
+
           if (branch && sem) {
-            // Load subjects from: notes/{branch}/Sem:{sem}/subjects
             const subjectsRef = ref(db, `notes/${branch}/Sem:${sem}/subjects`);
             onValue(subjectsRef, (subSnap) => {
               if (subSnap.exists()) {
                 const subsList = Object.keys(subSnap.val() || {}).map((subjectName) => ({
-                  icon: "quiz",                    // default icon (customize later if needed)
+                  icon: "quiz",
                   label: subjectName,
-                  count: 0,                        // placeholder — update if you store question count
-                  color: "#00AA00"                 // default green — can map per subject
+                  count: 0,
+                  color: "#00AA00"
                 }));
                 setSubjects(subsList);
               } else {
@@ -158,6 +167,7 @@ export default function TestPage() {
           } else {
             setLoadingSubjects(false);
           }
+
         } else {
           setLoadingSubjects(false);
         }
@@ -365,8 +375,7 @@ export default function TestPage() {
               <div style={{ display: "flex", alignItems: "center", gap: "10px", cursor: "pointer" }}>
                 <div style={{ textAlign: "right" }}>
                   <p style={{ fontSize: "12px", fontWeight: 800, color: text1, margin: 0 }}>
-                    {/* You can replace with real user name from Firebase if available */}
-                    Soham
+                    {userName || "User"}
                   </p>
                   <p style={{ fontSize: "10px", color: text3, marginTop: "2px" }}>
                     {userBranch || "—"} · Sem {userSem || "—"}
@@ -377,10 +386,29 @@ export default function TestPage() {
                   overflow: "hidden", background: isDark ? "rgba(255,255,255,0.1)" : "#e2e8f0"
                 }}>
                   <div style={{
-                    width: "100%", height: "100%", display: "flex", alignItems: "center", justifyContent: "center",
-                    background: "#00FF00", color: "#0f172a", fontSize: "18px", fontWeight: 900
+                    width: "40px", height: "40px", borderRadius: "9999px", border: "2.5px solid #00FF00",
+                    overflow: "hidden", background: isDark ? "rgba(255,255,255,0.1)" : "#e2e8f0",
+                    position: "relative"  // ✅ no extra inner wrapper
                   }}>
-                    S
+                    {userAvatar ? (
+                      <img
+                        src={userAvatar}
+                        alt={userName || "User"}
+                        style={{ width: "100%", height: "100%", objectFit: "cover", display: "block" }}
+                        onError={(e) => {
+                          e.target.style.display = "none";
+                          e.target.nextElementSibling.style.display = "flex";
+                        }}
+                      />
+                    ) : null}
+                    <div style={{
+                      width: "100%", height: "100%",
+                      display: userAvatar ? "none" : "flex",  // ✅ shown only when no avatar
+                      alignItems: "center", justifyContent: "center",
+                      background: "#00FF00", color: "#0f172a", fontSize: "18px", fontWeight: 900
+                    }}>
+                      {(userName || "U")[0].toUpperCase()}
+                    </div>
                   </div>
                 </div>
               </div>
