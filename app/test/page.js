@@ -246,6 +246,7 @@ export default function TestPage() {
   // Avatar Component (same as NotesPage)
   const AvatarEl = ({ size = 40 }) => {
     const fullName = "Soham"; // You can connect with real userData later
+    
     const firstName = "Soham";
     return (
       <div style={{
