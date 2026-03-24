@@ -5,6 +5,7 @@ import { auth, db } from "@/firebase";
 import { onAuthStateChanged, signOut } from "firebase/auth";
 import { ref, onValue } from "firebase/database";
 
+
 // ── Theme Hook ──
 function useTheme() {
   const KEY = "studybuddy_theme";
@@ -113,6 +114,9 @@ export default function TestPage() {
   const text3 = isDark ? "#475569" : "#94a3b8";
   const bdr = isDark ? "rgba(0,255,0,0.1)" : "rgba(0,200,0,0.1)";
 
+  const [userName, setUserName] = useState(null);
+  const [userAvatar, setUserAvatar] = useState(null);
+
   const navItems = [
     { id: "dashboard", icon: "dashboard", label: "Dashboard" },
     { id: "notes", icon: "description", label: "Notes" },
@@ -130,6 +134,8 @@ export default function TestPage() {
         return;
       }
       const userRef = ref(db, `users/${user.uid}`);
+
+      const userRef = ref(db, `users/${user.uid}`);  // ✅ declared BEFORE onValue
       onValue(userRef, (snap) => {
         if (snap.exists()) {
           const data = snap.val();
@@ -140,6 +146,12 @@ export default function TestPage() {
           setUserBranch(branch);
           setUserSem(sem);
 
+          // ✅ Set name & avatar here, right after reading data
+          const name = data.displayName || data.name || user.displayName || "User";
+          const avatar = data.photoURL || user.photoURL || null;
+          setUserName(name);
+          setUserAvatar(avatar);
+
           if (branch && sem) {
             const subjectsRef = ref(db, `notes/${branch}/Sem:${sem}/subjects`);
             onValue(subjectsRef, (subSnap) => {
@@ -147,6 +159,10 @@ export default function TestPage() {
                 const subsList = Object.keys(subSnap.val() || {}).map((subjectName) => ({
                   label: subjectName,
                   color: "#00AA00",
+                  icon: "quiz",
+                  label: subjectName,
+                  count: 0,
+                  color: "#00AA00"
                 }));
                 setSubjects(subsList);
               } else {
@@ -157,6 +173,7 @@ export default function TestPage() {
           } else {
             setLoadingSubjects(false);
           }
+
         } else {
           setLoadingSubjects(false);
         }
@@ -338,11 +355,44 @@ export default function TestPage() {
               <div style={{ display: "flex", alignItems: "center", gap: "10px", cursor: "pointer" }} onClick={() => router.push("/profile")}>
                 <div style={{ textAlign: "right" }}>
                   <p style={{ fontSize: "12px", fontWeight: 700, color: text1, margin: 0 }}>Soham</p>
+                  <p style={{ fontSize: "12px", fontWeight: 800, color: text1, margin: 0 }}>
+                    {userName || "User"}
+                  </p>
                   <p style={{ fontSize: "10px", color: text3, marginTop: "2px" }}>
                     {userBranch || "—"} · Sem {userSem || "—"}
                   </p>
                 </div>
                 <AvatarEl size={40} />
+                <div style={{
+                  width: "40px", height: "40px", borderRadius: "9999px", border: "2.5px solid #00FF00",
+                  overflow: "hidden", background: isDark ? "rgba(255,255,255,0.1)" : "#e2e8f0"
+                }}>
+                  <div style={{
+                    width: "40px", height: "40px", borderRadius: "9999px", border: "2.5px solid #00FF00",
+                    overflow: "hidden", background: isDark ? "rgba(255,255,255,0.1)" : "#e2e8f0",
+                    position: "relative"  // ✅ no extra inner wrapper
+                  }}>
+                    {userAvatar ? (
+                      <img
+                        src={userAvatar}
+                        alt={userName || "User"}
+                        style={{ width: "100%", height: "100%", objectFit: "cover", display: "block" }}
+                        onError={(e) => {
+                          e.target.style.display = "none";
+                          e.target.nextElementSibling.style.display = "flex";
+                        }}
+                      />
+                    ) : null}
+                    <div style={{
+                      width: "100%", height: "100%",
+                      display: userAvatar ? "none" : "flex",  // ✅ shown only when no avatar
+                      alignItems: "center", justifyContent: "center",
+                      background: "#00FF00", color: "#0f172a", fontSize: "18px", fontWeight: 900
+                    }}>
+                      {(userName || "U")[0].toUpperCase()}
+                    </div>
+                  </div>
+                </div>
               </div>
             </div>
           </header>
