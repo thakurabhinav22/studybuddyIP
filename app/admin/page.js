@@ -1,5 +1,4 @@
 "use client";
-
 import { useState, useRef, useEffect } from "react";
 import { useRouter } from "next/navigation";
 import { auth, db } from "@/firebase";
@@ -16,7 +15,7 @@ const CHUNK_SIZE = 500 * 1024; // 500KB per chunk (base64 chars)
 async function fileToBase64(file) {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
-    reader.onload = () => resolve(reader.result.split(",")[1]); // strip data:...;base64,
+    reader.onload = () => resolve(reader.result.split(",")[1]);
     reader.onerror = reject;
     reader.readAsDataURL(file);
   });
@@ -31,17 +30,13 @@ function chunkString(str, size) {
 }
 
 async function uploadPDFChunked(db, path, file, onProgress) {
-  // path = notes/IT/Sem:3/subjects/CN/modules/module1
   onProgress(5, "Reading file…");
   const base64 = await fileToBase64(file);
-
   onProgress(20, "Splitting into chunks…");
   const chunks = chunkString(base64, CHUNK_SIZE);
   const totalChunks = chunks.length;
-
   onProgress(25, `Uploading ${totalChunks} chunks…`);
 
-  // Write metadata first
   const metaRef = dbRef(db, `${path}/pdfMeta`);
   await set(metaRef, {
     totalChunks,
@@ -51,14 +46,12 @@ async function uploadPDFChunked(db, path, file, onProgress) {
     uploadedAt: Date.now(),
   });
 
-  // Upload each chunk
   for (let i = 0; i < chunks.length; i++) {
     const chunkRef = dbRef(db, `${path}/pdfChunks/chunk_${i}`);
     await set(chunkRef, chunks[i]);
     const pct = 25 + Math.round(((i + 1) / totalChunks) * 70);
     onProgress(pct, `Uploading chunk ${i + 1} of ${totalChunks}…`);
   }
-
   onProgress(100, "Done!");
 }
 
@@ -87,44 +80,44 @@ function useTheme() {
 }
 
 const BRANCHES = ["IT", "CS", "EXTC", "MECH", "CIVIL"];
-const SEMS     = ["Sem:1","Sem:2","Sem:3","Sem:4","Sem:5","Sem:6","Sem:7","Sem:8"];
-
+const SEMS = ["Sem:1","Sem:2","Sem:3","Sem:4","Sem:5","Sem:6","Sem:7","Sem:8"];
 const NAV_ITEMS = [
-  { id: "dashboard", icon: "dashboard",   label: "Dashboard",  href: "/dashboard" },
-  { id: "notes",     icon: "description", label: "Notes",      href: "/notes"     },
-  { id: "test",      icon: "quiz",        label: "Test",       href: "/test"      },
-  { id: "ai",        icon: "psychology",  label: "Neural AI",  href: "/ai"        },
-  { id: "profile",   icon: "person",      label: "Profile",    href: "/profile"   },
-  { id: "settings",  icon: "settings",    label: "Settings",   href: "/settings"  },
+  { id: "dashboard", icon: "dashboard", label: "Dashboard", href: "/dashboard" },
+  { id: "notes", icon: "description", label: "Notes", href: "/notes" },
+  { id: "test", icon: "quiz", label: "Test", href: "/test" },
+  { id: "ai", icon: "psychology", label: "Neural AI", href: "/ai" },
+  { id: "profile", icon: "person", label: "Profile", href: "/profile" },
+  { id: "settings", icon: "settings", label: "Settings", href: "/settings" },
 ];
 
 /* ═══════════════════════════════════════════
-   MAIN COMPONENT
+   MAIN COMPONENT - Updated with Description
 ═══════════════════════════════════════════ */
 export default function AdminUploadPage() {
-  const router  = useRouter();
+  const router = useRouter();
   const { resolved } = useTheme();
-  const isDark  = resolved === "dark";
+  const isDark = resolved === "dark";
+
   const fileRef = useRef(null);
 
-  const [authUser,    setAuthUser]    = useState(null);
-  const [userData,    setUserData]    = useState(null);
+  const [authUser, setAuthUser] = useState(null);
+  const [userData, setUserData] = useState(null);
   const [authLoading, setAuthLoading] = useState(true);
 
-  const [branch,      setBranch]      = useState("IT");
-  const [sem,         setSem]         = useState("Sem:3");
-  const [subject,     setSubject]     = useState("");
-  const [moduleKey,   setModuleKey]   = useState("module1");
+  const [branch, setBranch] = useState("IT");
+  const [sem, setSem] = useState("Sem:3");
+  const [subject, setSubject] = useState("");
+  const [moduleKey, setModuleKey] = useState("module1");
   const [moduleTitle, setModuleTitle] = useState("");
-  const [file,        setFile]        = useState(null);
-  const [dragOver,    setDragOver]    = useState(false);
+  const [moduleDescription, setModuleDescription] = useState(""); // ← NEW FIELD
 
-  const [progress,    setProgress]    = useState(0);
-  const [statusMsg,   setStatusMsg]   = useState("");
-  const [status,      setStatus]      = useState("idle"); // idle|uploading|success|error
-  const [errorMsg,    setErrorMsg]    = useState("");
-
-  const [subjects,    setSubjects]    = useState({});
+  const [file, setFile] = useState(null);
+  const [dragOver, setDragOver] = useState(false);
+  const [progress, setProgress] = useState(0);
+  const [statusMsg, setStatusMsg] = useState("");
+  const [status, setStatus] = useState("idle");
+  const [errorMsg, setErrorMsg] = useState("");
+  const [subjects, setSubjects] = useState({});
 
   /* Auth */
   useEffect(() => {
@@ -154,20 +147,20 @@ export default function AdminUploadPage() {
   }, [branch, sem]);
 
   /* Colors */
-  const bg      = isDark ? "#080f1a"              : "#f5f8f5";
-  const sidebar  = isDark ? "rgba(8,15,26,0.96)"  : "rgba(255,255,255,0.85)";
-  const header   = isDark ? "rgba(8,15,26,0.92)"  : "rgba(255,255,255,0.85)";
-  const card     = isDark ? "rgba(15,23,42,0.9)"  : "#ffffff";
-  const text1    = isDark ? "#f1f5f9"             : "#0f172a";
-  const text2    = isDark ? "#94a3b8"             : "#475569";
-  const text3    = isDark ? "#475569"             : "#94a3b8";
-  const bdr      = isDark ? "rgba(0,255,0,0.1)"   : "rgba(0,200,0,0.12)";
-  const inputBg  = isDark ? "rgba(255,255,255,0.04)" : "rgba(0,200,0,0.04)";
-  const inputBdr = isDark ? "rgba(255,255,255,0.1)"  : "rgba(0,200,0,0.2)";
+  const bg = isDark ? "#080f1a" : "#f5f8f5";
+  const sidebar = isDark ? "rgba(8,15,26,0.96)" : "rgba(255,255,255,0.85)";
+  const header = isDark ? "rgba(8,15,26,0.92)" : "rgba(255,255,255,0.85)";
+  const card = isDark ? "rgba(15,23,42,0.9)" : "#ffffff";
+  const text1 = isDark ? "#f1f5f9" : "#0f172a";
+  const text2 = isDark ? "#94a3b8" : "#475569";
+  const text3 = isDark ? "#475569" : "#94a3b8";
+  const bdr = isDark ? "rgba(0,255,0,0.1)" : "rgba(0,200,0,0.12)";
+  const inputBg = isDark ? "rgba(255,255,255,0.04)" : "rgba(0,200,0,0.04)";
+  const inputBdr = isDark ? "rgba(255,255,255,0.1)" : "rgba(0,200,0,0.2)";
 
-  const fullName  = userData?.fullName  || authUser?.displayName || "";
+  const fullName = userData?.fullName || authUser?.displayName || "";
   const firstName = userData?.firstName || authUser?.displayName?.split(" ")[0] || "";
-  const photoURL  = userData?.photoURL  || authUser?.photoURL    || "";
+  const photoURL = userData?.photoURL || authUser?.photoURL || "";
 
   const AvatarEl = ({ size = 40 }) => (
     <div style={{ width: `${size}px`, height: `${size}px`, borderRadius: "9999px", border: "2.5px solid #00FF00", overflow: "hidden", background: isDark ? "rgba(255,255,255,0.1)" : "#e2e8f0", flexShrink: 0 }}>
@@ -185,24 +178,35 @@ export default function AdminUploadPage() {
     setDragOver(false);
     const f = e.dataTransfer?.files?.[0] || e.target?.files?.[0];
     if (f?.type === "application/pdf") {
-      setFile(f); setStatus("idle"); setErrorMsg("");
+      setFile(f); 
+      setStatus("idle"); 
+      setErrorMsg("");
     } else {
-      setErrorMsg("Only PDF files are accepted."); setStatus("error");
+      setErrorMsg("Only PDF files are accepted."); 
+      setStatus("error");
     }
   };
 
   const handleUpload = async () => {
     if (!file || !subject || !moduleKey || !moduleTitle) {
-      setErrorMsg("Fill all fields and select a PDF."); setStatus("error"); return;
+      setErrorMsg("Fill all required fields (Title, Subject, Module & PDF).");
+      setStatus("error"); 
+      return;
     }
-    setStatus("uploading"); setErrorMsg("");
+
+    setStatus("uploading"); 
+    setErrorMsg("");
 
     try {
       const dbPath = `notes/${branch}/${sem}/subjects/${subject}/modules/${moduleKey}`;
 
-      // Write title first
-      await update(dbRef(db, dbPath), { Title: moduleTitle });
+      // Save Title + Description directly under the module node
+      await update(dbRef(db, dbPath), {
+        Title: moduleTitle,
+        Description: moduleDescription.trim() || "",   // ← Stored here
+      });
 
+      // Upload PDF in chunks
       await uploadPDFChunked(db, dbPath, file, (pct, msg) => {
         setProgress(pct);
         setStatusMsg(msg);
@@ -210,6 +214,8 @@ export default function AdminUploadPage() {
 
       setStatus("success");
       setFile(null);
+      // Optional: Reset description after success
+      // setModuleDescription("");
     } catch (err) {
       setStatus("error");
       setErrorMsg(err.message);
@@ -244,7 +250,6 @@ export default function AdminUploadPage() {
         @keyframes spin{to{transform:rotate(360deg);}}
         @keyframes successPop{0%{transform:scale(0.85);opacity:0;}60%{transform:scale(1.05);}100%{transform:scale(1);opacity:1;}}
         @keyframes shimmer{0%{background-position:-200% 0;}100%{background-position:200% 0;}}
-
         .sb-root{display:flex;height:100vh;overflow:hidden;}
         .sb-sidebar{width:260px;min-width:260px;height:100vh;background:${sidebar};backdrop-filter:blur(12px);border-right:1px solid ${bdr};display:flex;flex-direction:column;padding:24px 20px;z-index:20;}
         .nav-link{display:flex;align-items:center;gap:12px;padding:12px 14px;border-radius:9999px;font-size:13px;font-weight:600;color:${text2};transition:all 0.2s;cursor:pointer;border:none;background:none;width:100%;text-align:left;font-family:'Lexend',sans-serif;}
@@ -269,14 +274,13 @@ export default function AdminUploadPage() {
         .btn-up{width:100%;padding:16px;background:#00FF00;color:#0f172a;border:none;border-radius:14px;font-size:14px;font-weight:700;font-family:'Lexend',sans-serif;cursor:pointer;display:flex;align-items:center;justify-content:center;gap:10px;transition:all 0.22s cubic-bezier(0.34,1.56,0.64,1);box-shadow:0 4px 20px rgba(0,255,0,0.3);}
         .btn-up:hover:not(:disabled){transform:translateY(-2px);box-shadow:0 8px 28px rgba(0,255,0,0.45);}
         .btn-up:disabled{opacity:0.4;cursor:not-allowed;transform:none;}
-        .chunk-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(32px,1fr));gap:4px;max-height:80px;overflow:hidden;}
-        .chunk-cell{height:8px;border-radius:3px;transition:background 0.3s;}
         @media(max-width:768px){.sb-sidebar{display:none;}.form-row-2,.form-row-3{grid-template-columns:1fr;}.sb-scroll{padding:20px 16px 80px;}}
       `}</style>
 
       <div className="sb-root">
-        {/* Sidebar */}
+        {/* Sidebar - unchanged */}
         <aside className="sb-sidebar">
+          {/* ... your existing sidebar code ... */}
           <div style={{ display:"flex", alignItems:"center", gap:"12px", marginBottom:"40px", padding:"0 4px" }}>
             <div style={{ width:"40px", height:"40px", background:"#00FF00", borderRadius:"10px", display:"flex", alignItems:"center", justifyContent:"center", boxShadow:"0 0 16px rgba(0,255,0,0.35)" }}>
               <span className="ms" style={{ color:"#0f172a", fontSize:"22px" }}>school</span>
@@ -307,9 +311,10 @@ export default function AdminUploadPage() {
           </nav>
         </aside>
 
-        {/* Main */}
+        {/* Main Content */}
         <main className="sb-main">
           <header className="sb-header">
+            {/* ... your existing header ... */}
             <div style={{ display:"flex", alignItems:"center", gap:"12px" }}>
               <div style={{ width:"36px", height:"36px", background:"#00FF00", borderRadius:"9px", display:"flex", alignItems:"center", justifyContent:"center", boxShadow:"0 0 12px rgba(0,255,0,0.4)" }}>
                 <span className="ms" style={{ color:"#0f172a", fontSize:"20px" }}>upload_file</span>
@@ -332,15 +337,15 @@ export default function AdminUploadPage() {
             {/* Heading */}
             <div style={{ animation:"fadeUp 0.3s ease both" }}>
               <h2 style={{ fontSize:"clamp(1.4rem,3vw,1.9rem)", fontWeight:700, letterSpacing:"-0.03em", color:text1, marginBottom:"6px" }}>Upload Module PDF</h2>
-              <p style={{ fontSize:"14px", color:text2, margin:0 }}>PDF is split into 500KB chunks and stored directly in Firebase Realtime Database — completely free, no storage service needed.</p>
+              <p style={{ fontSize:"14px", color:text2, margin:0 }}>PDF is split into 500KB chunks and stored directly in Firebase Realtime Database.</p>
             </div>
 
-            {/* How it works */}
+            {/* How it works - unchanged */}
             <div style={{ display:"flex", gap:"12px", flexWrap:"wrap", animation:"fadeUp 0.35s ease both" }}>
               {[
-                { icon:"upload_file",  label:"1. Pick PDF",          sub:"Any size" },
-                { icon:"cut",          label:"2. Auto-chunks",        sub:"500KB each" },
-                { icon:"database",     label:"3. Saves to Firebase",  sub:"Realtime DB" },
+                { icon:"upload_file", label:"1. Pick PDF", sub:"Any size" },
+                { icon:"cut", label:"2. Auto-chunks", sub:"500KB each" },
+                { icon:"database", label:"3. Saves to Firebase", sub:"Realtime DB" },
                 { icon:"picture_as_pdf",label:"4. Students view it", sub:"Your PDF viewer" },
               ].map(({icon,label,sub}) => (
                 <div key={label} style={{ flex:"1 1 160px", background:card, border:`1px solid ${bdr}`, borderRadius:"16px", padding:"16px", display:"flex", alignItems:"center", gap:"12px" }}>
@@ -355,7 +360,7 @@ export default function AdminUploadPage() {
               ))}
             </div>
 
-            {/* Success */}
+            {/* Success & Error Messages */}
             {status === "success" && (
               <div style={{ background:"rgba(0,255,0,0.08)", border:"1px solid rgba(0,255,0,0.3)", borderRadius:"16px", padding:"20px 24px", display:"flex", alignItems:"center", gap:"16px", animation:"successPop 0.5s cubic-bezier(0.34,1.56,0.64,1) both" }}>
                 <div style={{ width:"52px", height:"52px", borderRadius:"14px", background:"rgba(0,255,0,0.15)", display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0 }}>
@@ -364,14 +369,12 @@ export default function AdminUploadPage() {
                 <div>
                   <p style={{ fontSize:"14px", fontWeight:700, color:text1, margin:"0 0 4px" }}>Upload Complete!</p>
                   <p style={{ fontSize:"12px", color:text2, margin:0 }}>
-                    PDF chunks saved to <code style={{ background:isDark?"rgba(255,255,255,0.08)":"rgba(0,0,0,0.06)", padding:"2px 6px", borderRadius:"4px" }}>notes/{branch}/{sem}/subjects/{subject}/modules/{moduleKey}/pdfChunks</code>
-                    <br />Students can now open this module in the PDF viewer.
+                    Module saved successfully with Title and Description.
                   </p>
                 </div>
               </div>
             )}
 
-            {/* Error */}
             {status === "error" && errorMsg && (
               <div style={{ background:"rgba(239,68,68,0.08)", border:"1px solid rgba(239,68,68,0.25)", borderRadius:"16px", padding:"16px 20px", display:"flex", alignItems:"center", gap:"12px", animation:"fadeUp 0.3s ease both" }}>
                 <span className="ms" style={{ fontSize:"24px", color:"#ef4444" }}>error</span>
@@ -417,8 +420,8 @@ export default function AdminUploadPage() {
                 </div>
               </div>
 
-              {/* Module key / title */}
-              <div className="form-row-2">
+              {/* Module Details - Updated with Description */}
+              <div className="form-row-3">
                 <div>
                   <label style={lbl}>Module</label>
                   <select style={inp} value={moduleKey} onChange={e => setModuleKey(e.target.value)}>
@@ -426,12 +429,32 @@ export default function AdminUploadPage() {
                   </select>
                 </div>
                 <div>
-                  <label style={lbl}>Module Title</label>
-                  <input style={inp} placeholder="e.g. Introduction to Computer Networks" value={moduleTitle} onChange={e => setModuleTitle(e.target.value)} />
+                  <label style={lbl}>Module Title <span style={{color:"#ef4444"}}>*</span></label>
+                  <input 
+                    style={inp} 
+                    placeholder="e.g. Introduction to Computer Networks" 
+                    value={moduleTitle} 
+                    onChange={e => setModuleTitle(e.target.value)} 
+                  />
+                </div>
+                <div>
+                  <label style={lbl}>Module Description</label>
+                  <textarea
+                    style={{
+                      ...inp,
+                      minHeight: "88px",
+                      resize: "vertical",
+                      padding: "12px 16px",
+                      lineHeight: "1.5",
+                    }}
+                    placeholder="Brief description of what this module covers (optional)"
+                    value={moduleDescription}
+                    onChange={e => setModuleDescription(e.target.value)}
+                  />
                 </div>
               </div>
 
-              {/* Drop zone */}
+              {/* PDF Drop Zone */}
               <div>
                 <label style={lbl}>PDF File</label>
                 <div
@@ -503,7 +526,7 @@ export default function AdminUploadPage() {
               <div>
                 <p style={{ fontSize:"13px", fontWeight:700, color:text1, margin:"0 0 4px" }}>Large PDFs take time</p>
                 <p style={{ fontSize:"12px", color:text2, margin:0, lineHeight:1.6 }}>
-                  A 10MB PDF becomes ~13MB of base64, split into ~27 chunks. Each chunk is a separate Firebase write. 
+                  A 10MB PDF becomes ~13MB of base64, split into ~27 chunks. Each chunk is a separate Firebase write.
                   Keep the page open during upload. Recommended max: <strong>15MB per PDF</strong> for best performance.
                 </p>
               </div>
