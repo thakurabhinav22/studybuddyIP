@@ -68,6 +68,23 @@ async function loadPdfMeta(branch, sem, subject, moduleKey) {
   return payload?.data || null;
 }
 
+function normalizeSem(raw) {
+  if (!raw) return "";
+  const s = raw.toString().trim();
+  if (/^Sem:\d+$/.test(s)) return s;
+  const n = s.replace(/[^0-9]/g, "");
+  return n ? `Sem:${n}` : s;
+}
+
+async function loadSubjectTitle(branch, sem, subject, moduleKey) {
+  const res = await fetch(`/api/notes/subjects?branch=${encodeURIComponent(branch)}&sem=${encodeURIComponent(sem)}`);
+  if (!res.ok) return null;
+  const payload = await res.json();
+  const modules = payload?.data?.[subject]?.modules || {};
+  const mod = modules?.[moduleKey];
+  return mod?.Title || mod?.title || null;
+}
+
 async function loadPdfChunks(branch, sem, subject, moduleKey) {
   const res = await fetch(`/api/notes/pdf?branch=${encodeURIComponent(branch)}&sem=${encodeURIComponent(sem)}&subject=${encodeURIComponent(subject)}&module=${encodeURIComponent(moduleKey)}&type=chunks`);
   if (!res.ok) throw new Error(`Failed to load PDF chunks (${res.status})`);
@@ -1159,7 +1176,7 @@ function PDFViewerInner() {
   const chatInputRef = useRef(null);
 
   const branch    = searchParams.get("branch")  || "";
-  const sem       = searchParams.get("sem")     || "";
+  const sem       = normalizeSem(searchParams.get("sem") || "");
   const subject   = searchParams.get("subject") || "";
   const moduleKey = searchParams.get("module")  || "";
 
@@ -1287,7 +1304,7 @@ function PDFViewerInner() {
   /* ── Module title + filename ── */
   useEffect(() => {
     if (!branch || !sem || !subject || !moduleKey) return;
-    get(dbRef(db, `notes/${branch}/${sem}/subjects/${subject}/modules/${moduleKey}/Title`)).then(s => { if (s.exists()) setModuleTitle(s.val()); });
+    loadSubjectTitle(branch, sem, subject, moduleKey).then(title => { if (title) setModuleTitle(title); });
     loadPdfMeta(branch, sem, subject, moduleKey).then(meta => { if (meta) setFileName(meta.fileName || `${moduleKey}.pdf`); });
   }, [branch, sem, subject, moduleKey]);
 

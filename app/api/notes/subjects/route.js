@@ -10,6 +10,18 @@ const FB = "https://studybuddytcet-default-rtdb.firebaseio.com";
 
 const SUBJECTS_TTL = 60 * 60 * 24 * 10; // 10 days in seconds
 
+function normalizeSem(raw) {
+  if (!raw) return "";
+  const s = raw.toString().trim();
+  if (/^Sem:\d+$/.test(s)) return s;
+  const n = s.replace(/[^0-9]/g, "");
+  return n ? `Sem:${n}` : s;
+}
+
+async function setWithTTL(key, value, ttlSeconds) {
+  return redis.set(key, value, { ex: ttlSeconds });
+}
+
 function sanitizeModule(moduleValue, moduleKey) {
   if (moduleValue === true) {
     return { Title: moduleKey };
@@ -65,7 +77,7 @@ function normalizeSubjects(raw) {
 export async function GET(request) {
   const { searchParams } = new URL(request.url);
   const branch = searchParams.get("branch");
-  const sem    = searchParams.get("sem");
+  const sem    = normalizeSem(searchParams.get("sem"));
 
   if (!branch || !sem) {
     return Response.json({ error: "Missing params" }, { status: 400 });
@@ -104,7 +116,7 @@ export async function GET(request) {
 
     // ── 3. Store in Redis for 10 days ──
     try {
-      await redis.setex(cacheKey, SUBJECTS_TTL, normalised);
+      await setWithTTL(cacheKey, normalised, SUBJECTS_TTL);
     } catch (e) {
       console.warn("[subjects] Redis setex failed:", e.message);
     }

@@ -8,10 +8,22 @@ const redis = new Redis({
 const FB      = "https://studybuddytcet-default-rtdb.firebaseio.com";
 const PDF_TTL = 60 * 60 * 24 * 10; // 10 days in seconds
 
+function normalizeSem(raw) {
+  if (!raw) return "";
+  const s = raw.toString().trim();
+  if (/^Sem:\d+$/.test(s)) return s;
+  const n = s.replace(/[^0-9]/g, "");
+  return n ? `Sem:${n}` : s;
+}
+
+async function setWithTTL(key, value, ttlSeconds) {
+  return redis.set(key, value, { ex: ttlSeconds });
+}
+
 export async function GET(request) {
   const { searchParams } = new URL(request.url);
   const branch  = searchParams.get("branch");
-  const sem     = searchParams.get("sem");
+  const sem     = normalizeSem(searchParams.get("sem"));
   const subject = searchParams.get("subject");
   const module  = searchParams.get("module");
   const type    = searchParams.get("type") || "meta"; // "meta" | "chunks"
@@ -43,7 +55,7 @@ export async function GET(request) {
       const data = await res.json();
       if (!data) return Response.json({ data: null });
 
-      try { await redis.setex(cacheKey, PDF_TTL, data); } catch {}
+      try { await setWithTTL(cacheKey, data, PDF_TTL); } catch {}
       return Response.json({ data, source: "firebase" });
 
     } else if (type === "chunks") {
@@ -63,7 +75,7 @@ export async function GET(request) {
       const chunks = await Promise.all(chunkPromises);
       const validChunks = chunks.filter(Boolean);
 
-      try { await redis.setex(cacheKey, PDF_TTL, validChunks); } catch {}
+      try { await setWithTTL(cacheKey, validChunks, PDF_TTL); } catch {}
       return Response.json({ data: validChunks, source: "firebase" });
 
     } else {
