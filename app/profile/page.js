@@ -226,7 +226,7 @@ export default function Profile() {
         @media (max-width:768px) {
           .sidebar { display:none !important; }
           .dash-header { display:none !important; }
-          .dash-scroll { padding:24px 16px 100px; }
+          .dash-scroll { padding:24px 16px calc(140px + env(safe-area-inset-bottom, 0px)); }
           .mob-nav { display:flex !important; }
         }
 

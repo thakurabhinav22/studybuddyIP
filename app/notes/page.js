@@ -636,7 +636,7 @@ export default function NotesPage() {
           .sb-header{display:none!important;}
           .mob-header{display:flex!important;}
           .mob-nav{display:flex!important;}
-          .sb-scroll{padding:16px 14px calc(100px + env(safe-area-inset-bottom,0px));}
+          .sb-scroll{padding:16px 14px calc(140px + env(safe-area-inset-bottom,0px));}
           .subject-grid{grid-template-columns:repeat(2,1fr);gap:10px;}
           .subject-card{padding:16px 14px;gap:8px;border-radius:16px;}
           .module-row{flex-direction:column;align-items:stretch;gap:12px;padding:14px 14px;}
