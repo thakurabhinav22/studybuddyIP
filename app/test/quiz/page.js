@@ -1,13 +1,13 @@
 'use client';
 
-import { useState, useEffect, useCallback } from 'react';
+import { Suspense, useState, useEffect, useCallback } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { auth, db } from '@/firebase';
 import { onAuthStateChanged } from 'firebase/auth';
 import { ref, get } from 'firebase/database';
 import { generateMCQs } from '@/app/actions/generate-mcqs';
 
-export default function QuizPage() {
+function QuizPageContent() {
   const router = useRouter();
   const searchParams = useSearchParams();
 
@@ -228,5 +228,22 @@ export default function QuizPage() {
         </div>
       </div>
     </div>
+  );
+}
+
+function QuizLoading() {
+  return (
+    <div style={{ minHeight: '100vh', background: '#080f1a', color: '#fff', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center' }}>
+      <div style={{ fontSize: '48px', marginBottom: '20px' }}>🧠</div>
+      <h2>Loading quiz...</h2>
+    </div>
+  );
+}
+
+export default function QuizPage() {
+  return (
+    <Suspense fallback={<QuizLoading />}>
+      <QuizPageContent />
+    </Suspense>
   );
 }
