@@ -38,15 +38,19 @@ export async function GET(request) {
   // ── 1. Redis hit ──
   try {
     const cachedBase = await redis.get(baseCacheKey);
-    const cachedLegacy = cachedBase || await redis.get(legacyTypeKey);
+    if (cachedBase) {
+      if (type === "meta" && cachedBase.meta) {
+        return Response.json({ data: cachedBase.meta, source: "redis" });
+      }
+      if (type === "chunks" && cachedBase.chunks) {
+        return Response.json({ data: cachedBase.chunks, source: "redis" });
+      }
+    }
 
+    // Fallback to legacy format (raw data/array)
+    const cachedLegacy = await redis.get(legacyTypeKey);
     if (cachedLegacy) {
-      if (type === "meta" && cachedLegacy.meta) {
-        return Response.json({ data: cachedLegacy.meta, source: "redis" });
-      }
-      if (type === "chunks" && cachedLegacy.chunks) {
-        return Response.json({ data: cachedLegacy.chunks, source: "redis" });
-      }
+      return Response.json({ data: cachedLegacy, source: "redis" });
     }
   } catch (e) {
     console.warn("[pdf] Redis get failed:", e.message);

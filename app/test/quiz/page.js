@@ -271,6 +271,7 @@ function QuizPageContent() {
           )}
         </div>
       </div>
+      </div>
 
       {/* ══ MOBILE BOTTOM NAV ══ */}
       <nav className="mob-nav">
