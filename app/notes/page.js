@@ -611,12 +611,13 @@ export default function NotesPage() {
         .badge-chunked{display:inline-flex;align-items:center;gap:4px;padding:2px 8px;background:rgba(0,200,0,0.1);border:1px solid rgba(0,200,0,0.25);border-radius:9999px;font-size:10px;font-weight:700;color:#009900;}
         .badge-checking{display:inline-flex;align-items:center;gap:4px;padding:2px 8px;background:rgba(148,163,184,0.1);border:1px solid rgba(148,163,184,0.2);border-radius:9999px;font-size:10px;font-weight:700;color:${text3};}
         .cache-badge{display:inline-flex;align-items:center;gap:5px;padding:3px 10px;border-radius:9999px;font-size:10px;font-weight:700;animation:slideIn 0.25s ease both;}
-        .mob-nav{display:none;position:fixed;bottom:20px;left:50%;transform:translateX(-50%);z-index:300;background:${isDark?"rgba(14,20,36,0.95)":"rgba(255,255,255,0.92)"};backdrop-filter:blur(28px);-webkit-backdrop-filter:blur(28px);border:1px solid ${isDark?"rgba(255,255,255,0.12)":"rgba(0,0,0,0.07)"};border-radius:9999px;padding:8px 20px;align-items:center;gap:4px;box-shadow:0 12px 48px rgba(0,0,0,0.22);}
-        .mob-tab{width:52px;height:52px;border-radius:9999px;display:flex;align-items:center;justify-content:center;background:none;border:none;cursor:pointer;-webkit-tap-highlight-color:transparent;transition:transform 0.22s cubic-bezier(0.34,1.56,0.64,1),background 0.18s;flex-shrink:0;}
-        .mob-tab:active{transform:scale(0.8);}
+        .mob-nav{display:none;position:fixed;bottom:20px;left:50%;transform:translateX(-50%);z-index:300;background:${isDark?"rgba(14,20,36,0.95)":"rgba(255,255,255,0.92)"};backdrop-filter:blur(28px);-webkit-backdrop-filter:blur(28px);border:1px solid ${isDark?"rgba(255,255,255,0.12)":"rgba(0,0,0,0.07)"};border-radius:9999px;padding:8px 24px;align-items:center;gap:6px;box-shadow:0 12px 48px rgba(0,0,0,0.22), 0 2px 10px rgba(0,0,0,0.12);min-width:340px;}
+        .mob-tab{width:54px;height:54px;border-radius:9999px;display:flex;align-items:center;justify-content:center;background:none;border:none;cursor:pointer;font-family:'Inter',sans-serif;-webkit-tap-highlight-color:transparent;transition:transform 0.22s cubic-bezier(0.34,1.56,0.64,1),background 0.18s;flex-shrink:0;}
+        .mob-tab:active{transform:scale(0.80);}
         .mob-tab .ms{font-size:22px;color:${isDark?"rgba(255,255,255,0.35)":"rgba(0,0,0,0.32)"};transition:color 0.18s;}
         .mob-tab.active{background:#00FF00;box-shadow:0 4px 22px rgba(0,255,0,0.55);transform:scale(1.12);}
         .mob-tab.active .ms{color:#0a1a0a;}
+        .mob-tab.danger .ms{color:#f87171;}
         .ai-panel-overlay{position:fixed;inset:0;background:rgba(0,0,0,0.55);z-index:200;backdrop-filter:blur(6px);animation:overlayIn 0.22s ease both;}
         .ai-panel{position:fixed;right:0;top:0;bottom:0;width:400px;max-width:100vw;background:${panel};border-left:1px solid ${bdr};display:flex;flex-direction:column;z-index:201;box-shadow:-20px 0 60px rgba(0,0,0,0.3);animation:sheetSlideIn 0.32s cubic-bezier(0.32,0.72,0,1) both;}
         .ai-panel-scroll{flex:1;overflow-y:auto;padding:16px;display:flex;flex-direction:column;gap:12px;}
@@ -648,9 +649,6 @@ export default function NotesPage() {
         @media(max-width:400px){
           .subject-grid{grid-template-columns:repeat(2,1fr);gap:8px;}
           .subject-card{padding:12px 10px;}
-          .mob-nav{padding:6px 12px;gap:2px;}
-          .mob-tab{width:46px;height:46px;}
-          .mob-tab .ms{font-size:20px;}
         }
       `}</style>
 

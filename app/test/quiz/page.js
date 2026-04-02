@@ -7,9 +7,25 @@ import { onAuthStateChanged } from 'firebase/auth';
 import { ref, get } from 'firebase/database';
 import { generateMCQs } from '@/app/actions/generate-mcqs';
 
+function useTheme() {
+  const KEY = 'studybuddy_theme';
+  const [theme, setThemeState] = useState('system');
+  const [resolved, setResolved] = useState('light');
+  useEffect(() => { try { setThemeState(localStorage.getItem(KEY) || 'system'); } catch { } }, []);
+  const setTheme = (val) => { try { localStorage.setItem(KEY, val); } catch { } setThemeState(val); };
+  useEffect(() => {
+    const mq = window.matchMedia('(prefers-color-scheme: dark)');
+    const update = () => setResolved(theme === 'system' ? (mq.matches ? 'dark' : 'light') : theme);
+    update(); mq.addEventListener('change', update); return () => mq.removeEventListener('change', update);
+  }, [theme]);
+  return { theme, setTheme, resolved };
+}
+
 function QuizPageContent() {
   const router = useRouter();
   const searchParams = useSearchParams();
+  const { theme, setTheme, resolved } = useTheme();
+  const isDark = resolved === 'dark';
 
   const subject = searchParams.get('subject');
   const modulesParam = searchParams.get('modules');
@@ -170,7 +186,35 @@ function QuizPageContent() {
   const currentQ = questions[currentQuestionIndex];
 
   return (
-    <div style={{ minHeight: '100vh', background: '#080f1a', color: '#f1f5f9', padding: '20px' }}>
+    <>
+      <style>{`
+        .ms { font-family:'Material Symbols Outlined'!important; font-weight:normal; font-style:normal; font-size:24px; line-height:1; display:inline-block; white-space:nowrap; }
+        .mob-nav {
+          display:none; position:fixed; bottom:20px; left:50%; transform:translateX(-50%);
+          z-index:300; background:${isDark ? "rgba(14,20,36,0.95)" : "rgba(255,255,255,0.92)"};
+          backdrop-filter:blur(28px); -webkit-backdrop-filter:blur(28px);
+          border:1px solid ${isDark ? "rgba(255,255,255,0.12)" : "rgba(0,0,0,0.07)"}; border-radius:9999px;
+          padding:8px 24px; align-items:center; gap:6px; box-shadow:0 12px 48px rgba(0,0,0,0.22), 0 2px 10px rgba(0,0,0,0.12);
+          min-width:340px;
+        }
+        .mob-tab {
+          width:54px; height:54px; border-radius:9999px; display:flex; align-items:center; justify-content:center;
+          background:none; border:none; cursor:pointer; font-family:'Inter',sans-serif;
+          -webkit-tap-highlight-color:transparent; transition:transform 0.22s cubic-bezier(0.34,1.56,0.64,1), background 0.18s;
+          flex-shrink:0;
+        }
+        .mob-tab:active { transform:scale(0.80); }
+        .mob-tab .ms {
+          font-size:22px; color:${isDark ? "rgba(255,255,255,0.35)" : "rgba(0,0,0,0.32)"}; transition:color 0.18s;
+        }
+        .mob-tab.active { background:#00FF00; box-shadow:0 4px 22px rgba(0,255,0,0.55); transform:scale(1.12); }
+        .mob-tab.active .ms { color:#0a1a0a; }
+        .mob-tab.danger .ms { color:#f87171; }
+        @media(max-width:768px){
+          .mob-nav { display:flex!important; }
+        }
+      `}</style>
+      <div style={{ minHeight: '100vh', background: '#080f1a', color: '#f1f5f9', padding: '20px' }}>
       <div style={{ maxWidth: '820px', margin: '0 auto' }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '30px' }}>
           <h1 style={{ fontSize: '24px' }}>{subject} — Quiz</h1>
@@ -227,7 +271,26 @@ function QuizPageContent() {
           )}
         </div>
       </div>
-    </div>
+
+      {/* ══ MOBILE BOTTOM NAV ══ */}
+      <nav className="mob-nav">
+        <button className="mob-tab" onClick={() => router.push('/dashboard')}>
+          <span className="ms">home</span>
+        </button>
+        <button className="mob-tab" onClick={() => router.push('/notes')}>
+          <span className="ms">library_books</span>
+        </button>
+        <button className="mob-tab active" onClick={() => router.push('/test')}>
+          <span className="ms">quiz</span>
+        </button>
+        <button className="mob-tab" onClick={() => router.push('/ai')}>
+          <span className="ms">auto_awesome</span>
+        </button>
+        <button className="mob-tab" onClick={() => router.push('/profile')}>
+          <span className="ms">person</span>
+        </button>
+      </nav>
+    </>
   );
 }
 
