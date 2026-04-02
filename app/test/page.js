@@ -134,8 +134,6 @@ export default function TestPage() {
         return;
       }
       const userRef = ref(db, `users/${user.uid}`);
-
-      const userRef = ref(db, `users/${user.uid}`);  // ✅ declared BEFORE onValue
       onValue(userRef, (snap) => {
         if (snap.exists()) {
           const data = snap.val();
