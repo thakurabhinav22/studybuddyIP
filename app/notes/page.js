@@ -7,17 +7,17 @@ import { onAuthStateChanged, signOut } from "firebase/auth";
 import { ref, get, update } from "firebase/database";
 
 /* ═══════════════════════════════════════════
-   PERSISTENT CACHE  (localStorage + in-memory L1)
+   REDIS-BACKED CACHE LAYER
    ─────────────────────────────────────────────
    Strategy:
    • L1  – in-memory Map  (instant, lost on tab close)
    • L2  – localStorage   (survives refresh, ~5 MB budget)
-   • Server listener fires onValue; we hash the payload and
-     only update state + storage when the hash changes.
-   • CHUNKED_CACHE stores pdfMeta existence per-module.
-     Keyed by a "module fingerprint" (hash of module object)
-     so stale entries are auto-invalidated when the server
-     changes a module without us doing extra round-trips.
+   • L3  – Upstash Redis  (via /api/notes/* routes, survives across users/devices)
+   • Firebase is only hit on full cache miss across all 3 layers
+   
+  ✅ PDF chunks are NEVER loaded eagerly.
+    chunkedModules only stores a boolean flag (has PDF or not),
+    prefetched when a subject is selected and refreshed on open if needed.
 ═══════════════════════════════════════════ */
 
 /* ── Key helpers ── */
@@ -27,10 +27,10 @@ function modFpKey(branch, sem, sub, modKey)  { return `sb_modfp|${branch}|${sem}
 function userProfileKey(uid)                  { return `sb_user_profile|${uid}`; }
 function dashboardCacheKey(uid)               { return `studybuddy:dashboard-cache:v1:${uid}`; }
 
-const USER_CACHE_TTL_MS = 3 * 60 * 1000;
+const USER_CACHE_TTL_MS  = 3 * 60 * 1000;
 const NOTES_CACHE_TTL_MS = 5 * 60 * 1000;
 
-/* ── Fast djb2 hash (string → hex) ── */
+/* ── Fast djb2 hash ── */
 function hashStr(str) {
   let h = 5381;
   for (let i = 0; i < str.length; i++) h = ((h << 5) + h) ^ str.charCodeAt(i);
@@ -38,42 +38,44 @@ function hashStr(str) {
 }
 
 /* ── L1 in-memory maps ── */
-const MEM_NOTES   = new Map();   // cKey → { subjects, hash, timestamp }
-const MEM_CHUNKED = new Map();   // ck   → boolean
-const MEM_MODFP   = new Map();   // fpk  → fingerprint string
-const MEM_USER    = new Map();   // uKey → { data, timestamp }
+const MEM_NOTES   = new Map();
+const MEM_CHUNKED = new Map();
+const MEM_MODFP   = new Map();
+const MEM_USER    = new Map();
 
-/* ── L2 localStorage helpers (silent on quota errors) ── */
+/* ── L2 localStorage helpers ── */
 const LS = {
-  get(key) {
-    try { const v = localStorage.getItem(key); return v ? JSON.parse(v) : null; } catch { return null; }
-  },
-  set(key, val) {
-    try { localStorage.setItem(key, JSON.stringify(val)); } catch {}
-  },
-  del(key) {
-    try { localStorage.removeItem(key); } catch {}
-  },
+  get(key)      { try { const v = localStorage.getItem(key); return v ? JSON.parse(v) : null; } catch { return null; } },
+  set(key, val) { try { localStorage.setItem(key, JSON.stringify(val)); } catch {} },
+  del(key)      { try { localStorage.removeItem(key); } catch {} },
 };
 
-/* ── Unified cache read (L1 → L2) ── */
 function cacheGet(memMap, key) {
   if (memMap.has(key)) return memMap.get(key);
   const v = LS.get(key);
   if (v !== null) { memMap.set(key, v); return v; }
   return undefined;
 }
+function cacheSet(memMap, key, val) { memMap.set(key, val); LS.set(key, val); }
 
-/* ── Unified cache write (L1 + L2) ── */
-function cacheSet(memMap, key, val) {
-  memMap.set(key, val);
-  LS.set(key, val);
+/* ── L3 Redis API helpers ── */
+async function redisGetSubjects(branch, sem) {
+  try {
+    const res = await fetch(`/api/notes/subjects?branch=${encodeURIComponent(branch)}&sem=${encodeURIComponent(sem)}`);
+    if (!res.ok) return null;
+    const { data, source } = await res.json();
+    return { data: data || {}, source: source || "redis" };
+  } catch { return null; }
 }
 
-/* ── Unified cache delete (L1 + L2) ── */
-function cacheDel(memMap, key) {
-  memMap.delete(key);
-  LS.del(key);
+/* Fetches ONLY meta (tiny flag — totalChunks + exists boolean). Never fetches chunk data. */
+async function redisGetPdfMeta(branch, sem, subject, module) {
+  try {
+    const res = await fetch(`/api/notes/pdf?branch=${encodeURIComponent(branch)}&sem=${encodeURIComponent(sem)}&subject=${encodeURIComponent(subject)}&module=${encodeURIComponent(module)}&type=meta`);
+    if (!res.ok) return null;
+    const { data } = await res.json();
+    return data ?? null;
+  } catch { return null; }
 }
 
 function patchDashboardRecentNote(uid, note) {
@@ -87,14 +89,7 @@ function patchDashboardRecentNote(uid, note) {
     const data = cached.data;
     const prev = data.recentNotes && typeof data.recentNotes === "object" ? data.recentNotes : {};
     const noteKey = `${note.subject || "GEN"}_${note.key || note.title || "note"}`.replace(/[.#$\[\]/]/g, "_");
-    data.recentNotes = {
-      ...prev,
-      [noteKey]: {
-        ...(prev[noteKey] || {}),
-        ...note,
-        updatedAt: Date.now(),
-      },
-    };
+    data.recentNotes = { ...prev, [noteKey]: { ...(prev[noteKey] || {}), ...note, updatedAt: Date.now() } };
     localStorage.setItem(key, JSON.stringify({ ...cached, data, updatedAt: Date.now() }));
   } catch {}
 }
@@ -106,13 +101,8 @@ function useTheme() {
   const KEY = "studybuddy_theme";
   const [theme, setThemeState] = useState("system");
   const [resolved, setResolved] = useState("light");
-  useEffect(() => {
-    try { setThemeState(localStorage.getItem(KEY) || "system"); } catch {}
-  }, []);
-  const setTheme = (val) => {
-    try { localStorage.setItem(KEY, val); } catch {}
-    setThemeState(val);
-  };
+  useEffect(() => { try { setThemeState(localStorage.getItem(KEY) || "system"); } catch {} }, []);
+  const setTheme = (val) => { try { localStorage.setItem(KEY, val); } catch {} setThemeState(val); };
   useEffect(() => {
     const mq = window.matchMedia("(prefers-color-scheme: dark)");
     const update = () => setResolved(theme === "system" ? (mq.matches ? "dark" : "light") : theme);
@@ -213,28 +203,28 @@ export default function NotesPage() {
   const [userData,    setUserData]    = useState(null);
   const [authLoading, setAuthLoading] = useState(true);
 
-  const [subjects,      setSubjects]      = useState({});
-  const [notesLoading,  setNotesLoading]  = useState(false);
-  const [notesError,    setNotesError]    = useState(null);
-  const [cacheStatus,   setCacheStatus]   = useState("idle");  // "idle"|"hit"|"updated"|"fresh"
-  const [lastUpdated,   setLastUpdated]   = useState(null);
+  const [subjects,     setSubjects]     = useState({});
+  const [notesLoading, setNotesLoading] = useState(false);
+  const [notesError,   setNotesError]   = useState(null);
+  const [cacheStatus,  setCacheStatus]  = useState("idle");   // "idle"|"hit"|"redis"|"updated"|"fresh"
+  const [lastUpdated,  setLastUpdated]  = useState(null);
 
   const [activeSubject,  setActiveSubject]  = useState(null);
   const [sidebarOpen,    setSidebarOpen]    = useState(true);
   const [search,         setSearch]         = useState("");
   const [hoveredFile,    setHoveredFile]    = useState(null);
   const [dlAnim,         setDlAnim]         = useState(null);
+  // chunkedModules[modKey] = true | false | undefined
+  // true/false = resolved (has chunked PDF or not)
+  // undefined  = not yet checked (lazy)
   const [chunkedModules, setChunkedModules] = useState({});
 
-  /* Mobile subject sheet */
-  const [mobSubjectSheetOpen, setMobSubjectSheetOpen] = useState(false);
-
-  /* Quick AI panel from notes page */
-  const [aiPanelOpen,  setAiPanelOpen]  = useState(false);
-  const [aiPanelMod,   setAiPanelMod]   = useState(null);
-  const [aiMessages,   setAiMessages]   = useState([]);
-  const [aiInput,      setAiInput]      = useState("");
-  const [aiLoading,    setAiLoading]    = useState(false);
+  /* AI panel */
+  const [aiPanelOpen, setAiPanelOpen] = useState(false);
+  const [aiPanelMod,  setAiPanelMod]  = useState(null);
+  const [aiMessages,  setAiMessages]  = useState([]);
+  const [aiInput,     setAiInput]     = useState("");
+  const [aiLoading,   setAiLoading]   = useState(false);
   const aiChatEndRef = useRef(null);
 
   const normaliseSem = useCallback((raw) => {
@@ -250,16 +240,10 @@ export default function NotesPage() {
     const unsub = onAuthStateChanged(auth, async (u) => {
       if (!u) { router.replace("/"); return; }
       setAuthUser(u);
-
-      const uKey = userProfileKey(u.uid);
+      const uKey   = userProfileKey(u.uid);
       const cached = cacheGet(MEM_USER, uKey);
       const isFresh = !!cached?.timestamp && (Date.now() - cached.timestamp) < USER_CACHE_TTL_MS;
-
-      if (cached?.data) {
-        setUserData(cached.data);
-        setAuthLoading(false);
-      }
-
+      if (cached?.data) { setUserData(cached.data); setAuthLoading(false); }
       if (!cached?.data || !isFresh) {
         try {
           const snap = await get(ref(db, `users/${u.uid}`));
@@ -268,22 +252,22 @@ export default function NotesPage() {
             cacheSet(MEM_USER, uKey, { data, timestamp: Date.now() });
             setUserData(data);
           }
-        } finally {
-          setAuthLoading(false);
-        }
+        } finally { setAuthLoading(false); }
       }
     });
     return () => unsub();
   }, [router]);
 
-  /* ── Smart notes fetch with persistent cache ── */
+  /* ── Notes fetch: L1 → L2 → Redis → Firebase ──
+     Only loads subject names + module titles (no PDF content).
+     Redis stores this lightweight structure; Firebase is fallback only. */
   useEffect(() => {
     if (!userData?.branch || !userData?.sem) return;
     const { branch, sem } = userData;
     const semKey = normaliseSem(sem);
     const cKey   = notesKey(branch, semKey);
 
-    /* Seed UI from cache immediately (L1 → L2) so there's no blank flash */
+    /* Seed immediately from L1/L2 */
     const cached = cacheGet(MEM_NOTES, cKey);
     if (cached?.subjects) {
       setSubjects(cached.subjects);
@@ -301,160 +285,190 @@ export default function NotesPage() {
     let cancelled = false;
     (async () => {
       try {
-        const snap = await get(ref(db, `notes/${branch}/${semKey}/subjects`));
+        /* ── L3: Try Redis first ── */
+        const payload = await redisGetSubjects(branch, semKey);
         if (cancelled) return;
-        setNotesLoading(false);
 
-        if (!snap.exists()) {
-          if (cached?.subjects) {
-            setSubjects(cached.subjects);
-            setActiveSubject((p) => p && cached.subjects[p] ? p : Object.keys(cached.subjects)[0] || null);
-            setCacheStatus("hit");
-            return;
+        if (payload && payload.data && typeof payload.data === "object") {
+          const redisData = payload.data;
+          const incomingHash = hashStr(JSON.stringify(redisData));
+          const existing = cacheGet(MEM_NOTES, cKey);
+
+          if (existing?.hash !== incomingHash) {
+            const ts = Date.now();
+            cacheSet(MEM_NOTES, cKey, { subjects: redisData, hash: incomingHash, timestamp: ts });
+            setSubjects(redisData);
+            setLastUpdated(ts);
+            setActiveSubject((p) => p && redisData[p] ? p : Object.keys(redisData)[0] || null);
+            setCacheStatus(payload.source === "firebase" ? (existing ? "updated" : "fresh") : "updated");
+          } else {
+            // Hash matches — data is identical, no re-render needed
+            setCacheStatus(payload.source === "redis" ? "redis" : "hit");
           }
-          setSubjects({});
-          setActiveSubject(null);
-          setCacheStatus("fresh");
+          setNotesLoading(false);
           return;
         }
-
-        const raw = snap.val();
-        const normalised = {};
-        Object.entries(raw).forEach(([code, val]) => {
-          if (val === true) normalised[code] = { Subject: code, Totalmodules: 0, modules: {} };
-          else if (typeof val === "object" && val !== null) normalised[code] = val;
-        });
-
-        const incomingHash = hashStr(JSON.stringify(normalised));
-        const existing = cacheGet(MEM_NOTES, cKey);
-        if (existing?.hash === incomingHash) {
+        setNotesLoading(false);
+        if (cached?.subjects) {
+          setSubjects(cached.subjects);
           setCacheStatus("hit");
           return;
         }
-
-        const ts = Date.now();
-        cacheSet(MEM_NOTES, cKey, { subjects: normalised, hash: incomingHash, timestamp: ts });
-        setSubjects(normalised);
-        setCacheStatus(existing ? "updated" : "fresh");
-        setLastUpdated(ts);
-        setActiveSubject((p) => p && normalised[p] ? p : Object.keys(normalised)[0] || null);
+        setSubjects({});
+        setActiveSubject(null);
+        setNotesError("Could not load subjects right now.");
       } catch (err) {
-        if (!cancelled) {
-          setNotesLoading(false);
-          setNotesError(err.message);
-        }
+        if (!cancelled) { setNotesLoading(false); setNotesError(err.message); }
       }
     })();
 
     return () => { cancelled = true; };
   }, [userData?.branch, userData?.sem, normaliseSem]);
 
-  /* ── Chunked PDF fetch — persistent cache + fingerprint invalidation ──
-     For each module in the active subject we:
-     1. Serve immediately from cache (L1 → L2) keyed by BOTH the module
-        key AND a fingerprint of the module's own data.  If the module
-        data changed (professor re-uploaded) the fingerprint won't match
-        so we treat it as a cache miss and re-subscribe.
-      2. Fetch pdfMeta only for cache misses / fingerprint changes.
-  ── */
+  /* ── Prefetch module PDF availability when active subject changes ──
+     This loads only tiny meta flags for each module, never chunk data. */
   useEffect(() => {
-    if (!activeSubject || !userData?.branch || !userData?.sem) return;
-    const { branch, sem } = userData;
-    const semKey      = normaliseSem(sem);
-    const modulesData = subjects[activeSubject]?.modules || {};
-    const moduleKeys  = Object.keys(modulesData);
-
-    if (!moduleKeys.length) return;
-
     let cancelled = false;
 
-    moduleKeys.forEach(async (modKey) => {
-      const ck    = chunkedKey(branch, semKey, activeSubject, modKey);
-      const fpk   = modFpKey(branch, semKey, activeSubject, modKey);
+    async function prefetchSubjectMeta() {
+      const subjectModules = activeSubject ? subjects[activeSubject]?.modules : null;
 
-      /* Compute fingerprint of this module's own data */
-      const modFp = hashStr(JSON.stringify(modulesData[modKey]));
-
-      /* Cache hit: fingerprint matches → serve immediately, skip subscribe */
-      const cachedFp  = cacheGet(MEM_MODFP,   fpk);
-      const cachedHas = cacheGet(MEM_CHUNKED, ck);
-
-      if (cachedFp === modFp && cachedHas !== undefined) {
-        setChunkedModules((prev) => {
-          if (prev[modKey] === cachedHas) return prev;
-          return { ...prev, [modKey]: cachedHas };
-        });
+      if (!userData?.branch || !userData?.sem || !subjectModules || !activeSubject) {
+        setChunkedModules({});
         return;
       }
 
-      const metaRef = ref(db, `notes/${branch}/${semKey}/subjects/${activeSubject}/modules/${modKey}/pdfMeta`);
-      const snap = await get(metaRef).catch(() => null);
-      if (cancelled) return;
-      const has = !!snap?.exists?.();
-      cacheSet(MEM_CHUNKED, ck, has);
-      cacheSet(MEM_MODFP, fpk, modFp);
-      setChunkedModules((prev) => ({ ...prev, [modKey]: has }));
-    });
+      const { branch, sem } = userData;
+      const semKey = normaliseSem(sem);
+      const moduleEntries = Object.entries(subjectModules);
 
+      if (moduleEntries.length === 0) {
+        setChunkedModules({});
+        return;
+      }
+
+      const nextState = {};
+
+      await Promise.all(moduleEntries.map(async ([modKey, modData]) => {
+        if (cancelled) return;
+
+        const modFp = hashStr(JSON.stringify(modData || {}));
+        const ck    = chunkedKey(branch, semKey, activeSubject, modKey);
+        const fpk   = modFpKey(branch, semKey, activeSubject, modKey);
+
+        const cachedFp  = cacheGet(MEM_MODFP, fpk);
+        const cachedHas = cacheGet(MEM_CHUNKED, ck);
+        if (cachedFp === modFp && cachedHas !== undefined) {
+          nextState[modKey] = cachedHas;
+          return;
+        }
+
+        const metaData = await redisGetPdfMeta(branch, semKey, activeSubject, modKey);
+        const has = !!metaData;
+        cacheSet(MEM_CHUNKED, ck, has);
+        cacheSet(MEM_MODFP, fpk, modFp);
+        nextState[modKey] = has;
+      }));
+
+      if (!cancelled) setChunkedModules(nextState);
+    }
+
+    prefetchSubjectMeta();
     return () => { cancelled = true; };
   }, [activeSubject, subjects, userData?.branch, userData?.sem, normaliseSem]);
+
+  /* ── Lazy PDF availability check ──
+     Called on mouse-enter or just before open/download.
+     Only fetches a tiny meta flag (boolean) — never chunk data. */
+  const checkPdfAvailability = useCallback(async (modKey) => {
+    if (!userData?.branch || !userData?.sem || !activeSubject) return;
+    if (chunkedModules[modKey] !== undefined) return; // already resolved
+
+    const { branch, sem } = userData;
+    const semKey = normaliseSem(sem);
+    const ck     = chunkedKey(branch, semKey, activeSubject, modKey);
+    const fpk    = modFpKey(branch, semKey, activeSubject, modKey);
+    const modData = subjects[activeSubject]?.modules?.[modKey] || {};
+    const modFp  = hashStr(JSON.stringify(modData));
+
+    /* L1/L2 hit */
+    const cachedFp  = cacheGet(MEM_MODFP, fpk);
+    const cachedHas = cacheGet(MEM_CHUNKED, ck);
+    if (cachedFp === modFp && cachedHas !== undefined) {
+      setChunkedModules((prev) => ({ ...prev, [modKey]: cachedHas }));
+      return;
+    }
+
+    /* L3: Redis meta only (small flag, not chunk data) */
+    const metaData = await redisGetPdfMeta(branch, semKey, activeSubject, modKey);
+    const has = !!metaData;
+    cacheSet(MEM_CHUNKED, ck, has);
+    cacheSet(MEM_MODFP, fpk, modFp);
+    setChunkedModules((prev) => ({ ...prev, [modKey]: has }));
+  }, [userData, activeSubject, subjects, normaliseSem, chunkedModules]);
 
   /* ── AI chat scroll ── */
   useEffect(() => { aiChatEndRef.current?.scrollIntoView({ behavior:"smooth" }); }, [aiMessages]);
 
-  const openAiPanel = (mod) => {
-    setAiPanelMod({ key:mod.key, title:mod.Title || mod.key });
-    setAiMessages([{ role:"ai", text:`Hi! I'm ready to help you with **${mod.Title || mod.key}**. Ask me anything — summaries, exam questions, explanations!` }]);
-    setAiInput("");
-    setAiPanelOpen(true);
-  };
-
-  const sendAiMessage = async (text) => {
-    if (!text.trim() || aiLoading) return;
-    const userMsg = text.trim();
-    setAiInput("");
-    setAiMessages(m => [...m, { role:"user", text:userMsg }]);
-    setAiLoading(true);
-    try {
-      const res = await fetch("https://api.anthropic.com/v1/messages", {
-        method: "POST",
-        headers: { "Content-Type":"application/json" },
-        body: JSON.stringify({
-          model: "claude-sonnet-4-20250514",
-          max_tokens: 1000,
-          system: `You are StudyBuddy AI — an engineering exam assistant.
-The student is asking about: "${aiPanelMod?.title}" from subject "${activeSubject}", semester "${userData?.sem}".
-Give concise, exam-focused answers. Use bullet points when listing. Keep answers under 200 words unless asked to elaborate.`,
-          messages: [{ role:"user", content:userMsg }],
-        }),
-      });
-      const data  = await res.json();
-      const reply = data.content?.[0]?.text || "Sorry, couldn't get a response.";
-      setAiMessages(m => [...m, { role:"ai", text:reply }]);
-    } catch {
-      setAiMessages(m => [...m, { role:"ai", text:"Network error. Please try again." }]);
+  const handleOpenPDF = async (mod) => {
+    // Ensure availability is resolved before opening
+    if (chunkedModules[mod.key] === undefined) {
+      await checkPdfAvailability(mod.key);
     }
-    setAiLoading(false);
+    const isChunked = chunkedModules[mod.key];
+    const semKey    = normaliseSem(userData?.sem || "");
+    const recentNotePayload = {
+      key: mod.key, module: mod.key, subject: activeSubject || "General",
+      branch: userData?.branch || "", sem: semKey,
+      title: mod.Title || mod.key, desc: mod.description || mod.desc || "Recently opened module",
+      icon: "description", updatedAt: Date.now(),
+    };
+    if (authUser?.uid) {
+      const safeKey = `${activeSubject || "GEN"}_${mod.key}`.replace(/[.#$\[\]/]/g, "_");
+      update(ref(db, `users/${authUser.uid}/recentNotes/${safeKey}`), recentNotePayload).catch(() => {});
+      patchDashboardRecentNote(authUser.uid, recentNotePayload);
+    }
+    if (isChunked) {
+      router.push(`/pdfviewer?branch=${encodeURIComponent(userData?.branch||"")}&sem=${encodeURIComponent(semKey)}&subject=${encodeURIComponent(activeSubject)}&module=${encodeURIComponent(mod.key)}`);
+    } else if (mod.resourcesPDF) {
+      window.open(mod.resourcesPDF, "_blank");
+    }
   };
 
-  const aiQuickActions = (mod) => [
-    { icon:"summarize",   label:"Summarize",    prompt:`Summarize the key points of "${mod?.title}" in bullet points for exam prep.` },
-    { icon:"quiz",        label:"Quiz me",       prompt:`Generate 5 short exam questions with answers on "${mod?.title}".` },
-    { icon:"lightbulb",   label:"Key concepts", prompt:`List the most important concepts from "${mod?.title}" for exams.` },
-    { icon:"article",     label:"Overview",     prompt:`Give me an overview of what topics "${mod?.title}" likely covers and what to focus on for exams.` },
-  ];
+  const handleDownloadPDF = async (mod, idx) => {
+    // Ensure availability is resolved before downloading
+    if (chunkedModules[mod.key] === undefined) {
+      await checkPdfAvailability(mod.key);
+    }
+    const isChunked = chunkedModules[mod.key];
+    if (!isChunked && !mod.resourcesPDF) return;
+
+    if (isChunked) {
+      const semKey = normaliseSem(userData?.sem || "");
+      router.push(`/pdfviewer?branch=${encodeURIComponent(userData?.branch||"")}&sem=${encodeURIComponent(semKey)}&subject=${encodeURIComponent(activeSubject)}&module=${encodeURIComponent(mod.key)}`);
+      return;
+    }
+
+    setDlAnim(idx);
+    setTimeout(() => setDlAnim(null), 1200);
+
+    if (mod.resourcesPDF) {
+      const a = document.createElement("a");
+      a.href = mod.resourcesPDF; a.download = `${mod.Title||mod.key}.pdf`; a.target="_blank"; a.click();
+    }
+  };
 
   /* ── Colors ── */
-  const bg      = isDark ? "#080f1a"                 : "#f5f8f5";
-  const sidebar = isDark ? "rgba(8,15,26,0.96)"      : "rgba(255,255,255,0.75)";
-  const header  = isDark ? "rgba(8,15,26,0.92)"      : "rgba(255,255,255,0.75)";
-  const card    = isDark ? "rgba(15,23,42,0.85)"     : "#ffffff";
-  const panel   = isDark ? "rgba(8,15,26,0.98)"      : "rgba(255,255,255,0.98)";
-  const text1   = isDark ? "#f1f5f9"                 : "#0f172a";
-  const text2   = isDark ? "#94a3b8"                 : "#475569";
-  const text3   = isDark ? "#475569"                 : "#94a3b8";
-  const bdr     = isDark ? "rgba(0,255,0,0.1)"       : "rgba(0,200,0,0.1)";
-  const inputBg = isDark ? "rgba(255,255,255,0.05)"  : "rgba(0,200,0,0.05)";
+  const bg      = isDark ? "#080f1a"                : "#f5f8f5";
+  const sidebar = isDark ? "rgba(8,15,26,0.96)"     : "rgba(255,255,255,0.75)";
+  const header  = isDark ? "rgba(8,15,26,0.92)"     : "rgba(255,255,255,0.75)";
+  const card    = isDark ? "rgba(15,23,42,0.85)"    : "#ffffff";
+  const panel   = isDark ? "rgba(8,15,26,0.98)"     : "rgba(255,255,255,0.98)";
+  const text1   = isDark ? "#f1f5f9"                : "#0f172a";
+  const text2   = isDark ? "#94a3b8"                : "#475569";
+  const text3   = isDark ? "#475569"                : "#94a3b8";
+  const bdr     = isDark ? "rgba(0,255,0,0.1)"      : "rgba(0,200,0,0.1)";
+  const inputBg = isDark ? "rgba(255,255,255,0.05)" : "rgba(0,200,0,0.05)";
 
   const firstName = userData?.firstName || authUser?.displayName?.split(" ")[0] || "";
   const fullName  = userData?.fullName  || authUser?.displayName || "";
@@ -464,72 +478,13 @@ Give concise, exam-focused answers. Use bullet points when listing. Keep answers
 
   const activeSubjectData = activeSubject ? subjects[activeSubject] : null;
   const allModules = activeSubjectData?.modules
-    ? Object.entries(activeSubjectData.modules).map(([key,mod]) => ({ key, ...mod }))
+    ? Object.entries(activeSubjectData.modules).map(([key, mod]) => ({ key, ...mod }))
     : [];
   const filteredModules = search.trim()
     ? allModules.filter((m) => (m.Title || "").toLowerCase().includes(search.toLowerCase()))
     : allModules;
 
-  const handleDownload = (idx) => { setDlAnim(idx); setTimeout(() => setDlAnim(null), 1200); };
-
-  const handleOpenPDF = (mod) => {
-    const isChunked = chunkedModules[mod.key];
-    const semKey    = normaliseSem(sem);
-    const recentNotePayload = {
-      key: mod.key,
-      module: mod.key,
-      subject: activeSubject || "General",
-      branch,
-      sem: semKey,
-      title: mod.Title || mod.key,
-      desc: mod.description || mod.desc || "Recently opened module",
-      icon: "description",
-      updatedAt: Date.now(),
-    };
-    if (authUser?.uid) {
-      const safeKey = `${activeSubject || "GEN"}_${mod.key}`.replace(/[.#$\[\]/]/g, "_");
-      update(ref(db, `users/${authUser.uid}/recentNotes/${safeKey}`), {
-        ...recentNotePayload,
-      }).catch(() => {});
-      patchDashboardRecentNote(authUser.uid, recentNotePayload);
-    }
-    if (isChunked) {
-      router.push(`/pdfviewer?branch=${encodeURIComponent(branch)}&sem=${encodeURIComponent(semKey)}&subject=${encodeURIComponent(activeSubject)}&module=${encodeURIComponent(mod.key)}`);
-    } else if (mod.resourcesPDF) {
-      window.open(mod.resourcesPDF, "_blank");
-    }
-  };
-
-  const handleDownloadPDF = async (mod, idx) => {
-    const isChunked = chunkedModules[mod.key];
-    if (isChunked) {
-      handleDownload(idx);
-      try {
-        const semKey   = normaliseSem(sem);
-        const basePath = `notes/${branch}/${semKey}/subjects/${activeSubject}/modules/${mod.key}`;
-        const metaSnap = await get(ref(db, `${basePath}/pdfMeta`));
-        if (!metaSnap.exists()) return;
-        const { totalChunks, fileName } = metaSnap.val();
-        const chunks = [];
-        for (let i = 0; i < totalChunks; i++) {
-          const s = await get(ref(db, `${basePath}/pdfChunks/chunk_${i}`));
-          if (s.exists()) chunks.push(s.val());
-        }
-        const binary = atob(chunks.join(""));
-        const bytes  = new Uint8Array(binary.length);
-        for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
-        const blob = new Blob([bytes], { type:"application/pdf" });
-        const url  = URL.createObjectURL(blob);
-        const a    = document.createElement("a");
-        a.href = url; a.download = fileName || `${mod.Title||mod.key}.pdf`; a.click();
-        setTimeout(() => URL.revokeObjectURL(url), 3000);
-      } catch (err) { console.error("Download failed:", err); }
-    } else if (mod.resourcesPDF) {
-      handleDownload(idx);
-      const a = document.createElement("a");
-      a.href = mod.resourcesPDF; a.download = `${mod.Title||mod.key}.pdf`; a.target="_blank"; a.click();
-    }
-  };
+  const fmtTime = (ts) => ts ? new Date(ts).toLocaleTimeString([], { hour:"2-digit", minute:"2-digit" }) : "";
 
   const AvatarEl = ({ size = 40 }) => (
     <div style={{ width:`${size}px`, height:`${size}px`, borderRadius:"9999px", border:"2.5px solid #00FF00", overflow:"hidden", background:isDark?"rgba(255,255,255,0.1)":"#e2e8f0", flexShrink:0 }}>
@@ -542,6 +497,7 @@ Give concise, exam-focused answers. Use bullet points when listing. Keep answers
     </div>
   );
 
+  /* ── Auth loading skeleton ── */
   if (authLoading) return (
     <>
       <style>{`
@@ -586,11 +542,9 @@ Give concise, exam-focused answers. Use bullet points when listing. Keep answers
     </>
   );
 
-  const fmtTime = (ts) => {
-    if (!ts) return "";
-    return new Date(ts).toLocaleTimeString([], { hour:"2-digit", minute:"2-digit" });
-  };
-
+  /* ═══════════════════════════════════════════
+     RENDER
+  ═══════════════════════════════════════════ */
   return (
     <>
       <style>{`
@@ -612,7 +566,6 @@ Give concise, exam-focused answers. Use bullet points when listing. Keep answers
         @keyframes msgPop{from{opacity:0;transform:translateY(8px) scale(0.97);}to{opacity:1;transform:none;}}
         @keyframes overlayIn{from{opacity:0;}to{opacity:1;}}
 
-        /* ── Layout ── */
         .sb-root{display:flex;height:100vh;overflow:hidden;background:${bg};}
         .sb-sidebar{width:260px;min-width:260px;height:100vh;background:${sidebar};backdrop-filter:blur(12px);-webkit-backdrop-filter:blur(12px);border-right:1px solid ${bdr};display:flex;flex-direction:column;padding:24px 20px;z-index:20;transition:width 0.3s,min-width 0.3s;}
         .sb-sidebar.collapsed{width:72px;min-width:72px;}
@@ -625,40 +578,26 @@ Give concise, exam-focused answers. Use bullet points when listing. Keep answers
         .nav-link.danger:hover{background:rgba(248,113,113,0.1);}
         .sb-main{flex:1;display:flex;flex-direction:column;height:100vh;overflow:hidden;}
         .sb-header{height:72px;background:${header};backdrop-filter:blur(12px);-webkit-backdrop-filter:blur(12px);border-bottom:1px solid ${bdr};padding:0 32px;display:flex;align-items:center;justify-content:space-between;z-index:10;flex-shrink:0;}
-
-        /* ── Search ── */
         .search-box{display:flex;align-items:center;gap:8px;background:${inputBg};border:1px solid ${bdr};border-radius:9999px;padding:10px 18px;max-width:380px;flex:1;transition:border-color 0.2s,box-shadow 0.2s;}
         .search-box:focus-within{border-color:rgba(0,255,0,0.4);box-shadow:0 0 0 3px rgba(0,255,0,0.08);}
         .search-box input{background:transparent;border:none;outline:none;font-size:13px;font-family:'Lexend',sans-serif;color:${text1};flex:1;}
         .search-box input::placeholder{color:${text3};}
-
-        /* ── Mobile header ── */
         .mob-header{display:none;height:64px;background:${header};backdrop-filter:blur(12px);-webkit-backdrop-filter:blur(12px);border-bottom:1px solid ${bdr};padding:0 16px;align-items:center;justify-content:space-between;gap:10px;z-index:10;flex-shrink:0;}
-        .mob-search{display:flex;align-items:center;gap:8px;background:${inputBg};border:1px solid ${bdr};border-radius:9999px;padding:8px 14px;flex:1;min-width:0;transition:border-color 0.2s;}
+        .mob-search{display:flex;align-items:center;gap:8px;background:${inputBg};border:1px solid ${bdr};border-radius:9999px;padding:8px 14px;flex:1;min-width:0;}
         .mob-search:focus-within{border-color:rgba(0,255,0,0.4);}
         .mob-search input{background:transparent;border:none;outline:none;font-size:13px;font-family:'Lexend',sans-serif;color:${text1};flex:1;min-width:0;width:100%;}
         .mob-search input::placeholder{color:${text3};}
-
-        /* ── Scroll area ── */
         .sb-scroll{flex:1;overflow-y:auto;padding:32px;display:flex;flex-direction:column;gap:36px;}
         .sb-scroll::-webkit-scrollbar{width:4px;}
         .sb-scroll::-webkit-scrollbar-thumb{background:rgba(0,200,0,0.2);border-radius:2px;}
-
-        /* ── Subject grid ── */
         .subject-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:16px;}
         .subject-card{background:${card};padding:24px 20px;border-radius:20px;border:2px solid ${bdr};cursor:pointer;transition:all 0.22s cubic-bezier(0.34,1.56,0.64,1);display:flex;flex-direction:column;gap:12px;animation:fadeUp 0.35s ease both;}
         .subject-card:hover{transform:translateY(-4px);box-shadow:0 12px 32px rgba(0,255,0,0.1);}
         .subject-card.active{border-color:#00FF00;box-shadow:0 0 0 3px rgba(0,255,0,0.12),0 12px 32px rgba(0,255,0,0.1);}
-
-        /* ── Module rows ── */
         .module-row{background:${card};padding:14px 18px;border-radius:16px;border:1px solid ${bdr};display:flex;align-items:center;justify-content:space-between;gap:12px;transition:all 0.2s;animation:fadeUp 0.3s ease both;}
         .module-row:hover{background:${isDark?"rgba(0,255,0,0.03)":"rgba(0,200,0,0.04)"};border-color:rgba(0,255,0,0.22);}
         .module-title{font-size:13px;font-weight:600;color:${text1};margin:0 0 4px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:420px;}
         .module-meta{font-size:11px;color:${text3};margin:0;display:flex;align-items:center;gap:6px;flex-wrap:wrap;}
-        .module-meta span{font-weight:600;color:${text2};}
-        .dot{width:3px;height:3px;border-radius:9999px;background:${text3};display:inline-block;flex-shrink:0;}
-
-        /* ── Action buttons ── */
         .module-actions{display:flex;align-items:center;gap:8px;flex-shrink:0;flex-wrap:nowrap;}
         .btn-open{display:flex;align-items:center;gap:6px;padding:8px 16px;font-size:12px;font-weight:700;color:#ffffff;background:#0f172a;border:none;border-radius:10px;cursor:pointer;font-family:'Lexend',sans-serif;transition:all 0.18s;white-space:nowrap;}
         .btn-open:hover{background:#00FF00;color:#0f172a;}
@@ -669,29 +608,15 @@ Give concise, exam-focused answers. Use bullet points when listing. Keep answers
         .btn-dl:disabled{opacity:0.35;cursor:not-allowed;}
         .btn-ai{display:flex;align-items:center;gap:5px;padding:8px 14px;font-size:12px;font-weight:700;color:#00AA00;background:rgba(0,200,0,0.08);border:1px solid rgba(0,200,0,0.2);border-radius:10px;cursor:pointer;font-family:'Lexend',sans-serif;transition:all 0.18s;white-space:nowrap;}
         .btn-ai:hover{background:#00FF00;color:#0f172a;border-color:#00FF00;}
-
-        /* ── Badges ── */
         .badge-chunked{display:inline-flex;align-items:center;gap:4px;padding:2px 8px;background:rgba(0,200,0,0.1);border:1px solid rgba(0,200,0,0.25);border-radius:9999px;font-size:10px;font-weight:700;color:#009900;}
+        .badge-checking{display:inline-flex;align-items:center;gap:4px;padding:2px 8px;background:rgba(148,163,184,0.1);border:1px solid rgba(148,163,184,0.2);border-radius:9999px;font-size:10px;font-weight:700;color:${text3};}
         .cache-badge{display:inline-flex;align-items:center;gap:5px;padding:3px 10px;border-radius:9999px;font-size:10px;font-weight:700;animation:slideIn 0.25s ease both;}
-
-        /* ── Mobile bottom nav ── */
         .mob-nav{display:none;position:fixed;bottom:20px;left:50%;transform:translateX(-50%);z-index:300;background:${isDark?"rgba(14,20,36,0.95)":"rgba(255,255,255,0.92)"};backdrop-filter:blur(28px);-webkit-backdrop-filter:blur(28px);border:1px solid ${isDark?"rgba(255,255,255,0.12)":"rgba(0,0,0,0.07)"};border-radius:9999px;padding:8px 20px;align-items:center;gap:4px;box-shadow:0 12px 48px rgba(0,0,0,0.22);}
         .mob-tab{width:52px;height:52px;border-radius:9999px;display:flex;align-items:center;justify-content:center;background:none;border:none;cursor:pointer;-webkit-tap-highlight-color:transparent;transition:transform 0.22s cubic-bezier(0.34,1.56,0.64,1),background 0.18s;flex-shrink:0;}
         .mob-tab:active{transform:scale(0.8);}
         .mob-tab .ms{font-size:22px;color:${isDark?"rgba(255,255,255,0.35)":"rgba(0,0,0,0.32)"};transition:color 0.18s;}
         .mob-tab.active{background:#00FF00;box-shadow:0 4px 22px rgba(0,255,0,0.55);transform:scale(1.12);}
         .mob-tab.active .ms{color:#0a1a0a;}
-
-        /* ── Mobile subject picker sheet ── */
-        .mob-subject-sheet-overlay{position:fixed;inset:0;background:rgba(0,0,0,0.55);z-index:150;backdrop-filter:blur(4px);animation:overlayIn 0.22s ease both;}
-        .mob-subject-sheet{position:fixed;left:0;right:0;bottom:0;z-index:151;background:${panel};border-radius:24px 24px 0 0;border-top:1px solid ${bdr};padding:0 0 env(safe-area-inset-bottom,20px);animation:sheetSlideUp 0.32s cubic-bezier(0.32,0.72,0,1) both;max-height:75vh;display:flex;flex-direction:column;}
-        .mob-subject-scroll{overflow-y:auto;padding:0 16px 20px;display:flex;flex-direction:column;gap:8px;}
-        .mob-subject-scroll::-webkit-scrollbar{display:none;}
-        .mob-subject-item{display:flex;align-items:center;gap:14px;padding:14px 16px;border-radius:14px;border:1.5px solid ${bdr};background:${card};cursor:pointer;transition:all 0.18s;-webkit-tap-highlight-color:transparent;}
-        .mob-subject-item.active{border-color:#00FF00;background:${isDark?"rgba(0,255,0,0.06)":"rgba(0,200,0,0.05)"};}
-        .mob-subject-item:active{transform:scale(0.97);}
-
-        /* ── AI panel (desktop right drawer + mobile bottom sheet) ── */
         .ai-panel-overlay{position:fixed;inset:0;background:rgba(0,0,0,0.55);z-index:200;backdrop-filter:blur(6px);animation:overlayIn 0.22s ease both;}
         .ai-panel{position:fixed;right:0;top:0;bottom:0;width:400px;max-width:100vw;background:${panel};border-left:1px solid ${bdr};display:flex;flex-direction:column;z-index:201;box-shadow:-20px 0 60px rgba(0,0,0,0.3);animation:sheetSlideIn 0.32s cubic-bezier(0.32,0.72,0,1) both;}
         .ai-panel-scroll{flex:1;overflow-y:auto;padding:16px;display:flex;flex-direction:column;gap:12px;}
@@ -701,54 +626,25 @@ Give concise, exam-focused answers. Use bullet points when listing. Keep answers
         .ai-msg-user{background:#00FF00;color:#0f172a;border-radius:16px;border-bottom-right-radius:4px;padding:12px 14px;font-size:12px;font-weight:600;line-height:1.65;align-self:flex-end;max-width:85%;animation:msgPop 0.25s ease both;}
         .ai-quick-btn{display:flex;align-items:center;gap:8px;padding:8px 12px;background:${isDark?"rgba(255,255,255,0.04)":"rgba(0,200,0,0.05)"};border:1px solid ${bdr};border-radius:10px;cursor:pointer;font-size:11px;font-weight:700;color:${text2};font-family:'Lexend',sans-serif;transition:all 0.18s;text-align:left;}
         .ai-quick-btn:hover{background:rgba(0,200,0,0.1);color:${text1};border-color:rgba(0,200,0,0.3);}
-        .ai-quick-btn:active{transform:scale(0.96);}
         .ai-input{width:100%;background:${isDark?"rgba(255,255,255,0.05)":"rgba(0,200,0,0.04)"};border:1px solid ${bdr};border-radius:12px;padding:10px 44px 10px 14px;font-size:12px;font-family:'Lexend',sans-serif;color:${text1};outline:none;resize:none;min-height:44px;max-height:120px;transition:border-color 0.2s;}
         .ai-input:focus{border-color:rgba(0,255,0,0.4);}
         .ai-input::placeholder{color:${text3};}
 
-        /* ── RESPONSIVE ── */
         @media(max-width:768px){
-          /* Hide desktop elements */
           .sb-sidebar{display:none!important;}
           .sb-header{display:none!important;}
-
-          /* Show mobile elements */
           .mob-header{display:flex!important;}
           .mob-nav{display:flex!important;}
-
-          /* Scroll area: extra bottom padding for nav + safe area */
           .sb-scroll{padding:16px 14px calc(100px + env(safe-area-inset-bottom,0px));}
-
-          /* Subjects: 2-column grid on mobile */
           .subject-grid{grid-template-columns:repeat(2,1fr);gap:10px;}
           .subject-card{padding:16px 14px;gap:8px;border-radius:16px;}
-
-          /* Module rows: stack content + actions */
           .module-row{flex-direction:column;align-items:stretch;gap:12px;padding:14px 14px;}
           .module-title{max-width:100%;white-space:normal;word-break:break-word;}
-
-          /* Actions row: fill width, equal-width buttons */
           .module-actions{width:100%;justify-content:stretch;}
-          .module-actions .btn-ai,
-          .module-actions .btn-open,
-          .module-actions .btn-dl{flex:1;justify-content:center;padding:9px 8px;font-size:11px;}
-
-          /* AI panel becomes bottom sheet on mobile */
-          .ai-panel{
-            right:0;left:0;top:auto;bottom:0;
-            width:100%;
-            border-left:none;border-top:1px solid ${bdr};
-            border-radius:24px 24px 0 0;
-            max-height:88vh;
-            animation:sheetSlideUp 0.35s cubic-bezier(0.32,0.72,0,1) both;
-            /* Leave space above bottom nav */
-            padding-bottom:env(safe-area-inset-bottom,0px);
-          }
-
-          /* AI quick actions: 2x2 grid */
+          .module-actions .btn-ai,.module-actions .btn-open,.module-actions .btn-dl{flex:1;justify-content:center;padding:9px 8px;font-size:11px;}
+          .ai-panel{right:0;left:0;top:auto;bottom:0;width:100%;border-left:none;border-top:1px solid ${bdr};border-radius:24px 24px 0 0;max-height:88vh;animation:sheetSlideUp 0.35s cubic-bezier(0.32,0.72,0,1) both;padding-bottom:env(safe-area-inset-bottom,0px);}
           .ai-quick-grid{grid-template-columns:1fr 1fr!important;}
         }
-
         @media(max-width:400px){
           .subject-grid{grid-template-columns:repeat(2,1fr);gap:8px;}
           .subject-card{padding:12px 10px;}
@@ -760,7 +656,7 @@ Give concise, exam-focused answers. Use bullet points when listing. Keep answers
 
       <div className="sb-root">
 
-        {/* ══ SIDEBAR (desktop only) ══ */}
+        {/* ══ SIDEBAR ══ */}
         <aside className={`sb-sidebar${sidebarOpen ? "" : " collapsed"}`}>
           <div style={{ display:"flex", alignItems:"center", gap:"12px", marginBottom:"40px", padding:"0 4px" }}>
             <div style={{ width:"40px", height:"40px", background:"#00FF00", borderRadius:"10px", display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0, boxShadow:"0 0 16px rgba(0,255,0,0.35)" }}>
@@ -848,29 +744,33 @@ Give concise, exam-focused answers. Use bullet points when listing. Keep answers
             </button>
           </header>
 
-          {/* ══ CONTENT ══ */}
+          {/* ══ SCROLL CONTENT ══ */}
           <div className="sb-scroll">
 
             {/* Page heading */}
             <div style={{ animation:"fadeUp 0.35s ease both" }}>
               <div style={{ display:"flex", alignItems:"center", gap:"10px", marginBottom:"6px", flexWrap:"wrap" }}>
                 <h2 style={{ fontSize:"clamp(1.3rem,4vw,1.9rem)", fontWeight:700, letterSpacing:"-0.03em", color:text1, margin:0 }}>Subjects</h2>
+
+                {/* ── Cache source badges ── */}
                 {cacheStatus === "hit" && (
                   <span className="cache-badge" style={{ background:"rgba(0,255,0,0.08)", border:"1px solid rgba(0,255,0,0.2)", color:"#00AA00" }}>
-                    <span className="ms" style={{ fontSize:"13px" }}>bolt</span>
-                    Cached
+                    <span className="ms" style={{ fontSize:"13px" }}>bolt</span>Cached
+                  </span>
+                )}
+                {cacheStatus === "redis" && (
+                  <span className="cache-badge" style={{ background:"rgba(59,130,246,0.1)", border:"1px solid rgba(59,130,246,0.3)", color:"#3b82f6" }}>
+                    <span className="ms" style={{ fontSize:"13px" }}>database</span>Redis · No change
                   </span>
                 )}
                 {cacheStatus === "updated" && (
                   <span className="cache-badge" style={{ background:"rgba(59,130,246,0.08)", border:"1px solid rgba(59,130,246,0.25)", color:"#3b82f6" }}>
-                    <span className="ms" style={{ fontSize:"13px" }}>sync</span>
-                    Updated {fmtTime(lastUpdated)}
+                    <span className="ms" style={{ fontSize:"13px" }}>sync</span>Redis · Updated {fmtTime(lastUpdated)}
                   </span>
                 )}
                 {cacheStatus === "fresh" && lastUpdated && (
                   <span className="cache-badge" style={{ background:isDark?"rgba(255,255,255,0.05)":"rgba(0,0,0,0.04)", border:`1px solid ${bdr}`, color:text3 }}>
-                    <span className="ms" style={{ fontSize:"13px" }}>download_done</span>
-                    Loaded {fmtTime(lastUpdated)}
+                    <span className="ms" style={{ fontSize:"13px" }}>download_done</span>Firebase · Loaded {fmtTime(lastUpdated)}
                   </span>
                 )}
               </div>
@@ -881,14 +781,13 @@ Give concise, exam-focused answers. Use bullet points when listing. Keep answers
               </p>
             </div>
 
+            {/* Warnings */}
             {(!branch || !sem) && (
               <div style={{ display:"flex", alignItems:"center", gap:"14px", padding:"16px", background:isDark?"rgba(245,158,11,0.08)":"rgba(245,158,11,0.06)", border:"1px solid rgba(245,158,11,0.25)", borderRadius:"16px", animation:"fadeUp 0.3s ease both" }}>
                 <span className="ms" style={{ fontSize:"26px", color:"#f59e0b", flexShrink:0 }}>info</span>
                 <div>
                   <p style={{ fontSize:"13px", fontWeight:700, color:text1, margin:"0 0 3px" }}>Branch or semester not set</p>
-                  <p style={{ fontSize:"12px", color:text2, margin:0 }}>
-                    <button onClick={() => router.push("/profile")} style={{ background:"none", border:"none", cursor:"pointer", color:"#f59e0b", fontWeight:700, fontSize:"12px", fontFamily:"'Lexend',sans-serif", textDecoration:"underline" }}>Update profile →</button>
-                  </p>
+                  <button onClick={() => router.push("/profile")} style={{ background:"none", border:"none", cursor:"pointer", color:"#f59e0b", fontWeight:700, fontSize:"12px", fontFamily:"'Lexend',sans-serif", textDecoration:"underline", padding:0 }}>Update profile →</button>
                 </div>
               </div>
             )}
@@ -917,7 +816,7 @@ Give concise, exam-focused answers. Use bullet points when listing. Keep answers
                   {Object.entries(subjects).map(([code, data], i) => {
                     const active = activeSubject === code;
                     const { icon, color } = getSubjectMeta(code);
-                    const label = typeof data?.Subject === "string" ? data.Subject : code;
+                    const label        = typeof data?.Subject === "string" ? data.Subject : code;
                     const totalModules = data?.Totalmodules ?? Object.keys(data?.modules || {}).length;
                     return (
                       <div
@@ -935,12 +834,6 @@ Give concise, exam-focused answers. Use bullet points when listing. Keep answers
                             {totalModules > 0 ? `${totalModules} module${totalModules!==1?"s":""}` : "No modules yet"}
                           </p>
                         </div>
-                        {active && (
-                          <div style={{ display:"flex", alignItems:"center", gap:"5px" }}>
-                            {/* <div style={{ width:"5px", height:"5px", borderRadius:"9999px", background:"#00FF00", boxShadow:"0 0 5px rgba(0,255,0,0.8)" }} /> */}
-                            
-                          </div>
-                        )}
                       </div>
                     );
                   })}
@@ -981,19 +874,21 @@ Give concise, exam-focused answers. Use bullet points when listing. Keep answers
                 ) : (
                   <div style={{ display:"flex", flexDirection:"column", gap:"10px" }}>
                     {filteredModules.map((mod, i) => {
+                      // undefined = not yet checked (lazy), true/false = resolved
                       const isChunked = chunkedModules[mod.key];
-                      const hasPDF    = isChunked || !!mod.resourcesPDF;
+                      const isChecking = isChunked === undefined;
+                      // hasPDF is only known once checked; show external link as fallback
+                      const hasPDF = isChunked === true || !!mod.resourcesPDF;
                       return (
                         <div
                           key={mod.key}
                           className="module-row"
                           style={{ animationDelay:`${i*0.04}s` }}
-                          onMouseEnter={() => setHoveredFile(i)}
+                          onMouseEnter={() => { setHoveredFile(i); }}
                           onMouseLeave={() => setHoveredFile(null)}
                         >
-                          {/* Top: icon + info */}
                           <div style={{ display:"flex", alignItems:"center", gap:"14px", flex:1, minWidth:0 }}>
-                            <div style={{ width:"44px", height:"44px", minWidth:"44px", borderRadius:"12px", background:hasPDF?"rgba(239,68,68,0.08)":(isDark?"rgba(255,255,255,0.04)":"rgba(0,0,0,0.04)"), display:"flex", alignItems:"center", justifyContent:"center", transition:"transform 0.2s", transform:hoveredFile===i?"scale(1.08)":"scale(1)", flexShrink:0 }}>
+                            <div style={{ width:"44px", height:"44px", minWidth:"44px", borderRadius:"12px", background:isChunked===true?"rgba(239,68,68,0.08)":(mod.resourcesPDF?"rgba(239,68,68,0.06)":(isDark?"rgba(255,255,255,0.04)":"rgba(0,0,0,0.04)")), display:"flex", alignItems:"center", justifyContent:"center", transition:"transform 0.2s", transform:hoveredFile===i?"scale(1.08)":"scale(1)", flexShrink:0 }}>
                               <span className="ms" style={{ fontSize:"22px", color:hasPDF?"#ef4444":text3 }}>
                                 {hasPDF ? "picture_as_pdf" : "folder_open"}
                               </span>
@@ -1006,9 +901,11 @@ Give concise, exam-focused answers. Use bullet points when listing. Keep answers
                                 {mod.Title || "Untitled Module"}
                               </p>
                               <p className="module-meta">
-                                {isChunked ? (
-                                  <><span className="badge-chunked"><span className="ms" style={{ fontSize:"11px" }}>check_circle</span>PDF Ready</span></>
-                                ) : hasPDF ? (
+                                {isChecking ? (
+                                  <span className="badge-checking">Hover to check PDF</span>
+                                ) : isChunked ? (
+                                  <span className="badge-chunked"><span className="ms" style={{ fontSize:"11px" }}>check_circle</span>PDF Ready · Redis</span>
+                                ) : mod.resourcesPDF ? (
                                   <span>PDF Available · External</span>
                                 ) : (
                                   <span style={{ color:"#f59e0b", fontWeight:600 }}>No resource yet</span>
@@ -1017,9 +914,7 @@ Give concise, exam-focused answers. Use bullet points when listing. Keep answers
                             </div>
                           </div>
 
-                          {/* Bottom: action buttons (stacked on mobile, inline on desktop) */}
                           <div className="module-actions">
-
                             <button className="btn-open" disabled={!hasPDF} onClick={() => handleOpenPDF(mod)}>
                               <span className="ms" style={{ fontSize:"15px" }}>{isChunked?"open_in_full":"open_in_new"}</span>
                               Open
@@ -1036,6 +931,7 @@ Give concise, exam-focused answers. Use bullet points when listing. Keep answers
                 )}
               </section>
             )}
+
           </div>
         </main>
       </div>
@@ -1057,12 +953,9 @@ Give concise, exam-focused answers. Use bullet points when listing. Keep answers
         <>
           <div className="ai-panel-overlay" onClick={() => setAiPanelOpen(false)} />
           <div className="ai-panel">
-            {/* Drag handle (mobile only visual cue) */}
             <div style={{ display:"flex", justifyContent:"center", padding:"10px 0 4px", flexShrink:0 }}>
               <div style={{ width:"36px", height:"4px", borderRadius:"9999px", background:isDark?"rgba(255,255,255,0.12)":"rgba(0,0,0,0.1)" }} />
             </div>
-
-            {/* Header */}
             <div style={{ padding:"8px 16px 14px", borderBottom:`1px solid ${bdr}`, display:"flex", alignItems:"center", justifyContent:"space-between", flexShrink:0 }}>
               <div style={{ display:"flex", alignItems:"center", gap:"10px" }}>
                 <div style={{ width:"34px", height:"34px", borderRadius:"10px", background:"rgba(0,255,0,0.12)", display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0 }}>
@@ -1078,19 +971,6 @@ Give concise, exam-focused answers. Use bullet points when listing. Keep answers
               </button>
             </div>
 
-            {/* Quick actions */}
-            <div style={{ padding:"12px 14px", borderBottom:`1px solid ${bdr}`, flexShrink:0 }}>
-              <div className="ai-quick-grid" style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:"8px" }}>
-                {aiQuickActions(aiPanelMod).map(({icon,label,prompt}) => (
-                  <button key={label} className="ai-quick-btn" onClick={() => sendAiMessage(prompt)}>
-                    <span className="ms" style={{ fontSize:"15px", color:"#00CC00" }}>{icon}</span>
-                    {label}
-                  </button>
-                ))}
-              </div>
-            </div>
-
-            {/* Messages */}
             <div className="ai-panel-scroll">
               {aiMessages.map((msg, i) => (
                 <div key={i} className={msg.role==="ai"?"ai-msg-ai":"ai-msg-user"}>
@@ -1113,7 +993,6 @@ Give concise, exam-focused answers. Use bullet points when listing. Keep answers
               <div ref={aiChatEndRef} />
             </div>
 
-            {/* Input */}
             <div style={{ padding:"12px", borderTop:`1px solid ${bdr}`, flexShrink:0, paddingBottom:`calc(12px + env(safe-area-inset-bottom, 0px))` }}>
               <div style={{ position:"relative" }}>
                 <textarea
@@ -1121,11 +1000,10 @@ Give concise, exam-focused answers. Use bullet points when listing. Keep answers
                   placeholder={`Ask about ${aiPanelMod?.title}…`}
                   value={aiInput}
                   onChange={e => setAiInput(e.target.value)}
-                  onKeyDown={e => { if (e.key==="Enter"&&!e.shiftKey){e.preventDefault();sendAiMessage(aiInput);} }}
+                  onKeyDown={e => { if (e.key==="Enter"&&!e.shiftKey){e.preventDefault(); /* sendAiMessage(aiInput) */} }}
                   rows={2}
                 />
                 <button
-                  onClick={() => sendAiMessage(aiInput)}
                   disabled={!aiInput.trim()||aiLoading}
                   style={{ position:"absolute", right:"10px", bottom:"10px", width:"32px", height:"32px", background:"#00FF00", border:"none", borderRadius:"9px", display:"flex", alignItems:"center", justifyContent:"center", cursor:"pointer", opacity:(!aiInput.trim()||aiLoading)?0.4:1, transition:"opacity 0.18s" }}
                 >

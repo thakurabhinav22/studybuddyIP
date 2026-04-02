@@ -61,20 +61,37 @@ async function validateAccess(db, uid, reqBranch, reqSem, reqSubject, reqModule)
 /* ─────────────────────────────────────────
    CHUNK REASSEMBLY
 ───────────────────────────────────────── */
-async function loadPDF(db, branch, sem, subject, moduleKey, onProgress) {
+async function loadPdfMeta(branch, sem, subject, moduleKey) {
+  const res = await fetch(`/api/notes/pdf?branch=${encodeURIComponent(branch)}&sem=${encodeURIComponent(sem)}&subject=${encodeURIComponent(subject)}&module=${encodeURIComponent(moduleKey)}&type=meta`);
+  if (!res.ok) throw new Error(`Failed to load PDF metadata (${res.status})`);
+  const payload = await res.json();
+  return payload?.data || null;
+}
+
+async function loadPdfChunks(branch, sem, subject, moduleKey) {
+  const res = await fetch(`/api/notes/pdf?branch=${encodeURIComponent(branch)}&sem=${encodeURIComponent(sem)}&subject=${encodeURIComponent(subject)}&module=${encodeURIComponent(moduleKey)}&type=chunks`);
+  if (!res.ok) throw new Error(`Failed to load PDF chunks (${res.status})`);
+  const payload = await res.json();
+  return Array.isArray(payload?.data) ? payload.data : null;
+}
+
+async function loadPDF(branch, sem, subject, moduleKey, onProgress) {
   const ck = getCacheKey(branch, sem, subject, moduleKey);
   if (PDF_CACHE.has(ck)) { onProgress(100, "Loaded from cache"); return PDF_CACHE.get(ck); }
-  const base = `notes/${branch}/${sem}/subjects/${subject}/modules/${moduleKey}`;
   onProgress(5, "Reading PDF metadata…");
-  const meta = await get(dbRef(db, `${base}/pdfMeta`));
-  if (!meta.exists()) throw new Error("No PDF uploaded for this module yet.");
-  const { totalChunks } = meta.val();
-  const chunks = [];
-  for (let i = 0; i < totalChunks; i++) {
-    const s = await get(dbRef(db, `${base}/pdfChunks/chunk_${i}`));
-    if (!s.exists()) throw new Error(`Corrupted PDF: missing chunk ${i} of ${totalChunks}.`);
-    chunks.push(s.val());
-    onProgress(10 + Math.round(((i + 1) / totalChunks) * 75), `Loading chunk ${i + 1} / ${totalChunks}…`);
+  const meta = await loadPdfMeta(branch, sem, subject, moduleKey);
+  if (!meta) throw new Error("No PDF uploaded for this module yet.");
+  const { totalChunks = 0 } = meta;
+
+  onProgress(12, "Loading PDF chunks…");
+  const chunks = await loadPdfChunks(branch, sem, subject, moduleKey);
+  if (!chunks || !chunks.length) throw new Error("No PDF chunks found for this module.");
+  if (totalChunks && chunks.length < totalChunks) {
+    throw new Error(`Incomplete PDF: expected ${totalChunks} chunks, received ${chunks.length}.`);
+  }
+
+  for (let i = 0; i < chunks.length; i++) {
+    onProgress(12 + Math.round(((i + 1) / chunks.length) * 75), `Loading chunk ${i + 1} / ${chunks.length}…`);
   }
   onProgress(88, "Assembling PDF…");
   const b64 = chunks.join("");
@@ -1271,7 +1288,7 @@ function PDFViewerInner() {
   useEffect(() => {
     if (!branch || !sem || !subject || !moduleKey) return;
     get(dbRef(db, `notes/${branch}/${sem}/subjects/${subject}/modules/${moduleKey}/Title`)).then(s => { if (s.exists()) setModuleTitle(s.val()); });
-    get(dbRef(db, `notes/${branch}/${sem}/subjects/${subject}/modules/${moduleKey}/pdfMeta`)).then(s => { if (s.exists()) setFileName(s.val().fileName || `${moduleKey}.pdf`); });
+    loadPdfMeta(branch, sem, subject, moduleKey).then(meta => { if (meta) setFileName(meta.fileName || `${moduleKey}.pdf`); });
   }, [branch, sem, subject, moduleKey]);
 
   useEffect(() => {
@@ -1316,7 +1333,7 @@ function PDFViewerInner() {
       try {
         const lib = window["pdfjs-dist/build/pdf"];
         lib.GlobalWorkerOptions.workerSrc = "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js";
-        const buf = await loadPDF(db, branch, sem, subject, moduleKey, (p, m) => { setLoadPct(p); setLoadMsg(m); });
+        const buf = await loadPDF(branch, sem, subject, moduleKey, (p, m) => { setLoadPct(p); setLoadMsg(m); });
         await initPDFJS(buf);
       } catch (err) { setLoadStatus("error"); setLoadMsg(err.message); }
     };
