@@ -32,13 +32,21 @@ export async function GET(request) {
     return Response.json({ error: "Missing params" }, { status: 400 });
   }
 
-  const cacheKey = `sb:pdf:${type}:${branch}:${sem}:${subject}:${module}`;
+  const baseCacheKey = `sb:pdf:${branch}:${sem}:${subject}:${module}`;
+  const legacyTypeKey = `sb:pdf:${type}:${branch}:${sem}:${subject}:${module}`;
 
   // ── 1. Redis hit ──
   try {
-    const cached = await redis.get(cacheKey);
-    if (cached) {
-      return Response.json({ data: cached, source: "redis" });
+    const cachedBase = await redis.get(baseCacheKey);
+    const cachedLegacy = cachedBase || await redis.get(legacyTypeKey);
+
+    if (cachedLegacy) {
+      if (type === "meta" && cachedLegacy.meta) {
+        return Response.json({ data: cachedLegacy.meta, source: "redis" });
+      }
+      if (type === "chunks" && cachedLegacy.chunks) {
+        return Response.json({ data: cachedLegacy.chunks, source: "redis" });
+      }
     }
   } catch (e) {
     console.warn("[pdf] Redis get failed:", e.message);
@@ -55,7 +63,12 @@ export async function GET(request) {
       const data = await res.json();
       if (!data) return Response.json({ data: null });
 
-      try { await setWithTTL(cacheKey, data, PDF_TTL); } catch {}
+      try {
+        const existing = (await redis.get(baseCacheKey)) || {};
+        const payload = { ...existing, meta: data };
+        await setWithTTL(baseCacheKey, payload, PDF_TTL);
+        await setWithTTL(legacyTypeKey, data, PDF_TTL);
+      } catch {}
       return Response.json({ data, source: "firebase" });
 
     } else if (type === "chunks") {
@@ -75,7 +88,12 @@ export async function GET(request) {
       const chunks = await Promise.all(chunkPromises);
       const validChunks = chunks.filter(Boolean);
 
-      try { await setWithTTL(cacheKey, validChunks, PDF_TTL); } catch {}
+      try {
+        const existing = (await redis.get(baseCacheKey)) || {};
+        const payload = { ...existing, meta, chunks: validChunks };
+        await setWithTTL(baseCacheKey, payload, PDF_TTL);
+        await setWithTTL(legacyTypeKey, validChunks, PDF_TTL);
+      } catch {}
       return Response.json({ data: validChunks, source: "firebase" });
 
     } else {
