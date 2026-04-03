@@ -7,14 +7,6 @@ import { onAuthStateChanged } from "firebase/auth";
 import { ref as dbRef, get, update } from "firebase/database";
 import { flushPendingUsageStats, flushUsageStats } from "@/lib/usageStats";
 
-/* ─────────────────────────────────────────
-   IN-MEMORY PDF CACHE
-───────────────────────────────────────── */
-const PDF_CACHE = new Map();
-function getCacheKey(branch, sem, subject, moduleKey) {
-  return `${branch}|${sem}|${subject}|${moduleKey}`;
-}
-
 function patchDashboardRecentNote(uid, note) {
   if (!uid || !note || typeof window === "undefined") return;
   try {
@@ -35,7 +27,214 @@ function patchDashboardRecentNote(uid, note) {
       },
     };
     localStorage.setItem(key, JSON.stringify({ ...cached, data, updatedAt: Date.now() }));
-  } catch {}
+  } catch { }
+}
+
+/* ─────────────────────────────────────────
+   PDF LOCAL CACHE
+───────────────────────────────────────── */
+const PDF_LOCAL_CACHE_VERSION = 1;
+const PDF_LOCAL_CACHE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+const PDF_LOCAL_IDB_NAME = "studybuddy_pdf_cache";
+const PDF_LOCAL_IDB_STORE = "pdfs";
+const PDF_STREAM_CHUNK_BYTES = 500 * 1024 / 4 * 3;
+const PDF_LOCAL_B64_CHUNK_SIZE = 500 * 1024;
+
+function getPdfLocalCacheKey(branch, sem, subject, moduleKey) {
+  return `studybuddy:pdf-cache:v${PDF_LOCAL_CACHE_VERSION}:${branch}:${sem}:${subject}:${moduleKey}`;
+}
+
+function openPdfLocalDb() {
+  if (typeof indexedDB === "undefined") return Promise.resolve(null);
+  return new Promise((resolve, reject) => {
+    const req = indexedDB.open(PDF_LOCAL_IDB_NAME, 1);
+    req.onupgradeneeded = () => {
+      const db = req.result;
+      if (!db.objectStoreNames.contains(PDF_LOCAL_IDB_STORE)) {
+        db.createObjectStore(PDF_LOCAL_IDB_STORE, { keyPath: "cacheKey" });
+      }
+    };
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => reject(req.error);
+  });
+}
+
+async function getPdfLocalIdb(cacheKey) {
+  const db = await openPdfLocalDb();
+  if (!db) return null;
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(PDF_LOCAL_IDB_STORE, "readonly");
+    const store = tx.objectStore(PDF_LOCAL_IDB_STORE);
+    const req = store.get(cacheKey);
+    req.onsuccess = () => resolve(req.result || null);
+    req.onerror = () => reject(req.error);
+  });
+}
+
+async function setPdfLocalIdb(cacheKey, value) {
+  const db = await openPdfLocalDb();
+  if (!db) return false;
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(PDF_LOCAL_IDB_STORE, "readwrite");
+    const store = tx.objectStore(PDF_LOCAL_IDB_STORE);
+    const req = store.put({ cacheKey, ...value });
+    req.onsuccess = () => resolve(true);
+    req.onerror = () => reject(req.error);
+  });
+}
+
+async function deletePdfLocalIdb(cacheKey) {
+  const db = await openPdfLocalDb();
+  if (!db) return false;
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(PDF_LOCAL_IDB_STORE, "readwrite");
+    const store = tx.objectStore(PDF_LOCAL_IDB_STORE);
+    const req = store.delete(cacheKey);
+    req.onsuccess = () => resolve(true);
+    req.onerror = () => reject(req.error);
+  });
+}
+
+function readPdfLocalMeta(branch, sem, subject, moduleKey) {
+  if (typeof window === "undefined") return null;
+  try {
+    const key = getPdfLocalCacheKey(branch, sem, subject, moduleKey);
+    const raw = localStorage.getItem(key);
+    if (!raw) return null;
+    const cached = JSON.parse(raw);
+    if (!cached?.savedAt || (Date.now() - cached.savedAt) > PDF_LOCAL_CACHE_TTL_MS) {
+      localStorage.removeItem(key);
+      return null;
+    }
+    return cached;
+  } catch {
+    return null;
+  }
+}
+
+function writePdfLocalMeta(branch, sem, subject, moduleKey, payload) {
+  if (typeof window === "undefined") return;
+  try {
+    const key = getPdfLocalCacheKey(branch, sem, subject, moduleKey);
+    localStorage.setItem(key, JSON.stringify(payload));
+  } catch { }
+}
+
+function clearPdfLocalChunkKeys(branch, sem, subject, moduleKey, chunkCount) {
+  if (typeof window === "undefined") return;
+  try {
+    const key = getPdfLocalCacheKey(branch, sem, subject, moduleKey);
+    for (let i = 0; i < chunkCount; i++) {
+      localStorage.removeItem(`${key}:chunk:${i}`);
+    }
+  } catch { }
+}
+
+async function readPdfLocalCache(branch, sem, subject, moduleKey) {
+  if (typeof window === "undefined") return null;
+  try {
+    const key = getPdfLocalCacheKey(branch, sem, subject, moduleKey);
+    const cached = await getPdfLocalIdb(key);
+    if (cached?.savedAt && (Date.now() - cached.savedAt) <= PDF_LOCAL_CACHE_TTL_MS && Array.isArray(cached.chunks) && cached.chunks.length) {
+      return {
+        meta: cached.meta || null,
+        chunks: cached.chunks,
+        source: "local",
+        savedAt: cached.savedAt,
+      };
+    }
+
+    const legacy = readPdfLocalMeta(branch, sem, subject, moduleKey);
+    if (!legacy) return null;
+    const chunkCount = Number(legacy.chunkCount) || 0;
+    if (!chunkCount) return null;
+
+    const chunks = [];
+    for (let i = 0; i < chunkCount; i++) {
+      const chunk = localStorage.getItem(`${key}:chunk:${i}`);
+      if (chunk == null) return null;
+      chunks.push(chunk);
+    }
+
+    await setPdfLocalIdb(key, { meta: legacy.meta || null, chunks, source: legacy.source || "local", savedAt: legacy.savedAt || Date.now() });
+    clearPdfLocalChunkKeys(branch, sem, subject, moduleKey, chunkCount);
+    writePdfLocalMeta(branch, sem, subject, moduleKey, {
+      meta: legacy.meta || null,
+      chunkCount,
+      source: legacy.source || "local",
+      savedAt: legacy.savedAt || Date.now(),
+    });
+
+    return {
+      meta: legacy.meta || null,
+      chunks,
+      source: "local",
+      savedAt: legacy.savedAt || Date.now(),
+    };
+  } catch {
+    return null;
+  }
+}
+
+async function writePdfLocalCache(branch, sem, subject, moduleKey, { meta, chunks, source }) {
+  if (typeof window === "undefined") return false;
+  const key = getPdfLocalCacheKey(branch, sem, subject, moduleKey);
+  const chunkCount = Array.isArray(chunks) ? chunks.length : 0;
+  if (!chunkCount) return false;
+
+  const savedAt = Date.now();
+  const payload = {
+    meta: meta || null,
+    chunkCount,
+    source: source || "redis",
+    savedAt,
+  };
+
+  try {
+    await setPdfLocalIdb(key, { meta: meta || null, chunks: Array.isArray(chunks) ? chunks : [], source: source || "redis", savedAt });
+    writePdfLocalMeta(branch, sem, subject, moduleKey, payload);
+    clearPdfLocalChunkKeys(branch, sem, subject, moduleKey, chunkCount);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function assemblePdfBuffer(chunks) {
+  const b64 = chunks.join("");
+  const bin = atob(b64);
+  const buf = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) buf[i] = bin.charCodeAt(i);
+  return buf.buffer;
+}
+
+function bufferToBase64(buffer) {
+  const bytes = new Uint8Array(buffer);
+  let binary = "";
+  const step = 0x8000;
+  for (let i = 0; i < bytes.length; i += step) {
+    binary += String.fromCharCode(...bytes.subarray(i, i + step));
+  }
+  return btoa(binary);
+}
+
+function chunkBase64(base64, size = PDF_LOCAL_B64_CHUNK_SIZE) {
+  const chunks = [];
+  for (let i = 0; i < base64.length; i += size) {
+    chunks.push(base64.slice(i, i + size));
+  }
+  return chunks;
+}
+
+function buildPdfStreamUrl(branch, sem, subject, moduleKey) {
+  const params = new URLSearchParams({
+    branch,
+    sem,
+    subject,
+    module: moduleKey,
+    type: "file",
+  });
+  return `/api/notes/pdf?${params.toString()}`;
 }
 
 /* ─────────────────────────────────────────
@@ -65,7 +264,7 @@ async function loadPdfMeta(branch, sem, subject, moduleKey) {
   const res = await fetch(`/api/notes/pdf?branch=${encodeURIComponent(branch)}&sem=${encodeURIComponent(sem)}&subject=${encodeURIComponent(subject)}&module=${encodeURIComponent(moduleKey)}&type=meta`);
   if (!res.ok) throw new Error(`Failed to load PDF metadata (${res.status})`);
   const payload = await res.json();
-  return payload?.data || null;
+  return { data: payload?.data || null, source: payload?.source || "firebase" };
 }
 
 function normalizeSem(raw) {
@@ -89,35 +288,47 @@ async function loadPdfChunks(branch, sem, subject, moduleKey) {
   const res = await fetch(`/api/notes/pdf?branch=${encodeURIComponent(branch)}&sem=${encodeURIComponent(sem)}&subject=${encodeURIComponent(subject)}&module=${encodeURIComponent(moduleKey)}&type=chunks`);
   if (!res.ok) throw new Error(`Failed to load PDF chunks (${res.status})`);
   const payload = await res.json();
-  return Array.isArray(payload?.data) ? payload.data : null;
+  return { data: Array.isArray(payload?.data) ? payload.data : null, source: payload?.source || "firebase" };
 }
 
 async function loadPDF(branch, sem, subject, moduleKey, onProgress) {
-  const ck = getCacheKey(branch, sem, subject, moduleKey);
-  if (PDF_CACHE.has(ck)) { onProgress(100, "Loaded from cache"); return PDF_CACHE.get(ck); }
+  const localCached = await readPdfLocalCache(branch, sem, subject, moduleKey);
+  if (localCached?.chunks?.length) {
+    onProgress(3, "Loaded from local cache…");
+    onProgress(6, "Preparing local PDF…");
+    const buffer = assemblePdfBuffer(localCached.chunks);
+    onProgress(100, "Ready from local cache");
+    return { buffer, source: localCached.source || "local", meta: localCached.meta || null };
+  }
+
   onProgress(5, "Reading PDF metadata…");
-  const meta = await loadPdfMeta(branch, sem, subject, moduleKey);
+  const { data: meta, source: metaSource } = await loadPdfMeta(branch, sem, subject, moduleKey);
   if (!meta) throw new Error("No PDF uploaded for this module yet.");
-  const { totalChunks = 0 } = meta;
+  onProgress(14, "Fetching PDF from server…");
 
-  onProgress(12, "Loading PDF chunks…");
-  const chunks = await loadPdfChunks(branch, sem, subject, moduleKey);
-  if (!chunks || !chunks.length) throw new Error("No PDF chunks found for this module.");
-  if (totalChunks && chunks.length < totalChunks) {
-    throw new Error(`Incomplete PDF: expected ${totalChunks} chunks, received ${chunks.length}.`);
-  }
+  const res = await fetch(buildPdfStreamUrl(branch, sem, subject, moduleKey));
+  if (!res.ok) throw new Error(`Failed to load PDF file (${res.status})`);
 
-  for (let i = 0; i < chunks.length; i++) {
-    onProgress(12 + Math.round(((i + 1) / chunks.length) * 75), `Loading chunk ${i + 1} / ${chunks.length}…`);
-  }
-  onProgress(88, "Assembling PDF…");
-  const b64 = chunks.join("");
-  const bin = atob(b64);
-  const buf = new Uint8Array(bin.length);
-  for (let i = 0; i < bin.length; i++) buf[i] = bin.charCodeAt(i);
-  PDF_CACHE.set(ck, buf.buffer);
+  onProgress(48, "Reading PDF bytes…");
+  const buffer = await res.arrayBuffer();
+
+  onProgress(72, "Caching PDF locally…");
+  try {
+    const b64 = bufferToBase64(buffer);
+    const chunks = chunkBase64(b64);
+    await writePdfLocalCache(branch, sem, subject, moduleKey, {
+      meta,
+      chunks,
+      source: res.headers.get("X-PDF-Source") || metaSource || "firebase",
+    });
+  } catch { }
+
   onProgress(100, "Ready");
-  return buf.buffer;
+  return {
+    buffer,
+    source: res.headers.get("X-PDF-Source") || metaSource || "firebase",
+    meta,
+  };
 }
 
 /* ─────────────────────────────────────────
@@ -126,7 +337,7 @@ async function loadPDF(branch, sem, subject, moduleKey, onProgress) {
    no NEXT_PUBLIC_ prefix needed).
 ───────────────────────────────────────── */
 const GROQ_VISION_MODEL = "meta-llama/llama-4-scout-17b-16e-instruct";
-const GROQ_TEXT_MODEL   = "llama-3.3-70b-versatile";
+const GROQ_TEXT_MODEL = "llama-3.3-70b-versatile";
 
 async function callGroq({ messages, model, max_tokens = 1200 }) {
   const res = await fetch("/api/groq", {
@@ -171,7 +382,7 @@ async function parseModelJson(rawText, { kind = "array", label = "response" } = 
   const tryDirect = sanitizeJsonCandidate(block);
   try {
     return JSON.parse(tryDirect);
-  } catch {}
+  } catch { }
 
   const repaired = await callGroq({
     model: GROQ_TEXT_MODEL,
@@ -216,11 +427,11 @@ ${JSON.stringify(pairs, null, 1)}`;
 }
 
 async function renderPageToBase64(pdfDoc, pageNum, scale = 1.5) {
-  const page     = await pdfDoc.getPage(pageNum);
+  const page = await pdfDoc.getPage(pageNum);
   const viewport = page.getViewport({ scale });
-  const canvas   = document.createElement("canvas");
-  canvas.width   = viewport.width;
-  canvas.height  = viewport.height;
+  const canvas = document.createElement("canvas");
+  canvas.width = viewport.width;
+  canvas.height = viewport.height;
   await page.render({ canvasContext: canvas.getContext("2d"), viewport }).promise;
   return canvas.toDataURL("image/jpeg", 0.82).split(",")[1];
 }
@@ -232,11 +443,11 @@ async function renderPageToBase64(pdfDoc, pageNum, scale = 1.5) {
    SLASH COMMANDS REGISTRY
 ───────────────────────────────────────── */
 const SLASH_COMMANDS = [
-  { cmd:"/current",     icon:"pin",          desc:"Page-only strict answer — no extra context",          color:"#00CC00" },
-  { cmd:"/draw",        icon:"draw",         desc:"Draw an ASCII diagram of the concept on this page",   color:"#a78bfa" },
-  { cmd:"/explain",     icon:"school",       desc:"Explain with a real-world example",                   color:"#38bdf8" },
-  { cmd:"/fullexplain", icon:"auto_stories", desc:"Full detailed explanation with flow + exam tips",     color:"#fb923c" },
-  { cmd:"/diagram",     icon:"account_tree", desc:"Generate a structured flowchart / diagram",           color:"#34d399" },
+  { cmd: "/current", icon: "pin", desc: "Page-only strict answer — no extra context", color: "#00CC00" },
+  { cmd: "/draw", icon: "draw", desc: "Draw an ASCII diagram of the concept on this page", color: "#a78bfa" },
+  { cmd: "/explain", icon: "school", desc: "Explain with a real-world example", color: "#38bdf8" },
+  { cmd: "/fullexplain", icon: "auto_stories", desc: "Full detailed explanation with flow + exam tips", color: "#fb923c" },
+  { cmd: "/diagram", icon: "account_tree", desc: "Generate a structured flowchart / diagram", color: "#34d399" },
 ];
 
 function parseCommand(input) {
@@ -281,8 +492,8 @@ function MarkdownText({ text, color }) {
       i++;
       while (i < lines.length && !lines[i].trimStart().startsWith("```")) { codeLines.push(lines[i]); i++; }
       elements.push(
-        <pre key={i} style={{ background:"rgba(0,0,0,0.25)", borderRadius:"8px", padding:"10px 12px", fontSize:"11px", lineHeight:1.6, overflowX:"auto", margin:"6px 0", fontFamily:"monospace", color:"#00FF00", border:"1px solid rgba(0,255,0,0.15)" }}>
-          {lang && <span style={{ fontSize:"9px", color:"#00AA00", display:"block", marginBottom:"4px", textTransform:"uppercase", letterSpacing:"0.08em" }}>{lang}</span>}
+        <pre key={i} style={{ background: "rgba(0,0,0,0.25)", borderRadius: "8px", padding: "10px 12px", fontSize: "11px", lineHeight: 1.6, overflowX: "auto", margin: "6px 0", fontFamily: "monospace", color: "#00FF00", border: "1px solid rgba(0,255,0,0.15)" }}>
+          {lang && <span style={{ fontSize: "9px", color: "#00AA00", display: "block", marginBottom: "4px", textTransform: "uppercase", letterSpacing: "0.08em" }}>{lang}</span>}
           {codeLines.join("\n")}
         </pre>
       );
@@ -291,18 +502,18 @@ function MarkdownText({ text, color }) {
     const hMatch = line.match(/^(#{1,3})\s+(.+)/);
     if (hMatch) {
       const lvl = hMatch[1].length;
-      const sizes = { 1:"15px", 2:"13px", 3:"12px" };
-      elements.push(<p key={i} style={{ fontSize:sizes[lvl], fontWeight:700, margin:"10px 0 4px", color, lineHeight:1.4 }}>{inlineFormat(hMatch[2], color)}</p>);
+      const sizes = { 1: "15px", 2: "13px", 3: "12px" };
+      elements.push(<p key={i} style={{ fontSize: sizes[lvl], fontWeight: 700, margin: "10px 0 4px", color, lineHeight: 1.4 }}>{inlineFormat(hMatch[2], color)}</p>);
       i++; continue;
     }
     if (/^[-*•]\s/.test(line.trimStart())) {
       const items = [];
       while (i < lines.length && /^[-*•]\s/.test(lines[i].trimStart())) { items.push(lines[i].replace(/^[\s\-*•]+/, "")); i++; }
       elements.push(
-        <ul key={i} style={{ margin:"4px 0 6px", paddingLeft:"0", listStyle:"none" }}>
+        <ul key={i} style={{ margin: "4px 0 6px", paddingLeft: "0", listStyle: "none" }}>
           {items.map((item, k) => (
-            <li key={k} style={{ display:"flex", gap:"8px", alignItems:"flex-start", fontSize:"12px", lineHeight:1.65, margin:"2px 0", color }}>
-              <span style={{ color:"#00CC00", fontWeight:700, flexShrink:0, marginTop:"1px" }}>›</span>
+            <li key={k} style={{ display: "flex", gap: "8px", alignItems: "flex-start", fontSize: "12px", lineHeight: 1.65, margin: "2px 0", color }}>
+              <span style={{ color: "#00CC00", fontWeight: 700, flexShrink: 0, marginTop: "1px" }}>›</span>
               <span>{inlineFormat(item, color)}</span>
             </li>
           ))}
@@ -315,10 +526,10 @@ function MarkdownText({ text, color }) {
       let num = 1;
       while (i < lines.length && /^\d+\.\s/.test(lines[i].trimStart())) { items.push({ n: num++, text: lines[i].replace(/^\d+\.\s*/, "") }); i++; }
       elements.push(
-        <ol key={i} style={{ margin:"4px 0 6px", paddingLeft:"0", listStyle:"none" }}>
+        <ol key={i} style={{ margin: "4px 0 6px", paddingLeft: "0", listStyle: "none" }}>
           {items.map(({ n, text }, k) => (
-            <li key={k} style={{ display:"flex", gap:"8px", alignItems:"flex-start", fontSize:"12px", lineHeight:1.65, margin:"3px 0", color }}>
-              <span style={{ color:"#00CC00", fontWeight:700, flexShrink:0, minWidth:"18px" }}>{n}.</span>
+            <li key={k} style={{ display: "flex", gap: "8px", alignItems: "flex-start", fontSize: "12px", lineHeight: 1.65, margin: "3px 0", color }}>
+              <span style={{ color: "#00CC00", fontWeight: 700, flexShrink: 0, minWidth: "18px" }}>{n}.</span>
               <span>{inlineFormat(text, color)}</span>
             </li>
           ))}
@@ -326,8 +537,8 @@ function MarkdownText({ text, color }) {
       );
       continue;
     }
-    if (line.trim() === "") { elements.push(<div key={i} style={{ height:"6px" }} />); i++; continue; }
-    elements.push(<p key={i} style={{ fontSize:"12px", lineHeight:1.65, margin:"2px 0", color }}>{inlineFormat(line, color)}</p>);
+    if (line.trim() === "") { elements.push(<div key={i} style={{ height: "6px" }} />); i++; continue; }
+    elements.push(<p key={i} style={{ fontSize: "12px", lineHeight: 1.65, margin: "2px 0", color }}>{inlineFormat(line, color)}</p>);
     i++;
   }
   return <>{elements}</>;
@@ -338,13 +549,13 @@ function inlineFormat(text, color) {
   const regex = /(\*\*(.+?)\*\*|\*(.+?)\*|`(.+?)`)/g;
   let last = 0, m;
   while ((m = regex.exec(text)) !== null) {
-    if (m.index > last) parts.push(<span key={last}>{text.slice(last, m.index)}</span>);
-    if (m[0].startsWith("**"))     parts.push(<strong key={m.index} style={{ fontWeight:700, color }}>{m[2]}</strong>);
-    else if (m[0].startsWith("*")) parts.push(<em key={m.index} style={{ fontStyle:"italic", color }}>{m[3]}</em>);
-    else if (m[0].startsWith("`")) parts.push(<code key={m.index} style={{ fontFamily:"monospace", background:"rgba(0,255,0,0.12)", padding:"1px 5px", borderRadius:"4px", fontSize:"11px", color:"#00EE00" }}>{m[4]}</code>);
+    if (m.index > last) parts.push(<span key={`text-${last}-${m.index}`}>{text.slice(last, m.index)}</span>);
+    if (m[0].startsWith("**")) parts.push(<strong key={`strong-${m.index}`} style={{ fontWeight: 700, color }}>{m[2]}</strong>);
+    else if (m[0].startsWith("*")) parts.push(<em key={`em-${m.index}`} style={{ fontStyle: "italic", color }}>{m[3]}</em>);
+    else if (m[0].startsWith("`") ) parts.push(<code key={`code-${m.index}`} style={{ fontFamily: "monospace", background: "rgba(0,255,0,0.12)", padding: "1px 5px", borderRadius: "4px", fontSize: "11px", color: "#00EE00" }}>{m[4]}</code>);
     last = m.index + m[0].length;
   }
-  if (last < text.length) parts.push(<span key={last}>{text.slice(last)}</span>);
+  if (last < text.length) parts.push(<span key={`text-${last}-${text.length}`}>{text.slice(last)}</span>);
   return parts.length ? parts : text;
 }
 
@@ -354,7 +565,7 @@ function inlineFormat(text, color) {
 function ModalOverlay({ onClose, children }) {
   return (
     <div
-      style={{ position:"fixed", inset:0, background:"rgba(0,0,0,0.65)", zIndex:9999, display:"flex", alignItems:"center", justifyContent:"center", backdropFilter:"blur(8px)", animation:"overlayIn 0.2s ease both", padding:"16px", overflowY:"auto" }}
+      style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.65)", zIndex: 9999, display: "flex", alignItems: "center", justifyContent: "center", backdropFilter: "blur(8px)", animation: "overlayIn 0.2s ease both", padding: "16px", overflowY: "auto" }}
       onClick={e => { if (e.target === e.currentTarget && onClose) onClose(); }}
     >
       {children}
@@ -377,19 +588,19 @@ function modalBoxStyle(panel, bdr, width) {
 
 function ModalHeader({ title, subtitle, icon, onClose, text1, text3 }) {
   return (
-    <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:"20px" }}>
-      <div style={{ display:"flex", alignItems:"center", gap:"10px" }}>
-        <div style={{ width:"36px", height:"36px", borderRadius:"10px", background:"rgba(0,255,0,0.12)", display:"flex", alignItems:"center", justifyContent:"center" }}>
-          <span className="ms" style={{ fontSize:"20px", color:"#00CC00" }}>{icon}</span>
+    <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "20px" }}>
+      <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
+        <div style={{ width: "36px", height: "36px", borderRadius: "10px", background: "rgba(0,255,0,0.12)", display: "flex", alignItems: "center", justifyContent: "center" }}>
+          <span className="ms" style={{ fontSize: "20px", color: "#00CC00" }}>{icon}</span>
         </div>
         <div>
-          <p style={{ fontSize:"14px", fontWeight:700, color:text1, margin:0 }}>{title}</p>
-          <p style={{ fontSize:"10px", color:text3, margin:0 }}>{subtitle}</p>
+          <p style={{ fontSize: "14px", fontWeight: 700, color: text1, margin: 0 }}>{title}</p>
+          <p style={{ fontSize: "10px", color: text3, margin: 0 }}>{subtitle}</p>
         </div>
       </div>
       {onClose && (
-        <button onClick={onClose} style={{ background:"none", border:"none", cursor:"pointer", color:text3, width:"32px", height:"32px", display:"flex", alignItems:"center", justifyContent:"center", borderRadius:"8px" }}>
-          <span className="ms" style={{ fontSize:"20px" }}>close</span>
+        <button onClick={onClose} style={{ background: "none", border: "none", cursor: "pointer", color: text3, width: "32px", height: "32px", display: "flex", alignItems: "center", justifyContent: "center", borderRadius: "8px" }}>
+          <span className="ms" style={{ fontSize: "20px" }}>close</span>
         </button>
       )}
     </div>
@@ -397,22 +608,22 @@ function ModalHeader({ title, subtitle, icon, onClose, text1, text3 }) {
 }
 
 function SectionLabel({ text, text3 }) {
-  return <p style={{ fontSize:"11px", fontWeight:700, color:text3, textTransform:"uppercase", letterSpacing:"0.1em", marginBottom:"10px" }}>{text}</p>;
+  return <p style={{ fontSize: "11px", fontWeight: 700, color: text3, textTransform: "uppercase", letterSpacing: "0.1em", marginBottom: "10px" }}>{text}</p>;
 }
 
 function ChoiceCard({ id, icon, label, sub, selected, onSelect, isDark, bdr, text1, text3 }) {
   return (
     <button onClick={() => onSelect(id)} style={{
-      padding:"14px 12px", borderRadius:"14px",
-      border:`2px solid ${selected ? "#00FF00" : bdr}`,
+      padding: "14px 12px", borderRadius: "14px",
+      border: `2px solid ${selected ? "#00FF00" : bdr}`,
       background: selected ? "rgba(0,255,0,0.08)" : "transparent",
-      cursor:"pointer", textAlign:"left", transition:"all 0.18s",
-      fontFamily:"'Lexend',sans-serif",
+      cursor: "pointer", textAlign: "left", transition: "all 0.18s",
+      fontFamily: "'Lexend',sans-serif",
       boxShadow: selected ? "0 0 0 3px rgba(0,255,0,0.12)" : "none",
     }}>
-      <span className="ms" style={{ fontSize:"22px", color:selected ? "#00FF00" : text3, display:"block", marginBottom:"6px" }}>{icon}</span>
-      <p style={{ fontSize:"12px", fontWeight:700, color:selected ? (isDark?"#00FF00":"#007700") : text1, margin:"0 0 2px" }}>{label}</p>
-      <p style={{ fontSize:"10px", color:text3, margin:0 }}>{sub}</p>
+      <span className="ms" style={{ fontSize: "22px", color: selected ? "#00FF00" : text3, display: "block", marginBottom: "6px" }}>{icon}</span>
+      <p style={{ fontSize: "12px", fontWeight: 700, color: selected ? (isDark ? "#00FF00" : "#007700") : text1, margin: "0 0 2px" }}>{label}</p>
+      <p style={{ fontSize: "10px", color: text3, margin: 0 }}>{sub}</p>
     </button>
   );
 }
@@ -421,16 +632,16 @@ function ChoiceCard({ id, icon, label, sub, selected, onSelect, isDark, bdr, tex
    QUIZ MODAL  (setup → generate → live quiz → results)
 ───────────────────────────────────────── */
 function QuizModal({ isDark, onClose, onComplete, weakByLevel, askedByLevel, pdfDoc, currentPage, totalPages, moduleTitle, moduleKey, subject, sem, text1, text2, text3, bdr, panel }) {
-  const [phase, setPhase]       = useState("setup"); // setup | generating | quiz | results
-  const [mode, setMode]         = useState(null);    // "mcq" | "short"
-  const [count, setCount]       = useState(5);
-  const [scope, setScope]       = useState("page");  // "page" | "pdf"
-  const [questions, setQuestions]   = useState([]);
-  const [answers, setAnswers]       = useState({});
-  const [revealed, setRevealed]     = useState(false);
-  const [grading,  setGrading]      = useState(false);
-  const [grades,   setGrades]       = useState(null); // [{idx, score, feedback}]
-  const [genError, setGenError]     = useState("");
+  const [phase, setPhase] = useState("setup"); // setup | generating | quiz | results
+  const [mode, setMode] = useState(null);    // "mcq" | "short"
+  const [count, setCount] = useState(5);
+  const [scope, setScope] = useState("page");  // "page" | "pdf"
+  const [questions, setQuestions] = useState([]);
+  const [answers, setAnswers] = useState({});
+  const [revealed, setRevealed] = useState(false);
+  const [grading, setGrading] = useState(false);
+  const [grades, setGrades] = useState(null); // [{idx, score, feedback}]
+  const [genError, setGenError] = useState("");
   const [genProgress, setGenProgress] = useState("");
   const completionReportedRef = useRef(false);
 
@@ -492,8 +703,8 @@ function QuizModal({ isDark, onClose, onComplete, weakByLevel, askedByLevel, pdf
           {
             role: "user",
             content: [
-              { type:"text", text:`Generate ${count} ${mode === "mcq" ? "MCQ" : "short answer"} questions from this content:` },
-              ...imgs.map(img => ({ type:"image_url", image_url:{ url:`data:image/jpeg;base64,${img}` } }))
+              { type: "text", text: `Generate ${count} ${mode === "mcq" ? "MCQ" : "short answer"} questions from this content:` },
+              ...imgs.map(img => ({ type: "image_url", image_url: { url: `data:image/jpeg;base64,${img}` } }))
             ]
           }
         ]
@@ -565,32 +776,32 @@ function QuizModal({ isDark, onClose, onComplete, weakByLevel, askedByLevel, pdf
         <ModalHeader title="Quiz Me" subtitle="AI-generated from your notes" icon="quiz" onClose={onClose} text1={text1} text3={text3} />
 
         <SectionLabel text="Question Type" text3={text3} />
-        <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:"10px", marginBottom:"20px" }}>
-          <ChoiceCard id="mcq"   icon="check_box"  label="Multiple Choice" sub="4 options · auto-graded" selected={mode==="mcq"}   onSelect={setMode} isDark={isDark} bdr={bdr} text1={text1} text3={text3} />
-          <ChoiceCard id="short" icon="short_text" label="Short Answer"    sub="One precise line"        selected={mode==="short"} onSelect={setMode} isDark={isDark} bdr={bdr} text1={text1} text3={text3} />
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "10px", marginBottom: "20px" }}>
+          <ChoiceCard id="mcq" icon="check_box" label="Multiple Choice" sub="4 options · auto-graded" selected={mode === "mcq"} onSelect={setMode} isDark={isDark} bdr={bdr} text1={text1} text3={text3} />
+          <ChoiceCard id="short" icon="short_text" label="Short Answer" sub="One precise line" selected={mode === "short"} onSelect={setMode} isDark={isDark} bdr={bdr} text1={text1} text3={text3} />
         </div>
 
         <SectionLabel text="Scope" text3={text3} />
-        <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:"10px", marginBottom:"20px" }}>
-          <ChoiceCard id="page" icon="insert_drive_file" label="Current Page" sub={`Page ${currentPage}`}          selected={scope==="page"} onSelect={setScope} isDark={isDark} bdr={bdr} text1={text1} text3={text3} />
-          <ChoiceCard id="pdf"  icon="auto_stories"      label="Entire PDF"   sub={`All ${totalPages} pages`}      selected={scope==="pdf"}  onSelect={setScope} isDark={isDark} bdr={bdr} text1={text1} text3={text3} />
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "10px", marginBottom: "20px" }}>
+          <ChoiceCard id="page" icon="insert_drive_file" label="Current Page" sub={`Page ${currentPage}`} selected={scope === "page"} onSelect={setScope} isDark={isDark} bdr={bdr} text1={text1} text3={text3} />
+          <ChoiceCard id="pdf" icon="auto_stories" label="Entire PDF" sub={`All ${totalPages} pages`} selected={scope === "pdf"} onSelect={setScope} isDark={isDark} bdr={bdr} text1={text1} text3={text3} />
         </div>
 
         <SectionLabel text="Number of Questions" text3={text3} />
-        <div style={{ display:"flex", gap:"8px", marginBottom:"24px" }}>
-          {[3,5,7,10].map(n => (
-            <button key={n} onClick={() => setCount(n)} style={{ flex:1, padding:"10px 0", borderRadius:"10px", border:`2px solid ${count===n?"#00FF00":bdr}`, background:count===n?"rgba(0,255,0,0.1)":"transparent", color:count===n?(isDark?"#00FF00":"#007700"):text2, fontWeight:700, fontSize:"13px", cursor:"pointer", fontFamily:"'Lexend',sans-serif", transition:"all 0.18s" }}>{n}</button>
+        <div style={{ display: "flex", gap: "8px", marginBottom: "24px" }}>
+          {[3, 5, 7, 10].map(n => (
+            <button key={n} onClick={() => setCount(n)} style={{ flex: 1, padding: "10px 0", borderRadius: "10px", border: `2px solid ${count === n ? "#00FF00" : bdr}`, background: count === n ? "rgba(0,255,0,0.1)" : "transparent", color: count === n ? (isDark ? "#00FF00" : "#007700") : text2, fontWeight: 700, fontSize: "13px", cursor: "pointer", fontFamily: "'Lexend',sans-serif", transition: "all 0.18s" }}>{n}</button>
           ))}
         </div>
 
         {genError && (
-          <div style={{ padding:"10px 14px", background:"rgba(239,68,68,0.1)", border:"1px solid rgba(239,68,68,0.3)", borderRadius:"10px", marginBottom:"16px" }}>
-            <p style={{ fontSize:"12px", color:"#ef4444", margin:0 }}>⚠ {genError}</p>
+          <div style={{ padding: "10px 14px", background: "rgba(239,68,68,0.1)", border: "1px solid rgba(239,68,68,0.3)", borderRadius: "10px", marginBottom: "16px" }}>
+            <p style={{ fontSize: "12px", color: "#ef4444", margin: 0 }}>⚠ {genError}</p>
           </div>
         )}
 
-        <button onClick={startQuiz} disabled={!canStart} style={{ width:"100%", padding:"13px", borderRadius:"12px", border:"none", background:canStart?"#00FF00":(isDark?"rgba(255,255,255,0.06)":"rgba(0,0,0,0.05)"), color:canStart?"#0f172a":text3, fontWeight:700, fontSize:"13px", cursor:canStart?"pointer":"not-allowed", fontFamily:"'Lexend',sans-serif", transition:"all 0.18s", boxShadow:canStart?"0 4px 20px rgba(0,255,0,0.3)":"none" }}>
-          {canStart ? `Generate ${count} ${mode==="mcq"?"MCQ":"Short Answer"} Questions` : "Select a question type to continue"}
+        <button onClick={startQuiz} disabled={!canStart} style={{ width: "100%", padding: "13px", borderRadius: "12px", border: "none", background: canStart ? "#00FF00" : (isDark ? "rgba(255,255,255,0.06)" : "rgba(0,0,0,0.05)"), color: canStart ? "#0f172a" : text3, fontWeight: 700, fontSize: "13px", cursor: canStart ? "pointer" : "not-allowed", fontFamily: "'Lexend',sans-serif", transition: "all 0.18s", boxShadow: canStart ? "0 4px 20px rgba(0,255,0,0.3)" : "none" }}>
+          {canStart ? `Generate ${count} ${mode === "mcq" ? "MCQ" : "Short Answer"} Questions` : "Select a question type to continue"}
         </button>
       </div>
     </ModalOverlay>
@@ -598,18 +809,18 @@ function QuizModal({ isDark, onClose, onComplete, weakByLevel, askedByLevel, pdf
 
   /* ── GENERATING ── */
   if (phase === "generating") return (
-    <ModalOverlay onClose={() => {}}>
+    <ModalOverlay onClose={() => { }}>
       <div style={modalBoxStyle(panel, bdr, "360px")}>
-        <div style={{ display:"flex", flexDirection:"column", alignItems:"center", gap:"20px", padding:"12px 0" }}>
-          <div style={{ width:"64px", height:"64px", borderRadius:"18px", background:"rgba(0,255,0,0.1)", display:"flex", alignItems:"center", justifyContent:"center" }}>
-            <div style={{ width:"28px", height:"28px", border:"3px solid rgba(0,255,0,0.2)", borderTopColor:"#00FF00", borderRadius:"9999px", animation:"spin 0.8s linear infinite" }} />
+        <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: "20px", padding: "12px 0" }}>
+          <div style={{ width: "64px", height: "64px", borderRadius: "18px", background: "rgba(0,255,0,0.1)", display: "flex", alignItems: "center", justifyContent: "center" }}>
+            <div style={{ width: "28px", height: "28px", border: "3px solid rgba(0,255,0,0.2)", borderTopColor: "#00FF00", borderRadius: "9999px", animation: "spin 0.8s linear infinite" }} />
           </div>
-          <div style={{ textAlign:"center" }}>
-            <p style={{ fontSize:"14px", fontWeight:700, color:text1, margin:"0 0 6px" }}>Generating your quiz…</p>
-            <p style={{ fontSize:"12px", color:text3, margin:0 }}>{genProgress}</p>
+          <div style={{ textAlign: "center" }}>
+            <p style={{ fontSize: "14px", fontWeight: 700, color: text1, margin: "0 0 6px" }}>Generating your quiz…</p>
+            <p style={{ fontSize: "12px", color: text3, margin: 0 }}>{genProgress}</p>
           </div>
-          <div style={{ width:"100%", height:"4px", background:isDark?"rgba(255,255,255,0.08)":"rgba(0,0,0,0.06)", borderRadius:"9999px", overflow:"hidden" }}>
-            <div style={{ height:"100%", width:"60%", background:"linear-gradient(90deg,#00AA00,#00FF00)", borderRadius:"9999px", animation:"shimmer 1.5s linear infinite", backgroundSize:"200% 100%" }} />
+          <div style={{ width: "100%", height: "4px", background: isDark ? "rgba(255,255,255,0.08)" : "rgba(0,0,0,0.06)", borderRadius: "9999px", overflow: "hidden" }}>
+            <div style={{ height: "100%", width: "60%", background: "linear-gradient(90deg,#00AA00,#00FF00)", borderRadius: "9999px", animation: "shimmer 1.5s linear infinite", backgroundSize: "200% 100%" }} />
           </div>
         </div>
       </div>
@@ -619,50 +830,50 @@ function QuizModal({ isDark, onClose, onComplete, weakByLevel, askedByLevel, pdf
   /* ── LIVE QUIZ ── */
   if (phase === "quiz") return (
     <ModalOverlay onClose={onClose}>
-      <div style={{ ...modalBoxStyle(panel, bdr, "580px"), maxHeight:"90vh", display:"flex", flexDirection:"column", overflowY:"hidden" }}>
+      <div style={{ ...modalBoxStyle(panel, bdr, "580px"), maxHeight: "90vh", display: "flex", flexDirection: "column", overflowY: "hidden" }}>
         {/* Header */}
-        <div style={{ paddingBottom:"14px", borderBottom:`1px solid ${bdr}`, flexShrink:0, display:"flex", alignItems:"center", justifyContent:"space-between" }}>
-          <div style={{ display:"flex", alignItems:"center", gap:"10px" }}>
-            <div style={{ width:"36px", height:"36px", borderRadius:"10px", background:"rgba(0,255,0,0.12)", display:"flex", alignItems:"center", justifyContent:"center" }}>
-              <span className="ms" style={{ fontSize:"20px", color:"#00CC00" }}>quiz</span>
+        <div style={{ paddingBottom: "14px", borderBottom: `1px solid ${bdr}`, flexShrink: 0, display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+          <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
+            <div style={{ width: "36px", height: "36px", borderRadius: "10px", background: "rgba(0,255,0,0.12)", display: "flex", alignItems: "center", justifyContent: "center" }}>
+              <span className="ms" style={{ fontSize: "20px", color: "#00CC00" }}>quiz</span>
             </div>
             <div>
-              <p style={{ fontSize:"13px", fontWeight:700, color:text1, margin:0 }}>{moduleTitle||moduleKey}</p>
-              <p style={{ fontSize:"10px", color:text3, margin:0 }}>{mode==="mcq"?"Multiple Choice":"Short Answer"} · {questions.length} questions</p>
+              <p style={{ fontSize: "13px", fontWeight: 700, color: text1, margin: 0 }}>{moduleTitle || moduleKey}</p>
+              <p style={{ fontSize: "10px", color: text3, margin: 0 }}>{mode === "mcq" ? "Multiple Choice" : "Short Answer"} · {questions.length} questions</p>
             </div>
           </div>
-          <div style={{ display:"flex", alignItems:"center", gap:"12px" }}>
-            <div style={{ display:"flex", flexDirection:"column", alignItems:"flex-end", gap:"3px" }}>
-              <p style={{ fontSize:"12px", fontWeight:700, color:answeredCount===questions.length?"#00CC00":text2, margin:0 }}>{answeredCount}/{questions.length} answered</p>
-              <div style={{ width:"90px", height:"4px", background:isDark?"rgba(255,255,255,0.08)":"rgba(0,0,0,0.07)", borderRadius:"9999px" }}>
-                <div style={{ height:"100%", width:`${(answeredCount/questions.length)*100}%`, background:"#00FF00", borderRadius:"9999px", transition:"width 0.3s" }} />
+          <div style={{ display: "flex", alignItems: "center", gap: "12px" }}>
+            <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: "3px" }}>
+              <p style={{ fontSize: "12px", fontWeight: 700, color: answeredCount === questions.length ? "#00CC00" : text2, margin: 0 }}>{answeredCount}/{questions.length} answered</p>
+              <div style={{ width: "90px", height: "4px", background: isDark ? "rgba(255,255,255,0.08)" : "rgba(0,0,0,0.07)", borderRadius: "9999px" }}>
+                <div style={{ height: "100%", width: `${(answeredCount / questions.length) * 100}%`, background: "#00FF00", borderRadius: "9999px", transition: "width 0.3s" }} />
               </div>
             </div>
-            <button onClick={onClose} style={{ background:"none", border:"none", cursor:"pointer", color:text3, width:"32px", height:"32px", display:"flex", alignItems:"center", justifyContent:"center" }}>
-              <span className="ms" style={{ fontSize:"20px" }}>close</span>
+            <button onClick={onClose} style={{ background: "none", border: "none", cursor: "pointer", color: text3, width: "32px", height: "32px", display: "flex", alignItems: "center", justifyContent: "center" }}>
+              <span className="ms" style={{ fontSize: "20px" }}>close</span>
             </button>
           </div>
         </div>
 
         {/* Notice banner */}
         {!revealed && (
-          <div style={{ padding:"8px 14px", background:"rgba(0,200,0,0.06)", borderBottom:`1px solid ${bdr}`, display:"flex", alignItems:"center", gap:"8px", flexShrink:0 }}>
-            <span className="ms" style={{ fontSize:"15px", color:"#00AA00" }}>lock</span>
-            <p style={{ fontSize:"11px", color:text3, margin:0 }}>Answer all questions, then tap <strong style={{ color:text2 }}>Reveal Answers</strong> to see your score and explanations.</p>
+          <div style={{ padding: "8px 14px", background: "rgba(0,200,0,0.06)", borderBottom: `1px solid ${bdr}`, display: "flex", alignItems: "center", gap: "8px", flexShrink: 0 }}>
+            <span className="ms" style={{ fontSize: "15px", color: "#00AA00" }}>lock</span>
+            <p style={{ fontSize: "11px", color: text3, margin: 0 }}>Answer all questions, then tap <strong style={{ color: text2 }}>Reveal Answers</strong> to see your score and explanations.</p>
           </div>
         )}
 
         {/* Questions */}
-        <div style={{ flex:1, overflowY:"auto", padding:"16px 0", display:"flex", flexDirection:"column", gap:"16px" }}>
+        <div style={{ flex: 1, overflowY: "auto", padding: "16px 0", display: "flex", flexDirection: "column", gap: "16px" }}>
           {questions.map((q, i) => {
-            const userAns   = answers[i];
+            const userAns = answers[i];
             const isCorrect = userAns === q.answer;
-            const grade     = grades?.find(g => g.idx === i);
+            const grade = grades?.find(g => g.idx === i);
             const gradeScore = grade?.score ?? null;
             const gradeColor = gradeScore === null ? "#00CC00"
               : gradeScore >= 70 ? "#00CC00"
-              : gradeScore >= 40 ? "#f59e0b"
-              : "#ef4444";
+                : gradeScore >= 40 ? "#f59e0b"
+                  : "#ef4444";
 
             const cardBorder = revealed
               ? mode === "mcq"
@@ -681,19 +892,19 @@ function QuizModal({ isDark, onClose, onComplete, weakByLevel, askedByLevel, pdf
 
             return (
               <div key={i} style={{
-                padding:"16px", borderRadius:"14px",
-                border:`1px solid ${cardBorder}`,
+                padding: "16px", borderRadius: "14px",
+                border: `1px solid ${cardBorder}`,
                 background: cardBg,
-                transition:"all 0.25s",
+                transition: "all 0.25s",
               }}>
                 {/* Question */}
-                <div style={{ display:"flex", gap:"10px", marginBottom:"12px" }}>
-                  <span style={{ width:"26px", height:"26px", borderRadius:"8px", background:"rgba(0,200,0,0.15)", display:"flex", alignItems:"center", justifyContent:"center", fontSize:"11px", fontWeight:700, color:"#00AA00", flexShrink:0 }}>
-                    {i+1}
+                <div style={{ display: "flex", gap: "10px", marginBottom: "12px" }}>
+                  <span style={{ width: "26px", height: "26px", borderRadius: "8px", background: "rgba(0,200,0,0.15)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: "11px", fontWeight: 700, color: "#00AA00", flexShrink: 0 }}>
+                    {i + 1}
                   </span>
-                  <div style={{ flex:1 }}>
-                    <p style={{ fontSize:"13px", fontWeight:600, color:text1, margin:0, lineHeight:1.6 }}>{q.q}</p>
-                    <span style={{ display:"inline-flex", marginTop:"6px", fontSize:"9px", fontWeight:700, letterSpacing:"0.08em", textTransform:"uppercase", color:"#00AA00", padding:"2px 7px", borderRadius:"9999px", background:"rgba(0,255,0,0.09)", border:"1px solid rgba(0,255,0,0.2)" }}>
+                  <div style={{ flex: 1 }}>
+                    <p style={{ fontSize: "13px", fontWeight: 600, color: text1, margin: 0, lineHeight: 1.6 }}>{q.q}</p>
+                    <span style={{ display: "inline-flex", marginTop: "6px", fontSize: "9px", fontWeight: 700, letterSpacing: "0.08em", textTransform: "uppercase", color: "#00AA00", padding: "2px 7px", borderRadius: "9999px", background: "rgba(0,255,0,0.09)", border: "1px solid rgba(0,255,0,0.2)" }}>
                       {normalizeQuestionLevel(q.level)}
                     </span>
                   </div>
@@ -701,28 +912,28 @@ function QuizModal({ isDark, onClose, onComplete, weakByLevel, askedByLevel, pdf
 
                 {/* MCQ Options */}
                 {mode === "mcq" && (
-                  <div style={{ display:"flex", flexDirection:"column", gap:"7px", marginBottom:"10px" }}>
+                  <div style={{ display: "flex", flexDirection: "column", gap: "7px", marginBottom: "10px" }}>
                     {q.options?.map((opt, j) => {
                       const isSelected = userAns === opt;
-                      const isAnswer   = opt === q.answer;
-                      let bg     = isDark?"rgba(255,255,255,0.03)":"rgba(0,0,0,0.02)";
+                      const isAnswer = opt === q.answer;
+                      let bg = isDark ? "rgba(255,255,255,0.03)" : "rgba(0,0,0,0.02)";
                       let border = bdr;
-                      let color  = text2;
-                      if (isSelected && !revealed)             { bg="rgba(0,255,0,0.1)";     border="rgba(0,255,0,0.4)";   color=isDark?"#00FF00":"#007700"; }
-                      if (revealed && isAnswer)                { bg="rgba(0,255,0,0.12)";    border="rgba(0,255,0,0.5)";   color=isDark?"#00FF00":"#007700"; }
-                      if (revealed && isSelected && !isAnswer) { bg="rgba(239,68,68,0.1)";  border="rgba(239,68,68,0.4)"; color="#ef4444"; }
+                      let color = text2;
+                      if (isSelected && !revealed) { bg = "rgba(0,255,0,0.1)"; border = "rgba(0,255,0,0.4)"; color = isDark ? "#00FF00" : "#007700"; }
+                      if (revealed && isAnswer) { bg = "rgba(0,255,0,0.12)"; border = "rgba(0,255,0,0.5)"; color = isDark ? "#00FF00" : "#007700"; }
+                      if (revealed && isSelected && !isAnswer) { bg = "rgba(239,68,68,0.1)"; border = "rgba(239,68,68,0.4)"; color = "#ef4444"; }
                       return (
                         <button key={j}
                           disabled={revealed || userAns !== undefined}
-                          onClick={() => !revealed && userAns===undefined && setAnswers(a => ({ ...a, [i]: opt }))}
-                          style={{ display:"flex", alignItems:"center", gap:"10px", padding:"10px 12px", borderRadius:"10px", border:`1px solid ${border}`, background:bg, cursor:revealed||userAns!==undefined?"default":"pointer", textAlign:"left", fontFamily:"'Lexend',sans-serif", transition:"all 0.18s", width:"100%" }}
+                          onClick={() => !revealed && userAns === undefined && setAnswers(a => ({ ...a, [i]: opt }))}
+                          style={{ display: "flex", alignItems: "center", gap: "10px", padding: "10px 12px", borderRadius: "10px", border: `1px solid ${border}`, background: bg, cursor: revealed || userAns !== undefined ? "default" : "pointer", textAlign: "left", fontFamily: "'Lexend',sans-serif", transition: "all 0.18s", width: "100%" }}
                         >
-                          <span style={{ width:"22px", height:"22px", borderRadius:"6px", border:`1.5px solid ${border}`, display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0 }}>
-                            {revealed && isAnswer   && <span className="ms" style={{ fontSize:"14px", color:"#00CC00" }}>check</span>}
-                            {revealed && isSelected && !isAnswer && <span className="ms" style={{ fontSize:"14px", color:"#ef4444" }}>close</span>}
-                            {!revealed && isSelected && <span style={{ width:"8px", height:"8px", borderRadius:"50%", background:"#00FF00" }} />}
+                          <span style={{ width: "22px", height: "22px", borderRadius: "6px", border: `1.5px solid ${border}`, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
+                            {revealed && isAnswer && <span className="ms" style={{ fontSize: "14px", color: "#00CC00" }}>check</span>}
+                            {revealed && isSelected && !isAnswer && <span className="ms" style={{ fontSize: "14px", color: "#ef4444" }}>close</span>}
+                            {!revealed && isSelected && <span style={{ width: "8px", height: "8px", borderRadius: "50%", background: "#00FF00" }} />}
                           </span>
-                          <span style={{ fontSize:"12px", fontWeight:600, color, lineHeight:1.5 }}>{opt}</span>
+                          <span style={{ fontSize: "12px", fontWeight: 600, color, lineHeight: 1.5 }}>{opt}</span>
                         </button>
                       );
                     })}
@@ -736,42 +947,42 @@ function QuizModal({ isDark, onClose, onComplete, weakByLevel, askedByLevel, pdf
                     value={answers[i] || ""}
                     onChange={e => setAnswers(a => ({ ...a, [i]: e.target.value }))}
                     rows={2}
-                    style={{ width:"100%", background:isDark?"rgba(255,255,255,0.05)":"rgba(0,200,0,0.04)", border:`1px solid ${bdr}`, borderRadius:"10px", padding:"10px 12px", fontSize:"12px", fontFamily:"'Lexend',sans-serif", color:text1, outline:"none", resize:"none", transition:"border-color 0.2s", boxSizing:"border-box" }}
+                    style={{ width: "100%", background: isDark ? "rgba(255,255,255,0.05)" : "rgba(0,200,0,0.04)", border: `1px solid ${bdr}`, borderRadius: "10px", padding: "10px 12px", fontSize: "12px", fontFamily: "'Lexend',sans-serif", color: text1, outline: "none", resize: "none", transition: "border-color 0.2s", boxSizing: "border-box" }}
                   />
                 )}
 
                 {/* Revealed answer block */}
                 {revealed && (
-                  <div style={{ marginTop:"10px", borderRadius:"10px", overflow:"hidden", border:`1px solid ${gradeColor}33` }}>
+                  <div style={{ marginTop: "10px", borderRadius: "10px", overflow: "hidden", border: `1px solid ${gradeColor}33` }}>
                     {/* Short answer grade bar */}
                     {mode === "short" && gradeScore !== null && (
-                      <div style={{ padding:"10px 14px", background:`${gradeColor}15`, borderBottom:`1px solid ${gradeColor}33`, display:"flex", alignItems:"center", justifyContent:"space-between" }}>
-                        <div style={{ display:"flex", alignItems:"center", gap:"8px" }}>
-                          <span className="ms" style={{ fontSize:"16px", color:gradeColor }}>{gradeScore>=70?"check_circle":gradeScore>=40?"info":"cancel"}</span>
-                          <span style={{ fontSize:"12px", fontWeight:700, color:gradeColor }}>
-                            {gradeScore>=70?"Correct":gradeScore>=40?"Partially Correct":"Incorrect"}
+                      <div style={{ padding: "10px 14px", background: `${gradeColor}15`, borderBottom: `1px solid ${gradeColor}33`, display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+                        <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                          <span className="ms" style={{ fontSize: "16px", color: gradeColor }}>{gradeScore >= 70 ? "check_circle" : gradeScore >= 40 ? "info" : "cancel"}</span>
+                          <span style={{ fontSize: "12px", fontWeight: 700, color: gradeColor }}>
+                            {gradeScore >= 70 ? "Correct" : gradeScore >= 40 ? "Partially Correct" : "Incorrect"}
                           </span>
                         </div>
-                        <div style={{ display:"flex", alignItems:"center", gap:"8px" }}>
-                          <div style={{ width:"80px", height:"6px", background:isDark?"rgba(255,255,255,0.1)":"rgba(0,0,0,0.08)", borderRadius:"9999px", overflow:"hidden" }}>
-                            <div style={{ height:"100%", width:`${gradeScore}%`, background:gradeColor, borderRadius:"9999px", transition:"width 0.6s ease" }} />
+                        <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                          <div style={{ width: "80px", height: "6px", background: isDark ? "rgba(255,255,255,0.1)" : "rgba(0,0,0,0.08)", borderRadius: "9999px", overflow: "hidden" }}>
+                            <div style={{ height: "100%", width: `${gradeScore}%`, background: gradeColor, borderRadius: "9999px", transition: "width 0.6s ease" }} />
                           </div>
-                          <span style={{ fontSize:"13px", fontWeight:800, color:gradeColor, minWidth:"36px", textAlign:"right" }}>{gradeScore}%</span>
+                          <span style={{ fontSize: "13px", fontWeight: 800, color: gradeColor, minWidth: "36px", textAlign: "right" }}>{gradeScore}%</span>
                         </div>
                       </div>
                     )}
-                    <div style={{ padding:"12px 14px", background:`${gradeColor}08` }}>
-                      <p style={{ fontSize:"10px", fontWeight:700, color:gradeColor, margin:"0 0 5px", textTransform:"uppercase", letterSpacing:"0.08em" }}>
-                        {mode==="mcq" ? "Correct Answer" : "Model Answer"}
+                    <div style={{ padding: "12px 14px", background: `${gradeColor}08` }}>
+                      <p style={{ fontSize: "10px", fontWeight: 700, color: gradeColor, margin: "0 0 5px", textTransform: "uppercase", letterSpacing: "0.08em" }}>
+                        {mode === "mcq" ? "Correct Answer" : "Model Answer"}
                       </p>
-                      <p style={{ fontSize:"12px", fontWeight:700, color:gradeColor, margin:"0 0 6px", lineHeight:1.5 }}>{q.answer}</p>
-                      {q.explanation && <p style={{ fontSize:"11px", color:text2, margin:0, lineHeight:1.6 }}>{q.explanation}</p>}
-                      {mode==="short" && (
-                        <div style={{ marginTop:"8px", paddingTop:"8px", borderTop:`1px solid ${bdr}` }}>
-                          <p style={{ fontSize:"10px", fontWeight:700, color:text3, margin:"0 0 3px", textTransform:"uppercase", letterSpacing:"0.08em" }}>Your Answer</p>
-                          <p style={{ fontSize:"12px", color:text2, margin:"0 0 6px", lineHeight:1.5 }}>{answers[i] || <em style={{opacity:0.5}}>No answer given</em>}</p>
+                      <p style={{ fontSize: "12px", fontWeight: 700, color: gradeColor, margin: "0 0 6px", lineHeight: 1.5 }}>{q.answer}</p>
+                      {q.explanation && <p style={{ fontSize: "11px", color: text2, margin: 0, lineHeight: 1.6 }}>{q.explanation}</p>}
+                      {mode === "short" && (
+                        <div style={{ marginTop: "8px", paddingTop: "8px", borderTop: `1px solid ${bdr}` }}>
+                          <p style={{ fontSize: "10px", fontWeight: 700, color: text3, margin: "0 0 3px", textTransform: "uppercase", letterSpacing: "0.08em" }}>Your Answer</p>
+                          <p style={{ fontSize: "12px", color: text2, margin: "0 0 6px", lineHeight: 1.5 }}>{answers[i] || <em style={{ opacity: 0.5 }}>No answer given</em>}</p>
                           {grade?.feedback && (
-                            <p style={{ fontSize:"11px", color:gradeColor, margin:0, fontStyle:"italic", lineHeight:1.5 }}>💬 {grade.feedback}</p>
+                            <p style={{ fontSize: "11px", color: gradeColor, margin: 0, fontStyle: "italic", lineHeight: 1.5 }}>💬 {grade.feedback}</p>
                           )}
                         </div>
                       )}
@@ -784,57 +995,57 @@ function QuizModal({ isDark, onClose, onComplete, weakByLevel, askedByLevel, pdf
         </div>
 
         {/* Footer */}
-        <div style={{ paddingTop:"14px", borderTop:`1px solid ${bdr}`, flexShrink:0 }}>
+        <div style={{ paddingTop: "14px", borderTop: `1px solid ${bdr}`, flexShrink: 0 }}>
           {grading ? (
-            <div style={{ display:"flex", alignItems:"center", justifyContent:"center", gap:"12px", padding:"14px" }}>
-              <div style={{ width:"20px", height:"20px", border:"2px solid rgba(0,255,0,0.2)", borderTopColor:"#00FF00", borderRadius:"9999px", animation:"spin 0.8s linear infinite" }} />
-              <p style={{ fontSize:"13px", fontWeight:600, color:text2, margin:0 }}>Grading your answers with AI…</p>
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: "12px", padding: "14px" }}>
+              <div style={{ width: "20px", height: "20px", border: "2px solid rgba(0,255,0,0.2)", borderTopColor: "#00FF00", borderRadius: "9999px", animation: "spin 0.8s linear infinite" }} />
+              <p style={{ fontSize: "13px", fontWeight: 600, color: text2, margin: 0 }}>Grading your answers with AI…</p>
             </div>
           ) : !revealed ? (
-            <div style={{ display:"flex", gap:"10px" }}>
-              <button onClick={() => { setPhase("setup"); setQuestions([]); setAnswers({}); }} style={{ flex:1, padding:"12px", borderRadius:"11px", border:`1px solid ${bdr}`, background:"transparent", color:text2, fontWeight:700, fontSize:"12px", cursor:"pointer", fontFamily:"'Lexend',sans-serif" }}>
+            <div style={{ display: "flex", gap: "10px" }}>
+              <button onClick={() => { setPhase("setup"); setQuestions([]); setAnswers({}); }} style={{ flex: 1, padding: "12px", borderRadius: "11px", border: `1px solid ${bdr}`, background: "transparent", color: text2, fontWeight: 700, fontSize: "12px", cursor: "pointer", fontFamily: "'Lexend',sans-serif" }}>
                 ← Back
               </button>
-              <button onClick={handleReveal} style={{ flex:2, padding:"12px", borderRadius:"11px", border:"none", background:"#00FF00", color:"#0f172a", fontWeight:700, fontSize:"13px", cursor:"pointer", fontFamily:"'Lexend',sans-serif", boxShadow:"0 4px 20px rgba(0,255,0,0.3)" }}>
-                {mode==="mcq" ? "Reveal Answers & Score" : "Grade My Answers"}
+              <button onClick={handleReveal} style={{ flex: 2, padding: "12px", borderRadius: "11px", border: "none", background: "#00FF00", color: "#0f172a", fontWeight: 700, fontSize: "13px", cursor: "pointer", fontFamily: "'Lexend',sans-serif", boxShadow: "0 4px 20px rgba(0,255,0,0.3)" }}>
+                {mode === "mcq" ? "Reveal Answers & Score" : "Grade My Answers"}
               </button>
             </div>
           ) : (
-            <div style={{ display:"flex", flexDirection:"column", gap:"10px" }}>
+            <div style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
               {/* MCQ score */}
               {mode === "mcq" && (
-                <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", padding:"14px 18px", background:"rgba(0,255,0,0.08)", borderRadius:"12px", border:"1px solid rgba(0,255,0,0.2)" }}>
+                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "14px 18px", background: "rgba(0,255,0,0.08)", borderRadius: "12px", border: "1px solid rgba(0,255,0,0.2)" }}>
                   <div>
-                    <p style={{ fontSize:"11px", fontWeight:700, color:"#00AA00", margin:"0 0 3px", textTransform:"uppercase", letterSpacing:"0.08em" }}>Your Score</p>
-                    <p style={{ fontSize:"24px", fontWeight:700, color:isDark?"#00FF00":"#007700", margin:0 }}>{score} <span style={{ fontSize:"14px", color:text3 }}>/ {questions.length}</span></p>
+                    <p style={{ fontSize: "11px", fontWeight: 700, color: "#00AA00", margin: "0 0 3px", textTransform: "uppercase", letterSpacing: "0.08em" }}>Your Score</p>
+                    <p style={{ fontSize: "24px", fontWeight: 700, color: isDark ? "#00FF00" : "#007700", margin: 0 }}>{score} <span style={{ fontSize: "14px", color: text3 }}>/ {questions.length}</span></p>
                   </div>
-                  <div style={{ textAlign:"right" }}>
-                    <p style={{ fontSize:"22px", fontWeight:700, color:isDark?"#00FF00":"#007700", margin:"0 0 3px" }}>{Math.round((score/questions.length)*100)}%</p>
-                    <p style={{ fontSize:"11px", color:text3, margin:0 }}>{score===questions.length?"🏆 Perfect!":score>=questions.length*0.7?"✅ Great work!":score>=questions.length*0.5?"📚 Keep studying":"💪 More revision needed"}</p>
+                  <div style={{ textAlign: "right" }}>
+                    <p style={{ fontSize: "22px", fontWeight: 700, color: isDark ? "#00FF00" : "#007700", margin: "0 0 3px" }}>{Math.round((score / questions.length) * 100)}%</p>
+                    <p style={{ fontSize: "11px", color: text3, margin: 0 }}>{score === questions.length ? "🏆 Perfect!" : score >= questions.length * 0.7 ? "✅ Great work!" : score >= questions.length * 0.5 ? "📚 Keep studying" : "💪 More revision needed"}</p>
                   </div>
                 </div>
               )}
               {/* Short answer score */}
               {mode === "short" && shortScore !== null && (
-                <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", padding:"14px 18px", background: shortScore>=70?"rgba(0,255,0,0.08)":shortScore>=40?"rgba(245,158,11,0.08)":"rgba(239,68,68,0.08)", borderRadius:"12px", border:`1px solid ${shortScore>=70?"rgba(0,255,0,0.2)":shortScore>=40?"rgba(245,158,11,0.2)":"rgba(239,68,68,0.2)"}` }}>
+                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "14px 18px", background: shortScore >= 70 ? "rgba(0,255,0,0.08)" : shortScore >= 40 ? "rgba(245,158,11,0.08)" : "rgba(239,68,68,0.08)", borderRadius: "12px", border: `1px solid ${shortScore >= 70 ? "rgba(0,255,0,0.2)" : shortScore >= 40 ? "rgba(245,158,11,0.2)" : "rgba(239,68,68,0.2)"}` }}>
                   <div>
-                    <p style={{ fontSize:"11px", fontWeight:700, color:shortScore>=70?"#00AA00":shortScore>=40?"#f59e0b":"#ef4444", margin:"0 0 3px", textTransform:"uppercase", letterSpacing:"0.08em" }}>Overall Score</p>
-                    <p style={{ fontSize:"13px", fontWeight:600, color:text2, margin:0 }}>AI-graded · {questions.length} questions</p>
+                    <p style={{ fontSize: "11px", fontWeight: 700, color: shortScore >= 70 ? "#00AA00" : shortScore >= 40 ? "#f59e0b" : "#ef4444", margin: "0 0 3px", textTransform: "uppercase", letterSpacing: "0.08em" }}>Overall Score</p>
+                    <p style={{ fontSize: "13px", fontWeight: 600, color: text2, margin: 0 }}>AI-graded · {questions.length} questions</p>
                   </div>
-                  <div style={{ textAlign:"right" }}>
-                    <p style={{ fontSize:"28px", fontWeight:800, color:shortScore>=70?"#00CC00":shortScore>=40?"#f59e0b":"#ef4444", margin:"0 0 2px", lineHeight:1 }}>{shortScore}%</p>
-                    <p style={{ fontSize:"11px", color:text3, margin:0 }}>{shortScore>=70?"✅ Strong answers":shortScore>=40?"📝 Needs detail":"💪 Review needed"}</p>
+                  <div style={{ textAlign: "right" }}>
+                    <p style={{ fontSize: "28px", fontWeight: 800, color: shortScore >= 70 ? "#00CC00" : shortScore >= 40 ? "#f59e0b" : "#ef4444", margin: "0 0 2px", lineHeight: 1 }}>{shortScore}%</p>
+                    <p style={{ fontSize: "11px", color: text3, margin: 0 }}>{shortScore >= 70 ? "✅ Strong answers" : shortScore >= 40 ? "📝 Needs detail" : "💪 Review needed"}</p>
                   </div>
                 </div>
               )}
               {mode === "short" && !grades && (
-                <div style={{ padding:"10px 14px", background:isDark?"rgba(255,255,255,0.04)":"rgba(0,0,0,0.03)", borderRadius:"10px", textAlign:"center" }}>
-                  <p style={{ fontSize:"11px", color:text3, margin:0 }}>Grading unavailable — AI returned no score. Review answers manually above.</p>
+                <div style={{ padding: "10px 14px", background: isDark ? "rgba(255,255,255,0.04)" : "rgba(0,0,0,0.03)", borderRadius: "10px", textAlign: "center" }}>
+                  <p style={{ fontSize: "11px", color: text3, margin: 0 }}>Grading unavailable — AI returned no score. Review answers manually above.</p>
                 </div>
               )}
-              <div style={{ display:"flex", gap:"10px" }}>
-                <button onClick={() => { setPhase("setup"); setQuestions([]); setAnswers({}); setRevealed(false); setGrades(null); }} style={{ flex:1, padding:"12px", borderRadius:"11px", border:`1px solid ${bdr}`, background:"transparent", color:text2, fontWeight:700, fontSize:"12px", cursor:"pointer", fontFamily:"'Lexend',sans-serif" }}>New Quiz</button>
-                <button onClick={onClose} style={{ flex:1, padding:"12px", borderRadius:"11px", border:"none", background:"#00FF00", color:"#0f172a", fontWeight:700, fontSize:"12px", cursor:"pointer", fontFamily:"'Lexend',sans-serif" }}>Done</button>
+              <div style={{ display: "flex", gap: "10px" }}>
+                <button onClick={() => { setPhase("setup"); setQuestions([]); setAnswers({}); setRevealed(false); setGrades(null); }} style={{ flex: 1, padding: "12px", borderRadius: "11px", border: `1px solid ${bdr}`, background: "transparent", color: text2, fontWeight: 700, fontSize: "12px", cursor: "pointer", fontFamily: "'Lexend',sans-serif" }}>New Quiz</button>
+                <button onClick={onClose} style={{ flex: 1, padding: "12px", borderRadius: "11px", border: "none", background: "#00FF00", color: "#0f172a", fontWeight: 700, fontSize: "12px", cursor: "pointer", fontFamily: "'Lexend',sans-serif" }}>Done</button>
               </div>
             </div>
           )}
@@ -850,10 +1061,10 @@ function QuizModal({ isDark, onClose, onComplete, weakByLevel, askedByLevel, pdf
    ANALYZE PDF MODAL
 ───────────────────────────────────────── */
 function AnalyzePDFModal({ isDark, onClose, pdfDoc, totalPages, moduleTitle, moduleKey, subject, sem, text1, text2, text3, bdr, panel }) {
-  const [phase, setPhase]       = useState("setup"); // setup | analyzing | done | error
+  const [phase, setPhase] = useState("setup"); // setup | analyzing | done | error
   const [progress, setProgress] = useState("");
-  const [pct, setPct]           = useState(0);
-  const [result, setResult]     = useState(null);
+  const [pct, setPct] = useState(0);
+  const [result, setResult] = useState(null);
   const [activeTab, setActiveTab] = useState("summary");
   const [errorMsg, setErrorMsg] = useState("");
 
@@ -897,12 +1108,12 @@ Analyze ALL provided pages and return ONLY a valid JSON object — no markdown, 
         model: GROQ_VISION_MODEL,
         max_tokens: 3200,
         messages: [
-          { role:"system", content:systemPrompt },
+          { role: "system", content: systemPrompt },
           {
-            role:"user",
-            content:[
-              { type:"text", text:`Analyze this module comprehensively (${maxPages} pages):` },
-              ...imgs.map(img => ({ type:"image_url", image_url:{ url:`data:image/jpeg;base64,${img}` } }))
+            role: "user",
+            content: [
+              { type: "text", text: `Analyze this module comprehensively (${maxPages} pages):` },
+              ...imgs.map(img => ({ type: "image_url", image_url: { url: `data:image/jpeg;base64,${img}` } }))
             ]
           }
         ]
@@ -920,37 +1131,37 @@ Analyze ALL provided pages and return ONLY a valid JSON object — no markdown, 
     }
   };
 
-  const diffColor = { "Beginner":"#00CC00", "Intermediate":"#f59e0b", "Advanced":"#ef4444" };
+  const diffColor = { "Beginner": "#00CC00", "Intermediate": "#f59e0b", "Advanced": "#ef4444" };
 
   /* ── SETUP ── */
   if (phase === "setup") return (
     <ModalOverlay onClose={onClose}>
       <div style={modalBoxStyle(panel, bdr, "440px")}>
         <ModalHeader title="Analyze PDF" subtitle="Deep AI analysis of entire module" icon="analytics" onClose={onClose} text1={text1} text3={text3} />
-        <div style={{ display:"flex", flexDirection:"column", gap:"10px", marginBottom:"22px" }}>
+        <div style={{ display: "flex", flexDirection: "column", gap: "10px", marginBottom: "22px" }}>
           {[
-            { icon:"summarize",        label:"Full Summary",  desc:"Structured overview with chapter flow" },
-            { icon:"account_tree",     label:"Topic Flow",    desc:"Visual step-by-step content timeline" },
-            { icon:"lightbulb",        label:"Key Concepts",  desc:"All technical terms with definitions" },
-            { icon:"school",           label:"Exam Prep",     desc:"High-priority topics for your exam" },
+            { icon: "summarize", label: "Full Summary", desc: "Structured overview with chapter flow" },
+            { icon: "account_tree", label: "Topic Flow", desc: "Visual step-by-step content timeline" },
+            { icon: "lightbulb", label: "Key Concepts", desc: "All technical terms with definitions" },
+            { icon: "school", label: "Exam Prep", desc: "High-priority topics for your exam" },
           ].map(({ icon, label, desc }) => (
-            <div key={label} style={{ display:"flex", alignItems:"center", gap:"12px", padding:"12px 14px", background:isDark?"rgba(0,255,0,0.04)":"rgba(0,200,0,0.04)", border:`1px solid ${bdr}`, borderRadius:"12px" }}>
-              <div style={{ width:"36px", height:"36px", borderRadius:"10px", background:"rgba(0,255,0,0.12)", display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0 }}>
-                <span className="ms" style={{ fontSize:"20px", color:"#00CC00" }}>{icon}</span>
+            <div key={label} style={{ display: "flex", alignItems: "center", gap: "12px", padding: "12px 14px", background: isDark ? "rgba(0,255,0,0.04)" : "rgba(0,200,0,0.04)", border: `1px solid ${bdr}`, borderRadius: "12px" }}>
+              <div style={{ width: "36px", height: "36px", borderRadius: "10px", background: "rgba(0,255,0,0.12)", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
+                <span className="ms" style={{ fontSize: "20px", color: "#00CC00" }}>{icon}</span>
               </div>
               <div>
-                <p style={{ fontSize:"12px", fontWeight:700, color:text1, margin:"0 0 2px" }}>{label}</p>
-                <p style={{ fontSize:"11px", color:text3, margin:0 }}>{desc}</p>
+                <p style={{ fontSize: "12px", fontWeight: 700, color: text1, margin: "0 0 2px" }}>{label}</p>
+                <p style={{ fontSize: "11px", color: text3, margin: 0 }}>{desc}</p>
               </div>
-              <span className="ms" style={{ marginLeft:"auto", fontSize:"16px", color:"#00CC00" }}>check_circle</span>
+              <span className="ms" style={{ marginLeft: "auto", fontSize: "16px", color: "#00CC00" }}>check_circle</span>
             </div>
           ))}
         </div>
-        <div style={{ padding:"10px 14px", background:"rgba(0,200,0,0.06)", border:`1px solid ${bdr}`, borderRadius:"10px", marginBottom:"20px", display:"flex", alignItems:"center", gap:"10px" }}>
-          <span className="ms" style={{ fontSize:"18px", color:"#00AA00", flexShrink:0 }}>info</span>
-          <p style={{ fontSize:"11px", color:text3, margin:0 }}>Analyzes up to {Math.min(totalPages,5)} pages using vision AI. Takes 20–40 seconds.</p>
+        <div style={{ padding: "10px 14px", background: "rgba(0,200,0,0.06)", border: `1px solid ${bdr}`, borderRadius: "10px", marginBottom: "20px", display: "flex", alignItems: "center", gap: "10px" }}>
+          <span className="ms" style={{ fontSize: "18px", color: "#00AA00", flexShrink: 0 }}>info</span>
+          <p style={{ fontSize: "11px", color: text3, margin: 0 }}>Analyzes up to {Math.min(totalPages, 5)} pages using vision AI. Takes 20–40 seconds.</p>
         </div>
-        <button onClick={startAnalysis} style={{ width:"100%", padding:"13px", borderRadius:"12px", border:"none", background:"#00FF00", color:"#0f172a", fontWeight:700, fontSize:"13px", cursor:"pointer", fontFamily:"'Lexend',sans-serif", boxShadow:"0 4px 20px rgba(0,255,0,0.3)" }}>
+        <button onClick={startAnalysis} style={{ width: "100%", padding: "13px", borderRadius: "12px", border: "none", background: "#00FF00", color: "#0f172a", fontWeight: 700, fontSize: "13px", cursor: "pointer", fontFamily: "'Lexend',sans-serif", boxShadow: "0 4px 20px rgba(0,255,0,0.3)" }}>
           Start Deep Analysis
         </button>
       </div>
@@ -959,24 +1170,24 @@ Analyze ALL provided pages and return ONLY a valid JSON object — no markdown, 
 
   /* ── ANALYZING ── */
   if (phase === "analyzing") return (
-    <ModalOverlay onClose={() => {}}>
+    <ModalOverlay onClose={() => { }}>
       <div style={modalBoxStyle(panel, bdr, "380px")}>
-        <div style={{ display:"flex", flexDirection:"column", alignItems:"center", gap:"20px", padding:"16px 0" }}>
-          <div style={{ position:"relative", width:"72px", height:"72px" }}>
-            <div style={{ width:"72px", height:"72px", borderRadius:"18px", background:"rgba(0,255,0,0.1)", display:"flex", alignItems:"center", justifyContent:"center" }}>
-              <span className="ms" style={{ fontSize:"32px", color:"#00CC00" }}>analytics</span>
+        <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: "20px", padding: "16px 0" }}>
+          <div style={{ position: "relative", width: "72px", height: "72px" }}>
+            <div style={{ width: "72px", height: "72px", borderRadius: "18px", background: "rgba(0,255,0,0.1)", display: "flex", alignItems: "center", justifyContent: "center" }}>
+              <span className="ms" style={{ fontSize: "32px", color: "#00CC00" }}>analytics</span>
             </div>
-            <div style={{ position:"absolute", inset:"-4px", borderRadius:"22px", border:"2px solid transparent", borderTopColor:"#00FF00", animation:"spin 1.2s linear infinite" }} />
+            <div style={{ position: "absolute", inset: "-4px", borderRadius: "22px", border: "2px solid transparent", borderTopColor: "#00FF00", animation: "spin 1.2s linear infinite" }} />
           </div>
-          <div style={{ textAlign:"center" }}>
-            <p style={{ fontSize:"15px", fontWeight:700, color:text1, margin:"0 0 6px" }}>Analyzing your module…</p>
-            <p style={{ fontSize:"12px", color:text3, margin:"0 0 16px" }}>{progress}</p>
-            <div style={{ width:"260px", height:"6px", background:isDark?"rgba(255,255,255,0.08)":"rgba(0,0,0,0.06)", borderRadius:"9999px", overflow:"hidden", margin:"0 auto" }}>
-              <div style={{ height:"100%", width:`${pct}%`, background:"linear-gradient(90deg,#00AA00,#00FF00)", borderRadius:"9999px", transition:"width 0.5s ease" }} />
+          <div style={{ textAlign: "center" }}>
+            <p style={{ fontSize: "15px", fontWeight: 700, color: text1, margin: "0 0 6px" }}>Analyzing your module…</p>
+            <p style={{ fontSize: "12px", color: text3, margin: "0 0 16px" }}>{progress}</p>
+            <div style={{ width: "260px", height: "6px", background: isDark ? "rgba(255,255,255,0.08)" : "rgba(0,0,0,0.06)", borderRadius: "9999px", overflow: "hidden", margin: "0 auto" }}>
+              <div style={{ height: "100%", width: `${pct}%`, background: "linear-gradient(90deg,#00AA00,#00FF00)", borderRadius: "9999px", transition: "width 0.5s ease" }} />
             </div>
-            <p style={{ fontSize:"11px", color:"#00AA00", fontWeight:700, marginTop:"8px" }}>{pct}%</p>
+            <p style={{ fontSize: "11px", color: "#00AA00", fontWeight: 700, marginTop: "8px" }}>{pct}%</p>
           </div>
-          <p style={{ fontSize:"10px", color:text3, textAlign:"center", maxWidth:"280px" }}>Neural AI is reading up to 5 pages. This may take 20–40 seconds.</p>
+          <p style={{ fontSize: "10px", color: text3, textAlign: "center", maxWidth: "280px" }}>Neural AI is reading up to 5 pages. This may take 20–40 seconds.</p>
         </div>
       </div>
     </ModalOverlay>
@@ -986,15 +1197,15 @@ Analyze ALL provided pages and return ONLY a valid JSON object — no markdown, 
   if (phase === "error") return (
     <ModalOverlay onClose={onClose}>
       <div style={modalBoxStyle(panel, bdr, "360px")}>
-        <div style={{ textAlign:"center", padding:"12px 0 20px" }}>
-          <div style={{ width:"64px", height:"64px", borderRadius:"18px", background:"rgba(239,68,68,0.1)", display:"flex", alignItems:"center", justifyContent:"center", margin:"0 auto 16px" }}>
-            <span className="ms" style={{ fontSize:"32px", color:"#ef4444" }}>error</span>
+        <div style={{ textAlign: "center", padding: "12px 0 20px" }}>
+          <div style={{ width: "64px", height: "64px", borderRadius: "18px", background: "rgba(239,68,68,0.1)", display: "flex", alignItems: "center", justifyContent: "center", margin: "0 auto 16px" }}>
+            <span className="ms" style={{ fontSize: "32px", color: "#ef4444" }}>error</span>
           </div>
-          <p style={{ fontSize:"15px", fontWeight:700, color:text1, margin:"0 0 8px" }}>Analysis Failed</p>
-          <p style={{ fontSize:"12px", color:text3, margin:"0 0 20px" }}>{errorMsg}</p>
-          <div style={{ display:"flex", gap:"10px" }}>
-            <button onClick={onClose} style={{ flex:1, padding:"12px", borderRadius:"11px", border:`1px solid ${bdr}`, background:"transparent", color:text2, fontWeight:700, fontSize:"12px", cursor:"pointer", fontFamily:"'Lexend',sans-serif" }}>Close</button>
-            <button onClick={() => { setPhase("setup"); setErrorMsg(""); }} style={{ flex:1, padding:"12px", borderRadius:"11px", border:"none", background:"#00FF00", color:"#0f172a", fontWeight:700, fontSize:"12px", cursor:"pointer", fontFamily:"'Lexend',sans-serif" }}>Try Again</button>
+          <p style={{ fontSize: "15px", fontWeight: 700, color: text1, margin: "0 0 8px" }}>Analysis Failed</p>
+          <p style={{ fontSize: "12px", color: text3, margin: "0 0 20px" }}>{errorMsg}</p>
+          <div style={{ display: "flex", gap: "10px" }}>
+            <button onClick={onClose} style={{ flex: 1, padding: "12px", borderRadius: "11px", border: `1px solid ${bdr}`, background: "transparent", color: text2, fontWeight: 700, fontSize: "12px", cursor: "pointer", fontFamily: "'Lexend',sans-serif" }}>Close</button>
+            <button onClick={() => { setPhase("setup"); setErrorMsg(""); }} style={{ flex: 1, padding: "12px", borderRadius: "11px", border: "none", background: "#00FF00", color: "#0f172a", fontWeight: 700, fontSize: "12px", cursor: "pointer", fontFamily: "'Lexend',sans-serif" }}>Try Again</button>
           </div>
         </div>
       </div>
@@ -1004,79 +1215,79 @@ Analyze ALL provided pages and return ONLY a valid JSON object — no markdown, 
   /* ── RESULTS ── */
   if (phase === "done" && result) {
     const tabs = [
-      { id:"summary",  icon:"summarize",    label:"Summary"  },
-      { id:"flow",     icon:"account_tree", label:"Flow"     },
-      { id:"concepts", icon:"lightbulb",    label:"Concepts" },
-      { id:"exam",     icon:"school",       label:"Exam Prep"},
+      { id: "summary", icon: "summarize", label: "Summary" },
+      { id: "flow", icon: "account_tree", label: "Flow" },
+      { id: "concepts", icon: "lightbulb", label: "Concepts" },
+      { id: "exam", icon: "school", label: "Exam Prep" },
     ];
     return (
       <ModalOverlay onClose={onClose}>
-        <div style={{ ...modalBoxStyle(panel, bdr, "620px"), maxHeight:"90vh", display:"flex", flexDirection:"column", overflowY:"hidden" }}>
+        <div style={{ ...modalBoxStyle(panel, bdr, "620px"), maxHeight: "90vh", display: "flex", flexDirection: "column", overflowY: "hidden" }}>
           {/* Header */}
-          <div style={{ paddingBottom:"14px", borderBottom:`1px solid ${bdr}`, flexShrink:0 }}>
-            <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:"12px" }}>
-              <div style={{ display:"flex", alignItems:"center", gap:"10px" }}>
-                <div style={{ width:"36px", height:"36px", borderRadius:"10px", background:"rgba(0,255,0,0.12)", display:"flex", alignItems:"center", justifyContent:"center" }}>
-                  <span className="ms" style={{ fontSize:"20px", color:"#00CC00" }}>analytics</span>
+          <div style={{ paddingBottom: "14px", borderBottom: `1px solid ${bdr}`, flexShrink: 0 }}>
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "12px" }}>
+              <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
+                <div style={{ width: "36px", height: "36px", borderRadius: "10px", background: "rgba(0,255,0,0.12)", display: "flex", alignItems: "center", justifyContent: "center" }}>
+                  <span className="ms" style={{ fontSize: "20px", color: "#00CC00" }}>analytics</span>
                 </div>
                 <div>
-                  <p style={{ fontSize:"13px", fontWeight:700, color:text1, margin:0 }}>{moduleTitle||moduleKey}</p>
-                  <div style={{ display:"flex", alignItems:"center", gap:"6px", marginTop:"3px" }}>
-                    <span style={{ fontSize:"9px", fontWeight:700, padding:"2px 8px", background:"rgba(0,200,0,0.1)", border:"1px solid rgba(0,200,0,0.2)", borderRadius:"9999px", color:"#00AA00" }}>GROQ ANALYSIS</span>
+                  <p style={{ fontSize: "13px", fontWeight: 700, color: text1, margin: 0 }}>{moduleTitle || moduleKey}</p>
+                  <div style={{ display: "flex", alignItems: "center", gap: "6px", marginTop: "3px" }}>
+                    <span style={{ fontSize: "9px", fontWeight: 700, padding: "2px 8px", background: "rgba(0,200,0,0.1)", border: "1px solid rgba(0,200,0,0.2)", borderRadius: "9999px", color: "#00AA00" }}>GROQ ANALYSIS</span>
                     {result.difficulty && (
-                      <span style={{ fontSize:"9px", fontWeight:700, padding:"2px 8px", background:`${diffColor[result.difficulty]}18`, border:`1px solid ${diffColor[result.difficulty]}44`, borderRadius:"9999px", color:diffColor[result.difficulty] }}>
+                      <span style={{ fontSize: "9px", fontWeight: 700, padding: "2px 8px", background: `${diffColor[result.difficulty]}18`, border: `1px solid ${diffColor[result.difficulty]}44`, borderRadius: "9999px", color: diffColor[result.difficulty] }}>
                         {result.difficulty.toUpperCase()}
                       </span>
                     )}
                   </div>
                 </div>
               </div>
-              <button onClick={onClose} style={{ background:"none", border:"none", cursor:"pointer", color:text3, width:"32px", height:"32px", display:"flex", alignItems:"center", justifyContent:"center" }}>
-                <span className="ms" style={{ fontSize:"20px" }}>close</span>
+              <button onClick={onClose} style={{ background: "none", border: "none", cursor: "pointer", color: text3, width: "32px", height: "32px", display: "flex", alignItems: "center", justifyContent: "center" }}>
+                <span className="ms" style={{ fontSize: "20px" }}>close</span>
               </button>
             </div>
-            <p style={{ fontSize:"12px", color:text2, lineHeight:1.65, margin:"0 0 12px" }}>{result.overview}</p>
-            <div style={{ display:"grid", gridTemplateColumns:"repeat(3,1fr)", gap:"8px" }}>
+            <p style={{ fontSize: "12px", color: text2, lineHeight: 1.65, margin: "0 0 12px" }}>{result.overview}</p>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(3,1fr)", gap: "8px" }}>
               {[
-                { label:"Topics",   value:result.mainTopics?.length||0 },
-                { label:"Concepts", value:result.keyConcepts?.length||0 },
-                { label:"Pages",    value:Math.min(totalPages,5) },
+                { label: "Topics", value: result.mainTopics?.length || 0 },
+                { label: "Concepts", value: result.keyConcepts?.length || 0 },
+                { label: "Pages", value: Math.min(totalPages, 5) },
               ].map(({ label, value }) => (
-                <div key={label} style={{ padding:"10px", background:isDark?"rgba(0,255,0,0.05)":"rgba(0,200,0,0.05)", borderRadius:"10px", textAlign:"center" }}>
-                  <p style={{ fontSize:"20px", fontWeight:700, color:isDark?"#00FF00":"#007700", margin:"0 0 2px" }}>{value}</p>
-                  <p style={{ fontSize:"10px", color:text3, margin:0 }}>{label}</p>
+                <div key={label} style={{ padding: "10px", background: isDark ? "rgba(0,255,0,0.05)" : "rgba(0,200,0,0.05)", borderRadius: "10px", textAlign: "center" }}>
+                  <p style={{ fontSize: "20px", fontWeight: 700, color: isDark ? "#00FF00" : "#007700", margin: "0 0 2px" }}>{value}</p>
+                  <p style={{ fontSize: "10px", color: text3, margin: 0 }}>{label}</p>
                 </div>
               ))}
             </div>
           </div>
 
           {/* Tabs */}
-          <div style={{ display:"flex", gap:"4px", padding:"10px 0", borderBottom:`1px solid ${bdr}`, flexShrink:0, overflowX:"auto" }}>
+          <div style={{ display: "flex", gap: "4px", padding: "10px 0", borderBottom: `1px solid ${bdr}`, flexShrink: 0, overflowX: "auto" }}>
             {tabs.map(({ id, icon, label }) => (
-              <button key={id} onClick={() => setActiveTab(id)} style={{ display:"flex", alignItems:"center", gap:"5px", padding:"7px 12px", borderRadius:"9px", border:"none", background:activeTab===id?"rgba(0,255,0,0.1)":"transparent", color:activeTab===id?(isDark?"#00FF00":"#007700"):text2, fontWeight:activeTab===id?700:500, fontSize:"12px", cursor:"pointer", fontFamily:"'Lexend',sans-serif", transition:"all 0.18s", whiteSpace:"nowrap", flexShrink:0 }}>
-                <span className="ms" style={{ fontSize:"15px" }}>{icon}</span>
+              <button key={id} onClick={() => setActiveTab(id)} style={{ display: "flex", alignItems: "center", gap: "5px", padding: "7px 12px", borderRadius: "9px", border: "none", background: activeTab === id ? "rgba(0,255,0,0.1)" : "transparent", color: activeTab === id ? (isDark ? "#00FF00" : "#007700") : text2, fontWeight: activeTab === id ? 700 : 500, fontSize: "12px", cursor: "pointer", fontFamily: "'Lexend',sans-serif", transition: "all 0.18s", whiteSpace: "nowrap", flexShrink: 0 }}>
+                <span className="ms" style={{ fontSize: "15px" }}>{icon}</span>
                 {label}
               </button>
             ))}
           </div>
 
           {/* Tab content */}
-          <div style={{ flex:1, overflowY:"auto", padding:"16px 0" }}>
+          <div style={{ flex: 1, overflowY: "auto", padding: "16px 0" }}>
 
             {/* SUMMARY */}
             {activeTab === "summary" && (
-              <div style={{ display:"flex", flexDirection:"column", gap:"12px" }}>
+              <div style={{ display: "flex", flexDirection: "column", gap: "12px" }}>
                 <SectionLabel text="Main Topics Covered" text3={text3} />
-                <div style={{ display:"flex", flexWrap:"wrap", gap:"7px", marginBottom:"6px" }}>
+                <div style={{ display: "flex", flexWrap: "wrap", gap: "7px", marginBottom: "6px" }}>
                   {result.mainTopics?.map((t, i) => (
-                    <span key={i} style={{ padding:"5px 12px", background:"rgba(0,255,0,0.08)", border:"1px solid rgba(0,255,0,0.2)", borderRadius:"9999px", fontSize:"11px", fontWeight:600, color:isDark?"#00EE00":"#007700" }}>{t}</span>
+                    <span key={i} style={{ padding: "5px 12px", background: "rgba(0,255,0,0.08)", border: "1px solid rgba(0,255,0,0.2)", borderRadius: "9999px", fontSize: "11px", fontWeight: 600, color: isDark ? "#00EE00" : "#007700" }}>{t}</span>
                   ))}
                 </div>
                 <SectionLabel text="Study Tips" text3={text3} />
                 {result.studyTips?.map((tip, i) => (
-                  <div key={i} style={{ display:"flex", gap:"10px", padding:"12px 14px", background:isDark?"rgba(255,255,255,0.03)":"rgba(0,200,0,0.03)", border:`1px solid ${bdr}`, borderRadius:"11px" }}>
-                    <span style={{ width:"24px", height:"24px", borderRadius:"7px", background:"rgba(0,200,0,0.15)", display:"flex", alignItems:"center", justifyContent:"center", fontSize:"11px", fontWeight:700, color:"#00AA00", flexShrink:0 }}>{i+1}</span>
-                    <p style={{ fontSize:"12px", color:text2, margin:0, lineHeight:1.6 }}>{tip}</p>
+                  <div key={i} style={{ display: "flex", gap: "10px", padding: "12px 14px", background: isDark ? "rgba(255,255,255,0.03)" : "rgba(0,200,0,0.03)", border: `1px solid ${bdr}`, borderRadius: "11px" }}>
+                    <span style={{ width: "24px", height: "24px", borderRadius: "7px", background: "rgba(0,200,0,0.15)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: "11px", fontWeight: 700, color: "#00AA00", flexShrink: 0 }}>{i + 1}</span>
+                    <p style={{ fontSize: "12px", color: text2, margin: 0, lineHeight: 1.6 }}>{tip}</p>
                   </div>
                 ))}
               </div>
@@ -1084,21 +1295,21 @@ Analyze ALL provided pages and return ONLY a valid JSON object — no markdown, 
 
             {/* FLOW */}
             {activeTab === "flow" && (
-              <div style={{ display:"flex", flexDirection:"column" }}>
+              <div style={{ display: "flex", flexDirection: "column" }}>
                 {result.flow?.map((step, i) => (
-                  <div key={i} style={{ display:"flex", gap:"14px" }}>
-                    <div style={{ display:"flex", flexDirection:"column", alignItems:"center", width:"34px", flexShrink:0 }}>
-                      <div style={{ width:"34px", height:"34px", borderRadius:"9999px", background:"rgba(0,255,0,0.15)", border:"2px solid #00CC00", display:"flex", alignItems:"center", justifyContent:"center", zIndex:1, flexShrink:0 }}>
-                        <span style={{ fontSize:"11px", fontWeight:700, color:"#00CC00" }}>{step.step}</span>
+                  <div key={i} style={{ display: "flex", gap: "14px" }}>
+                    <div style={{ display: "flex", flexDirection: "column", alignItems: "center", width: "34px", flexShrink: 0 }}>
+                      <div style={{ width: "34px", height: "34px", borderRadius: "9999px", background: "rgba(0,255,0,0.15)", border: "2px solid #00CC00", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 1, flexShrink: 0 }}>
+                        <span style={{ fontSize: "11px", fontWeight: 700, color: "#00CC00" }}>{step.step}</span>
                       </div>
-                      {i < (result.flow.length - 1) && <div style={{ width:"2px", flex:1, background:"rgba(0,200,0,0.2)", minHeight:"16px" }} />}
+                      {i < (result.flow.length - 1) && <div style={{ width: "2px", flex: 1, background: "rgba(0,200,0,0.2)", minHeight: "16px" }} />}
                     </div>
-                    <div style={{ paddingBottom:"18px", flex:1, paddingTop:"4px" }}>
-                      <div style={{ display:"flex", alignItems:"center", gap:"8px", marginBottom:"4px" }}>
-                        <p style={{ fontSize:"13px", fontWeight:700, color:text1, margin:0 }}>{step.title}</p>
-                        {step.pages && <span style={{ fontSize:"9px", fontWeight:700, padding:"2px 7px", background:"rgba(0,200,0,0.08)", border:"1px solid rgba(0,200,0,0.2)", borderRadius:"9999px", color:"#00AA00" }}>p.{step.pages}</span>}
+                    <div style={{ paddingBottom: "18px", flex: 1, paddingTop: "4px" }}>
+                      <div style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "4px" }}>
+                        <p style={{ fontSize: "13px", fontWeight: 700, color: text1, margin: 0 }}>{step.title}</p>
+                        {step.pages && <span style={{ fontSize: "9px", fontWeight: 700, padding: "2px 7px", background: "rgba(0,200,0,0.08)", border: "1px solid rgba(0,200,0,0.2)", borderRadius: "9999px", color: "#00AA00" }}>p.{step.pages}</span>}
                       </div>
-                      <p style={{ fontSize:"12px", color:text2, margin:0, lineHeight:1.6 }}>{step.description}</p>
+                      <p style={{ fontSize: "12px", color: text2, margin: 0, lineHeight: 1.6 }}>{step.description}</p>
                     </div>
                   </div>
                 ))}
@@ -1107,11 +1318,11 @@ Analyze ALL provided pages and return ONLY a valid JSON object — no markdown, 
 
             {/* CONCEPTS */}
             {activeTab === "concepts" && (
-              <div style={{ display:"flex", flexDirection:"column", gap:"8px" }}>
+              <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
                 {result.keyConcepts?.map((c, i) => (
-                  <div key={i} style={{ padding:"12px 14px", background:isDark?"rgba(255,255,255,0.03)":"rgba(0,200,0,0.03)", border:`1px solid ${bdr}`, borderRadius:"12px" }}>
-                    <p style={{ fontSize:"12px", fontWeight:700, color:isDark?"#00EE00":"#007700", margin:"0 0 5px" }}>{c.term}</p>
-                    <p style={{ fontSize:"12px", color:text2, margin:0, lineHeight:1.6 }}>{c.definition}</p>
+                  <div key={i} style={{ padding: "12px 14px", background: isDark ? "rgba(255,255,255,0.03)" : "rgba(0,200,0,0.03)", border: `1px solid ${bdr}`, borderRadius: "12px" }}>
+                    <p style={{ fontSize: "12px", fontWeight: 700, color: isDark ? "#00EE00" : "#007700", margin: "0 0 5px" }}>{c.term}</p>
+                    <p style={{ fontSize: "12px", color: text2, margin: 0, lineHeight: 1.6 }}>{c.definition}</p>
                   </div>
                 ))}
               </div>
@@ -1119,20 +1330,20 @@ Analyze ALL provided pages and return ONLY a valid JSON object — no markdown, 
 
             {/* EXAM PREP */}
             {activeTab === "exam" && (
-              <div style={{ display:"flex", flexDirection:"column", gap:"8px" }}>
-                <div style={{ padding:"12px 14px", background:"rgba(0,255,0,0.07)", border:"1px solid rgba(0,255,0,0.2)", borderRadius:"12px", marginBottom:"4px", display:"flex", gap:"10px", alignItems:"flex-start" }}>
-                  <span className="ms" style={{ fontSize:"18px", color:"#00AA00", flexShrink:0 }}>tips_and_updates</span>
+              <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
+                <div style={{ padding: "12px 14px", background: "rgba(0,255,0,0.07)", border: "1px solid rgba(0,255,0,0.2)", borderRadius: "12px", marginBottom: "4px", display: "flex", gap: "10px", alignItems: "flex-start" }}>
+                  <span className="ms" style={{ fontSize: "18px", color: "#00AA00", flexShrink: 0 }}>tips_and_updates</span>
                   <div>
-                    <p style={{ fontSize:"12px", fontWeight:700, color:"#00AA00", margin:"0 0 3px" }}>High-Priority Exam Topics</p>
-                    <p style={{ fontSize:"11px", color:text3, margin:0 }}>Ranked by likelihood of appearing in your university exam.</p>
+                    <p style={{ fontSize: "12px", fontWeight: 700, color: "#00AA00", margin: "0 0 3px" }}>High-Priority Exam Topics</p>
+                    <p style={{ fontSize: "11px", color: text3, margin: 0 }}>Ranked by likelihood of appearing in your university exam.</p>
                   </div>
                 </div>
                 {result.examTopics?.map((t, i) => (
-                  <div key={i} style={{ display:"flex", alignItems:"center", gap:"12px", padding:"12px 14px", background:isDark?"rgba(255,255,255,0.03)":"rgba(0,200,0,0.03)", border:`1px solid ${bdr}`, borderRadius:"11px" }}>
-                    <div style={{ width:"8px", height:"8px", borderRadius:"50%", background:i<3?"#00FF00":i<5?"#f59e0b":"#888", flexShrink:0 }} />
-                    <p style={{ fontSize:"12px", fontWeight:600, color:text1, margin:0, flex:1 }}>{t}</p>
-                    {i<3 && <span style={{ fontSize:"9px", fontWeight:700, padding:"2px 8px", background:"rgba(0,255,0,0.1)", border:"1px solid rgba(0,255,0,0.2)", borderRadius:"9999px", color:"#00AA00", flexShrink:0 }}>HIGH</span>}
-                    {i>=3 && i<5 && <span style={{ fontSize:"9px", fontWeight:700, padding:"2px 8px", background:"rgba(245,158,11,0.1)", border:"1px solid rgba(245,158,11,0.25)", borderRadius:"9999px", color:"#f59e0b", flexShrink:0 }}>MED</span>}
+                  <div key={i} style={{ display: "flex", alignItems: "center", gap: "12px", padding: "12px 14px", background: isDark ? "rgba(255,255,255,0.03)" : "rgba(0,200,0,0.03)", border: `1px solid ${bdr}`, borderRadius: "11px" }}>
+                    <div style={{ width: "8px", height: "8px", borderRadius: "50%", background: i < 3 ? "#00FF00" : i < 5 ? "#f59e0b" : "#888", flexShrink: 0 }} />
+                    <p style={{ fontSize: "12px", fontWeight: 600, color: text1, margin: 0, flex: 1 }}>{t}</p>
+                    {i < 3 && <span style={{ fontSize: "9px", fontWeight: 700, padding: "2px 8px", background: "rgba(0,255,0,0.1)", border: "1px solid rgba(0,255,0,0.2)", borderRadius: "9999px", color: "#00AA00", flexShrink: 0 }}>HIGH</span>}
+                    {i >= 3 && i < 5 && <span style={{ fontSize: "9px", fontWeight: 700, padding: "2px 8px", background: "rgba(245,158,11,0.1)", border: "1px solid rgba(245,158,11,0.25)", borderRadius: "9999px", color: "#f59e0b", flexShrink: 0 }}>MED</span>}
                   </div>
                 ))}
               </div>
@@ -1152,8 +1363,8 @@ function useTheme() {
   const KEY = "studybuddy_theme";
   const [theme, setThemeState] = useState("system");
   const [resolved, setResolved] = useState("light");
-  useEffect(() => { try { setThemeState(localStorage.getItem(KEY) || "system"); } catch {} }, []);
-  const setTheme = (val) => { try { localStorage.setItem(KEY, val); } catch {} setThemeState(val); };
+  useEffect(() => { try { setThemeState(localStorage.getItem(KEY) || "system"); } catch { } }, []);
+  const setTheme = (val) => { try { localStorage.setItem(KEY, val); } catch { } setThemeState(val); };
   useEffect(() => {
     const mq = window.matchMedia("(prefers-color-scheme: dark)");
     const upd = () => setResolved(theme === "system" ? (mq.matches ? "dark" : "light") : theme);
@@ -1166,53 +1377,58 @@ function useTheme() {
    INNER VIEWER
 ═══════════════════════════════════════════ */
 function PDFViewerInner() {
-  const router       = useRouter();
+  const router = useRouter();
   const searchParams = useSearchParams();
   const { resolved } = useTheme();
-  const isDark       = resolved === "dark";
+  const isDark = resolved === "dark";
 
-  const canvasRef    = useRef(null);
+  const canvasRef = useRef(null);
   const containerRef = useRef(null);
   const chatInputRef = useRef(null);
+  const pdfBufferRef = useRef(null);
+  const pdfUrlRef = useRef("");
+  const warmedPagesRef = useRef(new Set());
 
-  const branch    = searchParams.get("branch")  || "";
-  const sem       = normalizeSem(searchParams.get("sem") || "");
-  const subject   = searchParams.get("subject") || "";
-  const moduleKey = searchParams.get("module")  || "";
+  const branch = searchParams.get("branch") || "";
+  const sem = normalizeSem(searchParams.get("sem") || "");
+  const subject = searchParams.get("subject") || "";
+  const moduleKey = searchParams.get("module") || "";
 
-  const [authUser,      setAuthUser]      = useState(null);
-  const [userData,      setUserData]      = useState(null);
-  const [authLoading,   setAuthLoading]   = useState(true);
-  const [accessDenied,  setAccessDenied]  = useState(false);
-  const [accessReason,  setAccessReason]  = useState("");
+  const [authUser, setAuthUser] = useState(null);
+  const [userData, setUserData] = useState(null);
+  const [authLoading, setAuthLoading] = useState(true);
+  const [accessDenied, setAccessDenied] = useState(false);
+  const [accessReason, setAccessReason] = useState("");
 
-  const [pdfDoc,      setPdfDoc]      = useState(null);
+  const [pdfDoc, setPdfDoc] = useState(null);
   const [currentPage, setCurrentPage] = useState(1);
-  const [totalPages,  setTotalPages]  = useState(0);
-  const [scale,       setScale]       = useState(1.4);
-  const [loadStatus,  setLoadStatus]  = useState("idle");
-  const [loadMsg,     setLoadMsg]     = useState("");
-  const [loadPct,     setLoadPct]     = useState(0);
-  const [rendering,   setRendering]   = useState(false);
+  const [totalPages, setTotalPages] = useState(0);
+  const [scale, setScale] = useState(1.4);
+  const [loadStatus, setLoadStatus] = useState("idle");
+  const [loadMsg, setLoadMsg] = useState("");
+  const [loadPct, setLoadPct] = useState(0);
+  const [pdfSource, setPdfSource] = useState("");
+  const [warmStatus, setWarmStatus] = useState({ active: false, done: 0, total: 0 });
+  const [rendering, setRendering] = useState(false);
   const [moduleTitle, setModuleTitle] = useState("");
-  const [fileName,    setFileName]    = useState("");
+  const [fileName, setFileName] = useState("");
 
-  const [chatOpen,       setChatOpen]       = useState(false);
+  const [chatOpen, setChatOpen] = useState(false);
   const [chatFullscreen, setChatFullscreen] = useState(false);
-  const [chatInput,      setChatInput]      = useState("");
-  const [messages,       setMessages]       = useState([{
+  const [chatInput, setChatInput] = useState("");
+  const [messages, setMessages] = useState([{
     role: "ai",
     text: "Hi! I'm your **Neural AI Assistant**.\n\nI can see your current page and answer questions about it.\n\n**Slash Commands:**\n- `/current` — Page-only strict answer\n- `/draw` — ASCII diagram of the concept\n- `/explain` — Concept + real-world example\n- `/diagram` — Structured flowchart\n- `/fullexplain` — Detailed explanation + exam tips\n\nOr use the quick action buttons above ↑",
   }]);
   const [aiLoading, setAiLoading] = useState(false);
 
-  const [quizOpen,    setQuizOpen]    = useState(false);
+  const [quizOpen, setQuizOpen] = useState(false);
   const [analyzeOpen, setAnalyzeOpen] = useState(false);
 
-  const [sheetHeight,     setSheetHeight]     = useState(55);
+  const [sheetHeight, setSheetHeight] = useState(55);
   const [isDraggingSheet, setIsDraggingSheet] = useState(false);
   const sheetDragStart = useRef(null);
-  const chatEndRef     = useRef(null);
+  const chatEndRef = useRef(null);
 
   const [ctxMenu, setCtxMenu] = useState(null);
   const sessionStartRef = useRef(null);
@@ -1228,12 +1444,12 @@ function PDFViewerInner() {
     chk(); window.addEventListener("resize", chk); return () => window.removeEventListener("resize", chk);
   }, []);
 
-  const bg    = isDark ? "#080f1a"            : "#f0f4f0";
+  const bg = isDark ? "#080f1a" : "#f0f4f0";
   const panel = isDark ? "rgba(8,15,26,0.97)" : "rgba(255,255,255,0.97)";
-  const text1 = isDark ? "#f1f5f9"            : "#0f172a";
-  const text2 = isDark ? "#94a3b8"            : "#475569";
-  const text3 = isDark ? "#475569"            : "#94a3b8";
-  const bdr   = isDark ? "rgba(0,255,0,0.1)"  : "rgba(0,200,0,0.12)";
+  const text1 = isDark ? "#f1f5f9" : "#0f172a";
+  const text2 = isDark ? "#94a3b8" : "#475569";
+  const text3 = isDark ? "#475569" : "#94a3b8";
+  const bdr = isDark ? "rgba(0,255,0,0.1)" : "rgba(0,200,0,0.12)";
 
   /* ── Auth ── */
   useEffect(() => {
@@ -1305,7 +1521,14 @@ function PDFViewerInner() {
   useEffect(() => {
     if (!branch || !sem || !subject || !moduleKey) return;
     loadSubjectTitle(branch, sem, subject, moduleKey).then(title => { if (title) setModuleTitle(title); });
-    loadPdfMeta(branch, sem, subject, moduleKey).then(meta => { if (meta) setFileName(meta.fileName || `${moduleKey}.pdf`); });
+    (async () => {
+      const localCached = await readPdfLocalCache(branch, sem, subject, moduleKey);
+      if (localCached?.meta?.fileName) {
+        setFileName(localCached.meta.fileName || `${moduleKey}.pdf`);
+        return;
+      }
+      loadPdfMeta(branch, sem, subject, moduleKey).then(({ data } = {}) => { if (data) setFileName(data.fileName || `${moduleKey}.pdf`); });
+    })();
   }, [branch, sem, subject, moduleKey]);
 
   useEffect(() => {
@@ -1324,35 +1547,88 @@ function PDFViewerInner() {
     };
     update(dbRef(db, `users/${authUser.uid}/recentNotes/${safeKey}`), {
       ...recentNotePayload,
-    }).catch(() => {});
+    }).catch(() => { });
     patchDashboardRecentNote(authUser.uid, recentNotePayload);
     recentNoteWrittenRef.current = true;
   }, [authUser?.uid, subject, moduleKey, moduleTitle]);
 
   /* ── Load PDF ── */
-  const initPDFJS = useCallback(async (buffer) => {
+  const initPDFJS = useCallback(async ({ buffer, url }) => {
     try {
       const lib = window["pdfjs-dist/build/pdf"];
       if (!lib) return;
       lib.GlobalWorkerOptions.workerSrc = "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js";
-      const doc = await lib.getDocument({ data: buffer.slice(0) }).promise;
+      const doc = buffer
+        ? await lib.getDocument({ data: buffer.slice(0) }).promise
+        : await lib.getDocument({
+            url,
+            rangeChunkSize: PDF_STREAM_CHUNK_BYTES,
+            disableAutoFetch: false,
+            disableStream: false,
+          }).promise;
+      warmedPagesRef.current = new Set([1]);
+      setWarmStatus({ active: false, done: 0, total: 0 });
       setPdfDoc(doc); setTotalPages(doc.numPages); setCurrentPage(1); setLoadStatus("ready"); setLoadPct(100);
     } catch (err) { setLoadStatus("error"); setLoadMsg(err.message); }
   }, []);
 
   useEffect(() => {
+    if (!pdfDoc || loadStatus !== "ready" || !totalPages) return;
+    let cancelled = false;
+    const targets = [];
+    for (const p of [currentPage + 1, currentPage + 2, currentPage - 1]) {
+      if (p >= 1 && p <= totalPages && !warmedPagesRef.current.has(p) && !targets.includes(p)) {
+        targets.push(p);
+      }
+    }
+    if (!targets.length) {
+      setWarmStatus({ active: false, done: 0, total: 0 });
+      return;
+    }
+
+    setWarmStatus({ active: true, done: 0, total: targets.length });
+
+    const warm = async () => {
+      for (let i = 0; i < targets.length; i++) {
+        const pageNum = targets[i];
+        try {
+          await pdfDoc.getPage(pageNum);
+          warmedPagesRef.current.add(pageNum);
+          if (!cancelled) {
+            setWarmStatus({ active: i + 1 < targets.length, done: i + 1, total: targets.length });
+          }
+        } catch { }
+        if (cancelled) return;
+        await new Promise(r => setTimeout(r, 0));
+      }
+      if (!cancelled) setWarmStatus({ active: false, done: targets.length, total: targets.length });
+    };
+
+    warm();
+    return () => { cancelled = true; };
+  }, [pdfDoc, loadStatus, currentPage, totalPages]);
+
+  useEffect(() => {
     if (!branch || !sem || !subject || !moduleKey || authLoading || accessDenied) return;
-    const ck = getCacheKey(branch, sem, subject, moduleKey);
-    if (PDF_CACHE.has(ck)) { setLoadStatus("loading"); setLoadMsg("Loading from cache…"); setLoadPct(50); initPDFJS(PDF_CACHE.get(ck)); return; }
+    pdfBufferRef.current = null;
+    pdfUrlRef.current = "";
+    setPdfSource("");
     setLoadStatus("loading"); setLoadMsg("Loading PDF engine…"); setLoadPct(5);
     const existing = document.getElementById("pdfjs-script");
     const doLoad = async () => {
       try {
-        const lib = window["pdfjs-dist/build/pdf"];
-        lib.GlobalWorkerOptions.workerSrc = "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js";
-        const buf = await loadPDF(branch, sem, subject, moduleKey, (p, m) => { setLoadPct(p); setLoadMsg(m); });
-        await initPDFJS(buf);
-      } catch (err) { setLoadStatus("error"); setLoadMsg(err.message); }
+        const { buffer, url, source } = await loadPDF(branch, sem, subject, moduleKey, (p, m, source) => {
+          setLoadPct(p);
+          setLoadMsg(source ? `${m} · ${source === "local" ? "💾 Local" : source === "redis" ? "⚡ Redis" : source === "firebase" ? "🔴 Firebase" : source === "stream" ? "🌊 Stream" : `🔀 ${source}`}` : m);
+        });
+        pdfBufferRef.current = buffer;
+        pdfUrlRef.current = url || "";
+        setPdfSource(source || "firebase");
+        await initPDFJS({ buffer, url });
+      } catch (err) {
+        setLoadStatus("error");
+        setLoadMsg(err.message);
+      }
     };
     if (existing) { doLoad(); return; }
     const sc = document.createElement("script");
@@ -1363,17 +1639,27 @@ function PDFViewerInner() {
     document.head.appendChild(sc);
   }, [branch, sem, subject, moduleKey, authLoading, accessDenied, initPDFJS]);
 
+  const downloadPdf = useCallback(async () => {
+    if (pdfBufferRef.current) return pdfBufferRef.current;
+    if (!branch || !sem || !subject || !moduleKey) return null;
+    const { data: chunks } = await loadPdfChunks(branch, sem, subject, moduleKey);
+    if (!chunks?.length) return null;
+    const buffer = assemblePdfBuffer(chunks);
+    pdfBufferRef.current = buffer;
+    return buffer;
+  }, [branch, sem, subject, moduleKey]);
+
   /* ── Render page ── */
   const renderPage = useCallback(async (doc, pageNum, sc) => {
     if (!doc || !canvasRef.current) return;
     setRendering(true);
     try {
       const page = await doc.getPage(pageNum);
-      const vp   = page.getViewport({ scale: sc });
-      const cv   = canvasRef.current;
-      cv.width   = vp.width; cv.height = vp.height;
+      const vp = page.getViewport({ scale: sc });
+      const cv = canvasRef.current;
+      cv.width = vp.width; cv.height = vp.height;
       await page.render({ canvasContext: cv.getContext("2d"), viewport: vp }).promise;
-    } catch {}
+    } catch { }
     setRendering(false);
   }, []);
 
@@ -1406,7 +1692,7 @@ function PDFViewerInner() {
     setAiLoading(true);
     const sysPrompt = buildSystemPrompt(command, moduleTitle, moduleKey, subject, sem, currentPage, totalPages);
     const userQuery = query || rawText.trim();
-    const cmdLabels = { draw:"✏️ Drawing diagram…", diagram:"📐 Building diagram…", explain:"💡 Explaining with example…", fullexplain:"📖 Full explanation loading…" };
+    const cmdLabels = { draw: "✏️ Drawing diagram…", diagram: "📐 Building diagram…", explain: "💡 Explaining with example…", fullexplain: "📖 Full explanation loading…" };
     const tempMsg = cmdLabels[command] || `📄 Reading page ${currentPage}…`;
     try {
       if (pdfDoc) {
@@ -1420,11 +1706,13 @@ function PDFViewerInner() {
             max_tokens: maxTok,
             messages: [
               { role: "system", content: sysPrompt },
-              { role: "user", content: [
-                { type: "text", text: userQuery || "Respond based on this page." },
-                { type: "text", text: `--- Page ${currentPage}/${totalPages} ---` },
-                { type: "image_url", image_url: { url: `data:image/jpeg;base64,${img}` } },
-              ]},
+              {
+                role: "user", content: [
+                  { type: "text", text: userQuery || "Respond based on this page." },
+                  { type: "text", text: `--- Page ${currentPage}/${totalPages} ---` },
+                  { type: "image_url", image_url: { url: `data:image/jpeg;base64,${img}` } },
+                ]
+              },
             ],
           });
           setMessages(m => [...m, { role: "ai", text: reply, command }]);
@@ -1454,41 +1742,41 @@ function PDFViewerInner() {
 
   /* Quick actions */
   const quickActions = useMemo(() => [
-    { icon:"summarize",    label:"Summarize",     prompt:`Summarize the key points of "${moduleTitle||moduleKey}" in bullet points for exam prep.` },
-    { icon:"quiz",         label:"Quiz me",       isQuiz:true },
-    { icon:"analytics",    label:"Analyze PDF",   isAnalyze:true },
-    { icon:"draw",         label:"Draw it",       prompt:`/draw the main concept on this page as a clear labeled diagram` },
-    { icon:"school",       label:"Explain",       prompt:`/explain the main concept on this page` },
-    { icon:"auto_stories", label:"Full explain",  prompt:`/fullexplain the entire topic on this page with examples and exam tips` },
-    { icon:"account_tree", label:"Diagram",       prompt:`/diagram of the main topic or process on this page` },
-    { icon:"article",      label:"This page",     prompt:`/current Summarize what this page is about and list exam key points.` },
+    { icon: "summarize", label: "Summarize", prompt: `Summarize the key points of "${moduleTitle || moduleKey}" in bullet points for exam prep.` },
+    { icon: "quiz", label: "Quiz me", isQuiz: true },
+    { icon: "analytics", label: "Analyze PDF", isAnalyze: true },
+    { icon: "draw", label: "Draw it", prompt: `/draw the main concept on this page as a clear labeled diagram` },
+    { icon: "school", label: "Explain", prompt: `/explain the main concept on this page` },
+    { icon: "auto_stories", label: "Full explain", prompt: `/fullexplain the entire topic on this page with examples and exam tips` },
+    { icon: "account_tree", label: "Diagram", prompt: `/diagram of the main topic or process on this page` },
+    { icon: "article", label: "This page", prompt: `/current Summarize what this page is about and list exam key points.` },
   ], [moduleTitle, moduleKey, currentPage]);
 
   /* Context menu AI actions */
   const ctxAiActions = useMemo(() => [
-    { icon:"article",      label:"Summarize this page",   prompt:`/current Summarize page ${currentPage} of "${moduleTitle||moduleKey}" for exam revision.` },
-    { icon:"quiz",         label:"Quiz this page",        isQuiz:true },
-    { icon:"analytics",    label:"Analyze entire PDF",    isAnalyze:true },
-    { icon:"draw",         label:"Draw concept",          prompt:`/draw the main concept on this page as a labeled diagram` },
-    { icon:"school",       label:"Explain with example",  prompt:`/explain the main concept visible on this page` },
-    { icon:"account_tree", label:"Flowchart this page",   prompt:`/diagram of the process or system shown on this page` },
-    { icon:"lightbulb",    label:"Key points here",       prompt:`/current List the most important exam points on this page.` },
+    { icon: "article", label: "Summarize this page", prompt: `/current Summarize page ${currentPage} of "${moduleTitle || moduleKey}" for exam revision.` },
+    { icon: "quiz", label: "Quiz this page", isQuiz: true },
+    { icon: "analytics", label: "Analyze entire PDF", isAnalyze: true },
+    { icon: "draw", label: "Draw concept", prompt: `/draw the main concept on this page as a labeled diagram` },
+    { icon: "school", label: "Explain with example", prompt: `/explain the main concept visible on this page` },
+    { icon: "account_tree", label: "Flowchart this page", prompt: `/diagram of the process or system shown on this page` },
+    { icon: "lightbulb", label: "Key points here", prompt: `/current List the most important exam points on this page.` },
   ], [currentPage, moduleTitle, moduleKey]);
 
   /* Mobile sheet drag */
-  const onSheetPointerDown = (e) => { setIsDraggingSheet(true); sheetDragStart.current = { y:e.clientY, height:sheetHeight }; e.currentTarget.setPointerCapture(e.pointerId); };
-  const onSheetPointerMove = (e) => { if (!isDraggingSheet||!sheetDragStart.current) return; const d=(sheetDragStart.current.y-e.clientY)/window.innerHeight*100; setSheetHeight(Math.min(92,Math.max(20,sheetDragStart.current.height+d))); };
-  const onSheetPointerUp   = ()  => { setIsDraggingSheet(false); if (sheetHeight<28){setChatOpen(false);setSheetHeight(55);}else if(sheetHeight>75)setSheetHeight(88);else setSheetHeight(55); };
+  const onSheetPointerDown = (e) => { setIsDraggingSheet(true); sheetDragStart.current = { y: e.clientY, height: sheetHeight }; e.currentTarget.setPointerCapture(e.pointerId); };
+  const onSheetPointerMove = (e) => { if (!isDraggingSheet || !sheetDragStart.current) return; const d = (sheetDragStart.current.y - e.clientY) / window.innerHeight * 100; setSheetHeight(Math.min(92, Math.max(20, sheetDragStart.current.height + d))); };
+  const onSheetPointerUp = () => { setIsDraggingSheet(false); if (sheetHeight < 28) { setChatOpen(false); setSheetHeight(55); } else if (sheetHeight > 75) setSheetHeight(88); else setSheetHeight(55); };
 
-  const fullName  = userData?.fullName  || authUser?.displayName || "";
-  const photoURL  = userData?.photoURL  || authUser?.photoURL    || "";
+  const fullName = userData?.fullName || authUser?.displayName || "";
+  const photoURL = userData?.photoURL || authUser?.photoURL || "";
   const firstName = userData?.firstName || authUser?.displayName?.split(" ")[0] || "";
 
   const AvatarEl = ({ size = 36 }) => (
-    <div style={{ width:`${size}px`, height:`${size}px`, borderRadius:"9999px", border:"2px solid #00FF00", overflow:"hidden", background:isDark?"rgba(255,255,255,0.1)":"#e2e8f0", flexShrink:0 }}>
+    <div style={{ width: `${size}px`, height: `${size}px`, borderRadius: "9999px", border: "2px solid #00FF00", overflow: "hidden", background: isDark ? "rgba(255,255,255,0.1)" : "#e2e8f0", flexShrink: 0 }}>
       {photoURL
-        ? <img src={photoURL} alt={fullName} style={{ width:"100%", height:"100%", objectFit:"cover" }} referrerPolicy="no-referrer" />
-        : <div style={{ width:"100%", height:"100%", display:"flex", alignItems:"center", justifyContent:"center", background:"#00FF00", color:"#0f172a", fontSize:`${size*0.4}px`, fontWeight:900, fontFamily:"'Lexend',sans-serif" }}>{firstName?.[0]?.toUpperCase()||"?"}</div>
+        ? <img src={photoURL} alt={fullName} style={{ width: "100%", height: "100%", objectFit: "cover" }} referrerPolicy="no-referrer" />
+        : <div style={{ width: "100%", height: "100%", display: "flex", alignItems: "center", justifyContent: "center", background: "#00FF00", color: "#0f172a", fontSize: `${size * 0.4}px`, fontWeight: 900, fontFamily: "'Lexend',sans-serif" }}>{firstName?.[0]?.toUpperCase() || "?"}</div>
       }
     </div>
   );
@@ -1499,23 +1787,23 @@ function PDFViewerInner() {
     const filtered = SLASH_COMMANDS.filter(c => c.cmd.startsWith(typed));
     if (!filtered.length) return null;
     return (
-      <div style={{ position:"absolute", bottom:"calc(100% + 6px)", left:0, right:0, background:isDark?"#0d1626":"#fff", border:`1px solid ${bdr}`, borderRadius:"14px", overflow:"hidden", boxShadow:"0 12px 40px rgba(0,0,0,0.3)", zIndex:10 }}>
-        <div style={{ padding:"6px 12px 4px", fontSize:"9px", fontWeight:800, color:text3, textTransform:"uppercase", letterSpacing:"0.1em", borderBottom:`1px solid ${bdr}` }}>
+      <div style={{ position: "absolute", bottom: "calc(100% + 6px)", left: 0, right: 0, background: isDark ? "#0d1626" : "#fff", border: `1px solid ${bdr}`, borderRadius: "14px", overflow: "hidden", boxShadow: "0 12px 40px rgba(0,0,0,0.3)", zIndex: 10 }}>
+        <div style={{ padding: "6px 12px 4px", fontSize: "9px", fontWeight: 800, color: text3, textTransform: "uppercase", letterSpacing: "0.1em", borderBottom: `1px solid ${bdr}` }}>
           Commands
         </div>
         {filtered.map(({ cmd, icon, desc, color }) => (
           <button key={cmd}
             onMouseDown={e => { e.preventDefault(); setChatInput(cmd + " "); chatInputRef.current?.focus(); }}
-            style={{ width:"100%", display:"flex", alignItems:"center", gap:"10px", padding:"9px 12px", background:"none", border:"none", cursor:"pointer", fontFamily:"'Lexend',sans-serif", textAlign:"left" }}
-            onMouseEnter={e => e.currentTarget.style.background=isDark?"rgba(255,255,255,0.05)":"rgba(0,0,0,0.04)"}
-            onMouseLeave={e => e.currentTarget.style.background="none"}
+            style={{ width: "100%", display: "flex", alignItems: "center", gap: "10px", padding: "9px 12px", background: "none", border: "none", cursor: "pointer", fontFamily: "'Lexend',sans-serif", textAlign: "left" }}
+            onMouseEnter={e => e.currentTarget.style.background = isDark ? "rgba(255,255,255,0.05)" : "rgba(0,0,0,0.04)"}
+            onMouseLeave={e => e.currentTarget.style.background = "none"}
           >
-            <div style={{ width:"28px", height:"28px", borderRadius:"8px", background:`${color}20`, display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0 }}>
-              <span className="ms" style={{ fontSize:"15px", color }}>{icon}</span>
+            <div style={{ width: "28px", height: "28px", borderRadius: "8px", background: `${color}20`, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
+              <span className="ms" style={{ fontSize: "15px", color }}>{icon}</span>
             </div>
-            <div style={{ flex:1, minWidth:0 }}>
-              <p style={{ fontSize:"12px", fontWeight:700, color, margin:0, fontFamily:"'Lexend',sans-serif" }}>{cmd}</p>
-              <p style={{ fontSize:"10px", color:text3, margin:"1px 0 0", fontFamily:"'Lexend',sans-serif", whiteSpace:"nowrap", overflow:"hidden", textOverflow:"ellipsis" }}>{desc}</p>
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <p style={{ fontSize: "12px", fontWeight: 700, color, margin: 0, fontFamily: "'Lexend',sans-serif" }}>{cmd}</p>
+              <p style={{ fontSize: "10px", color: text3, margin: "1px 0 0", fontFamily: "'Lexend',sans-serif", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{desc}</p>
             </div>
           </button>
         ))}
@@ -1524,29 +1812,29 @@ function PDFViewerInner() {
   }, [chatInput, isDark, bdr, text3]);
 
   const MessagesList = useMemo(() => messages.map((msg, i) => {
-    const isAI   = msg.role === "ai";
+    const isAI = msg.role === "ai";
     const isTemp = !!msg.temp;
-    const msgColor = isAI ? (isDark?"#e2e8f0":"#0f172a") : "#0f172a";
+    const msgColor = isAI ? (isDark ? "#e2e8f0" : "#0f172a") : "#0f172a";
     return (
       <div key={i} style={{
-        background: isAI ? (isDark?"rgba(0,255,0,0.07)":"rgba(0,200,0,0.06)") : "#00FF00",
+        background: isAI ? (isDark ? "rgba(0,255,0,0.07)" : "rgba(0,200,0,0.06)") : "#00FF00",
         border: isAI ? `1px solid ${bdr}` : "none",
-        borderRadius:"16px",
+        borderRadius: "16px",
         borderTopLeftRadius: isAI ? "4px" : "16px",
         borderBottomRightRadius: isAI ? "16px" : "4px",
-        padding:"12px 14px",
-        color:msgColor,
-        lineHeight:1.65,
+        padding: "12px 14px",
+        color: msgColor,
+        lineHeight: 1.65,
         alignSelf: isAI ? "stretch" : "flex-end",
         maxWidth: isAI ? "100%" : "88%",
-        animation:"msgPop 0.25s ease both",
+        animation: "msgPop 0.25s ease both",
         opacity: isTemp ? 0.55 : 1,
       }}>
         {isAI && (
-          <div style={{ display:"flex", alignItems:"center", gap:"6px", marginBottom:"8px" }}>
-            <span className="ms" style={{ fontSize:"13px", color:"#00CC00" }}>auto_awesome</span>
-            <span style={{ fontSize:"10px", fontWeight:700, color:"#00AA00", textTransform:"uppercase", letterSpacing:"0.08em" }}>Neural AI</span>
-            <span style={{ fontSize:"9px", fontWeight:700, padding:"1px 6px", background:"rgba(0,200,0,0.1)", border:"1px solid rgba(0,200,0,0.2)", borderRadius:"9999px", color:"#00AA00" }}>GROQ</span>
+          <div style={{ display: "flex", alignItems: "center", gap: "6px", marginBottom: "8px" }}>
+            <span className="ms" style={{ fontSize: "13px", color: "#00CC00" }}>auto_awesome</span>
+            <span style={{ fontSize: "10px", fontWeight: 700, color: "#00AA00", textTransform: "uppercase", letterSpacing: "0.08em" }}>Neural AI</span>
+            <span style={{ fontSize: "9px", fontWeight: 700, padding: "1px 6px", background: "rgba(0,200,0,0.1)", border: "1px solid rgba(0,200,0,0.2)", borderRadius: "9999px", color: "#00AA00" }}>GROQ</span>
           </div>
         )}
         {!isAI && msg.command && (() => {
@@ -1554,8 +1842,8 @@ function PDFViewerInner() {
           const col = sc?.color || "#00CC00";
           const ico = sc?.icon || "terminal";
           return (
-            <div style={{ display:"inline-flex", alignItems:"center", gap:"4px", padding:"2px 8px", background:"rgba(0,0,0,0.18)", borderRadius:"9999px", fontSize:"10px", fontWeight:700, color:"#0f172a", marginBottom:"5px", fontFamily:"'Lexend',sans-serif" }}>
-              <span className="ms" style={{ fontSize:"11px" }}>{ico}</span>
+            <div style={{ display: "inline-flex", alignItems: "center", gap: "4px", padding: "2px 8px", background: "rgba(0,0,0,0.18)", borderRadius: "9999px", fontSize: "10px", fontWeight: 700, color: "#0f172a", marginBottom: "5px", fontFamily: "'Lexend',sans-serif" }}>
+              <span className="ms" style={{ fontSize: "11px" }}>{ico}</span>
               /{msg.command} · p.{currentPage}
             </div>
           );
@@ -1564,17 +1852,17 @@ function PDFViewerInner() {
           const sc = SLASH_COMMANDS.find(c => c.cmd === "/" + msg.command);
           if (!sc) return null;
           return (
-            <div style={{ display:"inline-flex", alignItems:"center", gap:"5px", padding:"2px 9px", background:`${sc.color}18`, border:`1px solid ${sc.color}44`, borderRadius:"9999px", fontSize:"10px", fontWeight:700, color:sc.color, marginBottom:"7px" }}>
-              <span className="ms" style={{ fontSize:"11px" }}>{sc.icon}</span>
+            <div style={{ display: "inline-flex", alignItems: "center", gap: "5px", padding: "2px 9px", background: `${sc.color}18`, border: `1px solid ${sc.color}44`, borderRadius: "9999px", fontSize: "10px", fontWeight: 700, color: sc.color, marginBottom: "7px" }}>
+              <span className="ms" style={{ fontSize: "11px" }}>{sc.icon}</span>
               {sc.cmd}
             </div>
           );
         })()}
         {isAI
           ? <MarkdownText text={msg.text} color={msgColor} />
-          : <p style={{ margin:0, fontSize:"12px", fontWeight:600, lineHeight:1.65, whiteSpace:"pre-wrap" }}>
-              {msg.command && msg.text.startsWith("/" + msg.command) ? msg.text.slice(msg.command.length + 1).trim() : msg.text}
-            </p>
+          : <p style={{ margin: 0, fontSize: "12px", fontWeight: 600, lineHeight: 1.65, whiteSpace: "pre-wrap" }}>
+            {msg.command && msg.text.startsWith("/" + msg.command) ? msg.text.slice(msg.command.length + 1).trim() : msg.text}
+          </p>
         }
       </div>
     );
@@ -1582,16 +1870,16 @@ function PDFViewerInner() {
 
   /* ACCESS DENIED */
   if (accessDenied) return (
-    <div style={{ height:"100vh", display:"flex", flexDirection:"column", alignItems:"center", justifyContent:"center", background:bg, gap:"20px", fontFamily:"'Lexend',sans-serif", padding:"20px" }}>
+    <div style={{ height: "100vh", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", background: bg, gap: "20px", fontFamily: "'Lexend',sans-serif", padding: "20px" }}>
       <style>{`@import url('https://fonts.googleapis.com/css2?family=Lexend:wght@400;700&display=swap');@import url('https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:opsz,wght,FILL,GRAD@20..48,100..700,0..1,-50..200');.ms{font-family:'Material Symbols Outlined'!important;line-height:1;display:inline-block;}`}</style>
-      <div style={{ width:"80px", height:"80px", borderRadius:"20px", background:"rgba(239,68,68,0.1)", display:"flex", alignItems:"center", justifyContent:"center" }}>
-        <span className="ms" style={{ fontSize:"44px", color:"#ef4444" }}>lock</span>
+      <div style={{ width: "80px", height: "80px", borderRadius: "20px", background: "rgba(239,68,68,0.1)", display: "flex", alignItems: "center", justifyContent: "center" }}>
+        <span className="ms" style={{ fontSize: "44px", color: "#ef4444" }}>lock</span>
       </div>
-      <div style={{ textAlign:"center" }}>
-        <h2 style={{ fontSize:"20px", fontWeight:700, color:isDark?"#f1f5f9":"#0f172a", margin:"0 0 8px" }}>Access Denied</h2>
-        <p style={{ fontSize:"13px", color:isDark?"#94a3b8":"#475569", margin:0, maxWidth:"320px" }}>{accessReason}</p>
+      <div style={{ textAlign: "center" }}>
+        <h2 style={{ fontSize: "20px", fontWeight: 700, color: isDark ? "#f1f5f9" : "#0f172a", margin: "0 0 8px" }}>Access Denied</h2>
+        <p style={{ fontSize: "13px", color: isDark ? "#94a3b8" : "#475569", margin: 0, maxWidth: "320px" }}>{accessReason}</p>
       </div>
-      <button onClick={() => router.push("/notes")} style={{ padding:"12px 24px", background:"#00FF00", color:"#0f172a", border:"none", borderRadius:"12px", fontWeight:700, fontSize:"14px", cursor:"pointer", fontFamily:"'Lexend',sans-serif" }}>
+      <button onClick={() => router.push("/notes")} style={{ padding: "12px 24px", background: "#00FF00", color: "#0f172a", border: "none", borderRadius: "12px", fontWeight: 700, fontSize: "14px", cursor: "pointer", fontFamily: "'Lexend',sans-serif" }}>
         Back to Notes
       </button>
     </div>
@@ -1625,13 +1913,13 @@ function PDFViewerInner() {
         .viewer-root{display:flex;flex-direction:column;height:100vh;overflow:hidden;background:${bg};}
         .top-bar{height:60px;background:${panel};backdrop-filter:blur(12px);border-bottom:1px solid ${bdr};display:flex;align-items:center;padding:0 16px;gap:12px;flex-shrink:0;z-index:30;}
         .viewer-body{flex:1;display:flex;overflow:hidden;}
-        .pdf-area{flex:1;overflow-y:auto;display:flex;flex-direction:column;align-items:center;padding:32px 24px 120px;background:${isDark?"#0a1628":"#e4eae4"};transition:flex 0.3s;}
+        .pdf-area{flex:1;overflow-y:auto;display:flex;flex-direction:column;align-items:center;padding:32px 24px 120px;background:${isDark ? "#0a1628" : "#e4eae4"};transition:flex 0.3s;}
         .pdf-area::-webkit-scrollbar{width:4px;}
         .pdf-area::-webkit-scrollbar-thumb{background:rgba(0,200,0,0.2);border-radius:2px;}
         .canvas-wrap{background:#fff;border-radius:12px;box-shadow:0 8px 40px rgba(0,0,0,0.18);overflow:hidden;max-width:100%;}
         canvas{display:block;max-width:100%;height:auto;}
 
-        .ctrl-bar{position:fixed;bottom:28px;left:50%;transform:translateX(calc(-50% - 180px));background:${isDark?"rgba(15,23,42,0.96)":"rgba(15,23,42,0.92)"};backdrop-filter:blur(20px);border:1px solid rgba(255,255,255,0.1);border-radius:9999px;padding:10px 24px;display:flex;align-items:center;gap:20px;z-index:40;box-shadow:0 8px 32px rgba(0,0,0,0.3);transition:left 0.3s,transform 0.3s;}
+        .ctrl-bar{position:fixed;bottom:28px;left:50%;transform:translateX(calc(-50% - 180px));background:${isDark ? "rgba(15,23,42,0.96)" : "rgba(15,23,42,0.92)"};backdrop-filter:blur(20px);border:1px solid rgba(255,255,255,0.1);border-radius:9999px;padding:10px 24px;display:flex;align-items:center;gap:20px;z-index:40;box-shadow:0 8px 32px rgba(0,0,0,0.3);transition:left 0.3s,transform 0.3s;}
         .ctrl-bar.no-sidebar{left:50%;transform:translateX(-50%);}
         .ctrl-btn{background:none;border:none;cursor:pointer;color:rgba(255,255,255,0.7);display:flex;align-items:center;justify-content:center;padding:4px;border-radius:8px;transition:all 0.18s;}
         .ctrl-btn:hover{color:#00FF00;background:rgba(0,255,0,0.1);}
@@ -1643,11 +1931,11 @@ function PDFViewerInner() {
         .chat-scroll{flex:1;overflow-y:auto;padding:16px;display:flex;flex-direction:column;gap:10px;}
         .chat-scroll::-webkit-scrollbar{width:3px;}
         .chat-scroll::-webkit-scrollbar-thumb{background:rgba(0,200,0,0.2);border-radius:2px;}
-        .quick-btn{display:flex;align-items:center;gap:8px;padding:8px 12px;background:${isDark?"rgba(255,255,255,0.04)":"rgba(0,200,0,0.05)"};border:1px solid ${bdr};border-radius:10px;cursor:pointer;font-size:11px;font-weight:700;color:${text2};font-family:'Lexend',sans-serif;transition:all 0.18s;text-align:left;}
+        .quick-btn{display:flex;align-items:center;gap:8px;padding:8px 12px;background:${isDark ? "rgba(255,255,255,0.04)" : "rgba(0,200,0,0.05)"};border:1px solid ${bdr};border-radius:10px;cursor:pointer;font-size:11px;font-weight:700;color:${text2};font-family:'Lexend',sans-serif;transition:all 0.18s;text-align:left;}
         .quick-btn:hover{background:rgba(0,200,0,0.1);color:${text1};border-color:rgba(0,200,0,0.3);}
         .quick-btn.special-btn{border-color:rgba(0,200,0,0.3);color:#00AA00;}
         .quick-btn.special-btn:hover{background:#00FF00;color:#0f172a;border-color:#00FF00;}
-        .chat-input{width:100%;background:${isDark?"rgba(255,255,255,0.05)":"rgba(0,200,0,0.04)"};border:1px solid ${bdr};border-radius:12px;padding:10px 44px 10px 14px;font-size:12px;font-family:'Lexend',sans-serif;color:${text1};outline:none;resize:none;min-height:44px;max-height:120px;transition:border-color 0.2s;}
+        .chat-input{width:100%;background:${isDark ? "rgba(255,255,255,0.05)" : "rgba(0,200,0,0.04)"};border:1px solid ${bdr};border-radius:12px;padding:10px 44px 10px 14px;font-size:12px;font-family:'Lexend',sans-serif;color:${text1};outline:none;resize:none;min-height:44px;max-height:120px;transition:border-color 0.2s;}
         .chat-input:focus{border-color:rgba(0,255,0,0.4);}
         .chat-input::placeholder{color:${text3};}
         .progress-track{width:100%;height:6px;background:rgba(255,255,255,0.1);border-radius:9999px;overflow:hidden;}
@@ -1657,7 +1945,7 @@ function PDFViewerInner() {
         .mob-fab:active{transform:scale(0.9);}
         .mob-sheet-overlay{display:none;position:fixed;inset:0;background:rgba(0,0,0,0.5);z-index:55;backdrop-filter:blur(4px);}
         .mob-sheet{display:none;position:fixed;left:0;right:0;bottom:0;z-index:60;border-radius:24px 24px 0 0;background:${panel};box-shadow:0 -12px 60px rgba(0,0,0,0.35);flex-direction:column;overflow:hidden;}
-        .mob-ctrl-bar{display:none;position:fixed;bottom:0;left:0;right:0;z-index:50;background:${isDark?"rgba(10,16,26,0.97)":"rgba(255,255,255,0.97)"};backdrop-filter:blur(20px);border-top:1px solid ${bdr};padding:10px 20px 24px;align-items:center;justify-content:center;gap:16px;}
+        .mob-ctrl-bar{display:none;position:fixed;bottom:0;left:0;right:0;z-index:50;background:${isDark ? "rgba(10,16,26,0.97)" : "rgba(255,255,255,0.97)"};backdrop-filter:blur(20px);border-top:1px solid ${bdr};padding:10px 20px 24px;align-items:center;justify-content:center;gap:16px;}
         .mob-ctrl-btn{background:none;border:none;cursor:pointer;color:${text2};display:flex;flex-direction:column;align-items:center;gap:3px;padding:6px 10px;border-radius:10px;transition:all 0.18s;-webkit-tap-highlight-color:transparent;}
         .mob-ctrl-btn:active{transform:scale(0.88);}
         .mob-ctrl-btn.highlight{background:rgba(0,255,0,0.1);}
@@ -1665,9 +1953,9 @@ function PDFViewerInner() {
         .mob-ctrl-btn.highlight span.ms{color:#00CC00;}
         .mob-ctrl-btn span.lbl{font-size:9px;font-weight:700;color:${text3};font-family:'Lexend',sans-serif;}
 
-        .ctx-menu{position:fixed;z-index:9999;background:${isDark?"rgba(12,18,30,0.98)":"rgba(255,255,255,0.98)"};backdrop-filter:blur(20px);border:1px solid ${bdr};border-radius:16px;padding:6px;box-shadow:0 16px 56px rgba(0,0,0,0.35);min-width:230px;animation:ctxFadeIn 0.18s ease both;font-family:'Lexend',sans-serif;}
+        .ctx-menu{position:fixed;z-index:9999;background:${isDark ? "rgba(12,18,30,0.98)" : "rgba(255,255,255,0.98)"};backdrop-filter:blur(20px);border:1px solid ${bdr};border-radius:16px;padding:6px;box-shadow:0 16px 56px rgba(0,0,0,0.35);min-width:230px;animation:ctxFadeIn 0.18s ease both;font-family:'Lexend',sans-serif;}
         .ctx-item{display:flex;align-items:center;gap:10px;padding:9px 12px;border-radius:10px;cursor:pointer;font-size:12px;font-weight:600;color:${text1};border:none;background:none;width:100%;text-align:left;font-family:'Lexend',sans-serif;transition:background 0.15s;}
-        .ctx-item:hover{background:${isDark?"rgba(0,255,0,0.08)":"rgba(0,200,0,0.08)"};}
+        .ctx-item:hover{background:${isDark ? "rgba(0,255,0,0.08)" : "rgba(0,200,0,0.08)"};}
         .ctx-item.ai-item:hover{background:rgba(0,255,0,0.12);}
         .ctx-divider{height:1px;background:${bdr};margin:4px 0;}
         .ctx-section{padding:6px 12px 3px;font-size:9px;font-weight:800;color:${text3};text-transform:uppercase;letter-spacing:0.1em;}
@@ -1688,39 +1976,43 @@ function PDFViewerInner() {
 
         {/* ── TOP BAR ── */}
         <div className="top-bar">
-          <button onClick={() => router.push("/notes")} style={{ display:"flex", alignItems:"center", gap:"4px", background:"none", border:"none", cursor:"pointer", color:text2, fontSize:"13px", fontWeight:600, fontFamily:"'Lexend',sans-serif", flexShrink:0 }}>
-            <span className="ms" style={{ fontSize:"20px" }}>arrow_back</span>
-            <span style={{ display:isMobile?"none":"inline" }}>Notes</span>
+          <button onClick={() => router.push("/notes")} style={{ display: "flex", alignItems: "center", gap: "4px", background: "none", border: "none", cursor: "pointer", color: text2, fontSize: "13px", fontWeight: 600, fontFamily: "'Lexend',sans-serif", flexShrink: 0 }}>
+            <span className="ms" style={{ fontSize: "20px" }}>arrow_back</span>
+            <span style={{ display: isMobile ? "none" : "inline" }}>Notes</span>
           </button>
-          <div style={{ width:"1px", height:"24px", background:bdr, flexShrink:0 }} />
-          <div style={{ display:"flex", alignItems:"center", gap:"10px", flex:1, minWidth:0 }}>
-            <span className="ms" style={{ fontSize:"22px", color:"#ef4444", flexShrink:0 }}>picture_as_pdf</span>
-            <div style={{ minWidth:0 }}>
-              <p style={{ fontSize:"13px", fontWeight:700, color:text1, margin:0, whiteSpace:"nowrap", overflow:"hidden", textOverflow:"ellipsis" }}>{moduleTitle||moduleKey||"PDF Viewer"}</p>
-              <p style={{ fontSize:"10px", color:text3, margin:0 }}>{subject} · {sem} · {branch}</p>
+          <div style={{ width: "1px", height: "24px", background: bdr, flexShrink: 0 }} />
+          <div style={{ display: "flex", alignItems: "center", gap: "10px", flex: 1, minWidth: 0 }}>
+            <span className="ms" style={{ fontSize: "22px", color: "#ef4444", flexShrink: 0 }}>picture_as_pdf</span>
+            <div style={{ minWidth: 0 }}>
+              <p style={{ fontSize: "13px", fontWeight: 700, color: text1, margin: 0, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{moduleTitle || moduleKey || "PDF Viewer"}</p>
+              <p style={{ fontSize: "10px", color: text3, margin: 0 }}>{subject} · {sem} · {branch}</p>
             </div>
           </div>
-          {loadStatus==="ready" && PDF_CACHE.has(getCacheKey(branch,sem,subject,moduleKey)) && !isMobile && (
-            <div style={{ display:"flex", alignItems:"center", gap:"5px", padding:"4px 10px", background:"rgba(0,255,0,0.08)", border:"1px solid rgba(0,255,0,0.2)", borderRadius:"9999px", flexShrink:0 }}>
-              <span className="ms" style={{ fontSize:"14px", color:"#00AA00" }}>bolt</span>
-              <span style={{ fontSize:"10px", fontWeight:700, color:"#00AA00" }}>Cached</span>
+          {loadStatus === "ready" && pdfSource && !isMobile && (
+            <div style={{ display: "flex", alignItems: "center", gap: "5px", padding: "4px 10px", background: "rgba(0,255,0,0.08)", border: "1px solid rgba(0,255,0,0.2)", borderRadius: "9999px", flexShrink: 0 }}>
+              <span className="ms" style={{ fontSize: "14px", color: "#00AA00" }}>bolt</span>
+              <span style={{ fontSize: "10px", fontWeight: 700, color: "#00AA00" }}>
+                {warmStatus.active
+                  ? `${pdfSource === "local" ? "Local" : pdfSource === "redis" ? "Redis" : pdfSource === "firebase" ? "Firebase" : "Mixed"} · warming`
+                  : `${pdfSource === "local" ? "Local" : pdfSource === "redis" ? "Redis" : pdfSource === "firebase" ? "Firebase" : "Mixed"} · ready`}
+              </span>
             </div>
           )}
-          {loadStatus==="ready" && !isMobile && (
+          {loadStatus === "ready" && !isMobile && (
             <button title="Download PDF" onClick={async () => {
-              const buf = PDF_CACHE.get(getCacheKey(branch,sem,subject,moduleKey));
+              const buf = await downloadPdf();
               if (!buf) return;
               const a = document.createElement("a");
-              a.href = URL.createObjectURL(new Blob([buf],{type:"application/pdf"}));
-              a.download = fileName||`${moduleKey}.pdf`; a.click();
+              a.href = URL.createObjectURL(new Blob([buf], { type: "application/pdf" }));
+              a.download = fileName || `${moduleKey}.pdf`; a.click();
               setTimeout(() => URL.revokeObjectURL(a.href), 3000);
-            }} style={{ width:"36px", height:"36px", borderRadius:"10px", background:isDark?"rgba(255,255,255,0.06)":"rgba(0,200,0,0.08)", border:`1px solid ${bdr}`, display:"flex", alignItems:"center", justifyContent:"center", cursor:"pointer", flexShrink:0 }}>
-              <span className="ms" style={{ fontSize:"20px", color:text2 }}>download</span>
+            }} style={{ width: "36px", height: "36px", borderRadius: "10px", background: isDark ? "rgba(255,255,255,0.06)" : "rgba(0,200,0,0.08)", border: `1px solid ${bdr}`, display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer", flexShrink: 0 }}>
+              <span className="ms" style={{ fontSize: "20px", color: text2 }}>download</span>
             </button>
           )}
           {!isMobile && (
-            <button onClick={() => setChatOpen(o => !o)} style={{ display:"flex", alignItems:"center", gap:"6px", padding:"8px 14px", background:chatOpen?"#00FF00":"none", border:`1px solid ${chatOpen?"#00FF00":bdr}`, borderRadius:"10px", cursor:"pointer", fontSize:"12px", fontWeight:700, color:chatOpen?"#0f172a":text2, fontFamily:"'Lexend',sans-serif", transition:"all 0.2s", flexShrink:0 }}>
-              <span className="ms" style={{ fontSize:"18px" }}>psychology</span>
+            <button onClick={() => setChatOpen(o => !o)} style={{ display: "flex", alignItems: "center", gap: "6px", padding: "8px 14px", background: chatOpen ? "#00FF00" : "none", border: `1px solid ${chatOpen ? "#00FF00" : bdr}`, borderRadius: "10px", cursor: "pointer", fontSize: "12px", fontWeight: 700, color: chatOpen ? "#0f172a" : text2, fontFamily: "'Lexend',sans-serif", transition: "all 0.2s", flexShrink: 0 }}>
+              <span className="ms" style={{ fontSize: "18px" }}>psychology</span>
               {chatOpen ? "Hide Neural" : "Neural AI"}
             </button>
           )}
@@ -1732,90 +2024,99 @@ function PDFViewerInner() {
 
           {/* PDF Area */}
           <div className="pdf-area" ref={containerRef}>
-            {loadStatus==="loading" && (
-              <div style={{ display:"flex", flexDirection:"column", alignItems:"center", justifyContent:"center", flex:1, gap:"20px", minHeight:"60vh", animation:"fadeUp 0.3s ease both" }}>
-                <div style={{ width:"72px", height:"72px", borderRadius:"18px", background:"rgba(0,255,0,0.1)", display:"flex", alignItems:"center", justifyContent:"center" }}>
-                  <div style={{ width:"32px", height:"32px", border:"3px solid rgba(0,255,0,0.2)", borderTopColor:"#00FF00", borderRadius:"9999px", animation:"spin 0.8s linear infinite" }} />
+            {loadStatus === "loading" && (
+              <div style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", flex: 1, gap: "20px", minHeight: "60vh", animation: "fadeUp 0.3s ease both" }}>
+                <div style={{ width: "72px", height: "72px", borderRadius: "18px", background: "rgba(0,255,0,0.1)", display: "flex", alignItems: "center", justifyContent: "center" }}>
+                  <div style={{ width: "32px", height: "32px", border: "3px solid rgba(0,255,0,0.2)", borderTopColor: "#00FF00", borderRadius: "9999px", animation: "spin 0.8s linear infinite" }} />
                 </div>
-                <div style={{ textAlign:"center" }}>
-                  <p style={{ fontSize:"14px", fontWeight:700, color:text1, margin:"0 0 6px" }}>{loadMsg}</p>
-                  <div style={{ width:"280px" }}>
-                    <div className="progress-track"><div className="progress-fill" style={{ width:`${loadPct}%` }} /></div>
-                    <p style={{ fontSize:"11px", color:"#00AA00", fontWeight:700, marginTop:"8px" }}>{loadPct}%</p>
+                <div style={{ textAlign: "center" }}>
+                  <p style={{ fontSize: "14px", fontWeight: 700, color: text1, margin: "0 0 6px" }}>{loadMsg}</p>
+                  <div style={{ width: "280px" }}>
+                    <div className="progress-track"><div className="progress-fill" style={{ width: `${loadPct}%` }} /></div>
+                    <p style={{ fontSize: "11px", color: "#00AA00", fontWeight: 700, marginTop: "8px" }}>{loadPct}%</p>
                   </div>
                 </div>
               </div>
             )}
-            {loadStatus==="error" && (
-              <div style={{ display:"flex", flexDirection:"column", alignItems:"center", justifyContent:"center", flex:1, gap:"16px", minHeight:"60vh" }}>
-                <div style={{ width:"72px", height:"72px", borderRadius:"18px", background:"rgba(239,68,68,0.1)", display:"flex", alignItems:"center", justifyContent:"center" }}>
-                  <span className="ms" style={{ fontSize:"36px", color:"#ef4444" }}>error</span>
+            {loadStatus === "error" && (
+              <div style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", flex: 1, gap: "16px", minHeight: "60vh" }}>
+                <div style={{ width: "72px", height: "72px", borderRadius: "18px", background: "rgba(239,68,68,0.1)", display: "flex", alignItems: "center", justifyContent: "center" }}>
+                  <span className="ms" style={{ fontSize: "36px", color: "#ef4444" }}>error</span>
                 </div>
-                <div style={{ textAlign:"center" }}>
-                  <p style={{ fontSize:"15px", fontWeight:700, color:text1, margin:"0 0 6px" }}>Failed to load PDF</p>
-                  <p style={{ fontSize:"12px", color:text3, margin:0 }}>{loadMsg}</p>
+                <div style={{ textAlign: "center" }}>
+                  <p style={{ fontSize: "15px", fontWeight: 700, color: text1, margin: "0 0 6px" }}>Failed to load PDF</p>
+                  <p style={{ fontSize: "12px", color: text3, margin: 0 }}>{loadMsg}</p>
                 </div>
-                <button onClick={() => router.push("/notes")} style={{ padding:"10px 20px", background:"#00FF00", color:"#0f172a", border:"none", borderRadius:"10px", fontWeight:700, fontSize:"13px", cursor:"pointer", fontFamily:"'Lexend',sans-serif" }}>Back to Notes</button>
+                <button onClick={() => router.push("/notes")} style={{ padding: "10px 20px", background: "#00FF00", color: "#0f172a", border: "none", borderRadius: "10px", fontWeight: 700, fontSize: "13px", cursor: "pointer", fontFamily: "'Lexend',sans-serif" }}>Back to Notes</button>
               </div>
             )}
-            {loadStatus==="ready" && (
-              <div className="canvas-wrap" style={{ opacity:rendering?0.7:1, transition:"opacity 0.2s" }}>
+            {loadStatus === "ready" && (
+              <div className="canvas-wrap" style={{ opacity: rendering ? 0.7 : 1, transition: "opacity 0.2s" }}>
                 <canvas ref={canvasRef} />
+              </div>
+            )}
+
+            {loadStatus === "ready" && warmStatus.active && (
+              <div style={{ marginTop: "12px", padding: "10px 14px", borderRadius: "12px", background: isDark ? "rgba(0,255,0,0.06)" : "rgba(0,200,0,0.06)", border: `1px solid ${bdr}`, display: "flex", alignItems: "center", gap: "10px" }}>
+                <div style={{ width: "10px", height: "10px", borderRadius: "9999px", background: "#00FF00", boxShadow: "0 0 12px rgba(0,255,0,0.55)" }} />
+                <p style={{ fontSize: "11px", color: text2, margin: 0 }}>
+                  Page {currentPage} is ready. Preloading nearby pages in background… {warmStatus.done}/{warmStatus.total}
+                </p>
               </div>
             )}
           </div>
 
           {/* ── DESKTOP AI SIDEBAR ── */}
-          <aside className={`ai-sidebar${isChatOpenDesktop?"":" closed"}`} style={{ width:isChatOpenDesktop?sidebarW:"0", minWidth:isChatOpenDesktop?sidebarW:"0" }}>
+          <aside className={`ai-sidebar${isChatOpenDesktop ? "" : " closed"}`} style={{ width: isChatOpenDesktop ? sidebarW : "0", minWidth: isChatOpenDesktop ? sidebarW : "0" }}>
             {/* Sidebar header */}
-            <div style={{ padding:"14px 16px", borderBottom:`1px solid ${bdr}`, display:"flex", alignItems:"center", justifyContent:"space-between", flexShrink:0 }}>
-              <div style={{ display:"flex", alignItems:"center", gap:"10px" }}>
-                <div style={{ width:"34px", height:"34px", borderRadius:"10px", background:"rgba(0,255,0,0.12)", display:"flex", alignItems:"center", justifyContent:"center" }}>
-                  <span className="ms" style={{ fontSize:"20px", color:"#00CC00" }}>psychology</span>
+            <div style={{ padding: "14px 16px", borderBottom: `1px solid ${bdr}`, display: "flex", alignItems: "center", justifyContent: "space-between", flexShrink: 0 }}>
+              <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
+                <div style={{ width: "34px", height: "34px", borderRadius: "10px", background: "rgba(0,255,0,0.12)", display: "flex", alignItems: "center", justifyContent: "center" }}>
+                  <span className="ms" style={{ fontSize: "20px", color: "#00CC00" }}>psychology</span>
                 </div>
                 <div>
-                  <div style={{ display:"flex", alignItems:"center", gap:"6px" }}>
-                    <p style={{ fontSize:"13px", fontWeight:700, color:text1, margin:0 }}>Neural AI</p>
-                    <span style={{ fontSize:"9px", fontWeight:700, padding:"1px 6px", background:"rgba(0,200,0,0.1)", border:"1px solid rgba(0,200,0,0.2)", borderRadius:"9999px", color:"#00AA00" }}>GROQ</span>
+                  <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
+                    <p style={{ fontSize: "13px", fontWeight: 700, color: text1, margin: 0 }}>Neural AI</p>
+                    <span style={{ fontSize: "9px", fontWeight: 700, padding: "1px 6px", background: "rgba(0,200,0,0.1)", border: "1px solid rgba(0,200,0,0.2)", borderRadius: "9999px", color: "#00AA00" }}>GROQ</span>
                   </div>
-                  <div style={{ display:"flex", alignItems:"center", gap:"5px" }}>
-                    <div style={{ width:"6px", height:"6px", borderRadius:"9999px", background:"#00FF00", animation:"pulse 2s ease-in-out infinite" }} />
-                    <p style={{ fontSize:"10px", color:"#00AA00", fontWeight:700, margin:0 }}>Sees current page</p>
+                  <div style={{ display: "flex", alignItems: "center", gap: "5px" }}>
+                    <div style={{ width: "6px", height: "6px", borderRadius: "9999px", background: "#00FF00", animation: "pulse 2s ease-in-out infinite" }} />
+                    <p style={{ fontSize: "10px", color: "#00AA00", fontWeight: 700, margin: 0 }}>Sees current page</p>
                   </div>
                 </div>
               </div>
-              <div style={{ display:"flex", alignItems:"center", gap:"6px" }}>
-                <span style={{ fontSize:"10px", fontWeight:700, color:text3, background:isDark?"rgba(255,255,255,0.05)":"rgba(0,0,0,0.04)", padding:"3px 8px", borderRadius:"9999px" }}>p.{currentPage}/{totalPages}</span>
-                <button title={chatFullscreen?"Restore size":"Expand chat"} onClick={() => setChatFullscreen(f => !f)}
-                  style={{ background:"none", border:"none", cursor:"pointer", color:text3, width:"30px", height:"30px", display:"flex", alignItems:"center", justifyContent:"center", borderRadius:"8px", transition:"color 0.18s" }}
-                  onMouseEnter={e => e.currentTarget.style.color=text1} onMouseLeave={e => e.currentTarget.style.color=text3}>
-                  <span className="ms" style={{ fontSize:"18px" }}>{chatFullscreen?"close_fullscreen":"open_in_full"}</span>
+              <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
+                <span style={{ fontSize: "10px", fontWeight: 700, color: text3, background: isDark ? "rgba(255,255,255,0.05)" : "rgba(0,0,0,0.04)", padding: "3px 8px", borderRadius: "9999px" }}>p.{currentPage}/{totalPages}</span>
+                <button title={chatFullscreen ? "Restore size" : "Expand chat"} onClick={() => setChatFullscreen(f => !f)}
+                  style={{ background: "none", border: "none", cursor: "pointer", color: text3, width: "30px", height: "30px", display: "flex", alignItems: "center", justifyContent: "center", borderRadius: "8px", transition: "color 0.18s" }}
+                  onMouseEnter={e => e.currentTarget.style.color = text1} onMouseLeave={e => e.currentTarget.style.color = text3}>
+                  <span className="ms" style={{ fontSize: "18px" }}>{chatFullscreen ? "close_fullscreen" : "open_in_full"}</span>
                 </button>
-                <button onClick={() => { setChatOpen(false); setChatFullscreen(false); }} style={{ background:"none", border:"none", cursor:"pointer", color:text3, width:"30px", height:"30px", display:"flex", alignItems:"center", justifyContent:"center" }}>
-                  <span className="ms" style={{ fontSize:"20px" }}>close</span>
+                <button onClick={() => { setChatOpen(false); setChatFullscreen(false); }} style={{ background: "none", border: "none", cursor: "pointer", color: text3, width: "30px", height: "30px", display: "flex", alignItems: "center", justifyContent: "center" }}>
+                  <span className="ms" style={{ fontSize: "20px" }}>close</span>
                 </button>
               </div>
             </div>
 
             {/* Quick actions */}
-            <div style={{ padding:"10px 14px", borderBottom:`1px solid ${bdr}`, display:"grid", gridTemplateColumns:chatFullscreen?"repeat(3,1fr)":"1fr 1fr", gap:"8px", flexShrink:0 }}>
+            <div style={{ padding: "10px 14px", borderBottom: `1px solid ${bdr}`, display: "grid", gridTemplateColumns: chatFullscreen ? "repeat(3,1fr)" : "1fr 1fr", gap: "8px", flexShrink: 0 }}>
               {quickActions.map(({ icon, label, prompt, isQuiz, isAnalyze }) => (
                 <button key={label}
-                  className={`quick-btn${(isQuiz||isAnalyze)?" special-btn":""}`}
+                  className={`quick-btn${(isQuiz || isAnalyze) ? " special-btn" : ""}`}
                   onClick={() => isQuiz ? setQuizOpen(true) : isAnalyze ? setAnalyzeOpen(true) : sendMessage(prompt)}>
-                  <span className="ms" style={{ fontSize:"16px", color:(isQuiz||isAnalyze)?"#00AA00":"#00CC00" }}>{icon}</span>
+                  <span className="ms" style={{ fontSize: "16px", color: (isQuiz || isAnalyze) ? "#00AA00" : "#00CC00" }}>{icon}</span>
                   {label}
                 </button>
               ))}
             </div>
 
             {/* slash commands hint */}
-            <div style={{ padding:"7px 14px", borderBottom:`1px solid ${bdr}`, display:"flex", alignItems:"center", gap:"7px", flexShrink:0, background:isDark?"rgba(0,200,0,0.025)":"rgba(0,200,0,0.02)" }}>
-              <span className="ms" style={{ fontSize:"13px", color:"#00AA00", flexShrink:0 }}>terminal</span>
-              <p style={{ fontSize:"10px", color:text3, margin:0 }}>
-                Type <span style={{ fontWeight:700, color:"#00CC00", fontFamily:"monospace" }}>/</span> for commands:&nbsp;
-                {["/draw","current","explain","diagram"].map(c => (
-                  <span key={c} style={{ fontWeight:700, color:"#00BB00", fontFamily:"monospace", marginRight:"4px" }}>/{c}</span>
+            <div style={{ padding: "7px 14px", borderBottom: `1px solid ${bdr}`, display: "flex", alignItems: "center", gap: "7px", flexShrink: 0, background: isDark ? "rgba(0,200,0,0.025)" : "rgba(0,200,0,0.02)" }}>
+              <span className="ms" style={{ fontSize: "13px", color: "#00AA00", flexShrink: 0 }}>terminal</span>
+              <p style={{ fontSize: "10px", color: text3, margin: 0 }}>
+                Type <span style={{ fontWeight: 700, color: "#00CC00", fontFamily: "monospace" }}>/</span> for commands:&nbsp;
+                {["/draw", "current", "explain", "diagram"].map(c => (
+                  <span key={c} style={{ fontWeight: 700, color: "#00BB00", fontFamily: "monospace", marginRight: "4px" }}>/{c}</span>
                 ))}
               </p>
             </div>
@@ -1824,16 +2125,16 @@ function PDFViewerInner() {
             <div className="chat-scroll">
               {MessagesList}
               {aiLoading && (
-                <div style={{ background:isDark?"rgba(0,255,0,0.07)":"rgba(0,200,0,0.06)", border:`1px solid ${bdr}`, borderRadius:"16px", borderTopLeftRadius:"4px", padding:"14px", display:"flex", alignItems:"center", gap:"8px" }}>
-                  {[0,1,2].map(i => <div key={i} style={{ width:"8px", height:"8px", borderRadius:"9999px", background:"#00CC00", animation:`pulse 1s ease-in-out ${i*0.2}s infinite` }} />)}
+                <div style={{ background: isDark ? "rgba(0,255,0,0.07)" : "rgba(0,200,0,0.06)", border: `1px solid ${bdr}`, borderRadius: "16px", borderTopLeftRadius: "4px", padding: "14px", display: "flex", alignItems: "center", gap: "8px" }}>
+                  {[0, 1, 2].map(i => <div key={i} style={{ width: "8px", height: "8px", borderRadius: "9999px", background: "#00CC00", animation: `pulse 1s ease-in-out ${i * 0.2}s infinite` }} />)}
                 </div>
               )}
               <div ref={chatEndRef} />
             </div>
 
             {/* Input */}
-            <div style={{ padding:"12px", borderTop:`1px solid ${bdr}`, flexShrink:0 }}>
-              <div style={{ position:"relative" }}>
+            <div style={{ padding: "12px", borderTop: `1px solid ${bdr}`, flexShrink: 0 }}>
+              <div style={{ position: "relative" }}>
                 <SlashHint />
                 <textarea
                   ref={chatInputRef}
@@ -1841,117 +2142,117 @@ function PDFViewerInner() {
                   placeholder="Ask anything… or type / for commands"
                   value={chatInput}
                   onChange={e => setChatInput(e.target.value)}
-                  onKeyDown={e => { if (e.key==="Enter"&&!e.shiftKey){e.preventDefault();sendMessage(chatInput);} }}
+                  onKeyDown={e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); sendMessage(chatInput); } }}
                   rows={2}
                 />
-                <button onClick={() => sendMessage(chatInput)} disabled={!chatInput.trim()||aiLoading}
-                  style={{ position:"absolute", right:"10px", bottom:"10px", width:"32px", height:"32px", background:"#00FF00", border:"none", borderRadius:"9px", display:"flex", alignItems:"center", justifyContent:"center", cursor:"pointer", opacity:(!chatInput.trim()||aiLoading)?0.4:1, transition:"opacity 0.2s" }}>
-                  <span className="ms" style={{ fontSize:"18px", color:"#0f172a" }}>send</span>
+                <button onClick={() => sendMessage(chatInput)} disabled={!chatInput.trim() || aiLoading}
+                  style={{ position: "absolute", right: "10px", bottom: "10px", width: "32px", height: "32px", background: "#00FF00", border: "none", borderRadius: "9px", display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer", opacity: (!chatInput.trim() || aiLoading) ? 0.4 : 1, transition: "opacity 0.2s" }}>
+                  <span className="ms" style={{ fontSize: "18px", color: "#0f172a" }}>send</span>
                 </button>
               </div>
-              <p style={{ fontSize:"9px", color:text3, textAlign:"center", marginTop:"6px" }}>Enter to send · Shift+Enter new line · type / for commands</p>
+              <p style={{ fontSize: "9px", color: text3, textAlign: "center", marginTop: "6px" }}>Enter to send · Shift+Enter new line · type / for commands</p>
             </div>
           </aside>
         </div>
 
         {/* ── DESKTOP CONTROLS ── */}
-        {loadStatus==="ready" && (
-          <div className={`ctrl-bar${isChatOpenDesktop?"":" no-sidebar"}`}>
-            <button className="ctrl-btn" disabled={currentPage<=1} onClick={() => setCurrentPage(p=>p-1)}><span className="ms" style={{ fontSize:"22px" }}>chevron_left</span></button>
-            <span style={{ fontSize:"12px", fontWeight:600, color:"rgba(255,255,255,0.8)", whiteSpace:"nowrap" }}>{currentPage} / {totalPages}</span>
-            <button className="ctrl-btn" disabled={currentPage>=totalPages} onClick={() => setCurrentPage(p=>p+1)}><span className="ms" style={{ fontSize:"22px" }}>chevron_right</span></button>
+        {loadStatus === "ready" && (
+          <div className={`ctrl-bar${isChatOpenDesktop ? "" : " no-sidebar"}`}>
+            <button className="ctrl-btn" disabled={currentPage <= 1} onClick={() => setCurrentPage(p => p - 1)}><span className="ms" style={{ fontSize: "22px" }}>chevron_left</span></button>
+            <span style={{ fontSize: "12px", fontWeight: 600, color: "rgba(255,255,255,0.8)", whiteSpace: "nowrap" }}>{currentPage} / {totalPages}</span>
+            <button className="ctrl-btn" disabled={currentPage >= totalPages} onClick={() => setCurrentPage(p => p + 1)}><span className="ms" style={{ fontSize: "22px" }}>chevron_right</span></button>
             <div className="ctrl-div" />
-            <button className="ctrl-btn" onClick={() => setScale(s=>Math.max(0.5,+(s-0.2).toFixed(1)))}><span className="ms" style={{ fontSize:"22px" }}>remove</span></button>
-            <span style={{ fontSize:"12px", fontWeight:600, color:"rgba(255,255,255,0.8)", whiteSpace:"nowrap" }}>{Math.round(scale*100)}%</span>
-            <button className="ctrl-btn" onClick={() => setScale(s=>Math.min(3,+(s+0.2).toFixed(1)))}><span className="ms" style={{ fontSize:"22px" }}>add</span></button>
+            <button className="ctrl-btn" onClick={() => setScale(s => Math.max(0.5, +(s - 0.2).toFixed(1)))}><span className="ms" style={{ fontSize: "22px" }}>remove</span></button>
+            <span style={{ fontSize: "12px", fontWeight: 600, color: "rgba(255,255,255,0.8)", whiteSpace: "nowrap" }}>{Math.round(scale * 100)}%</span>
+            <button className="ctrl-btn" onClick={() => setScale(s => Math.min(3, +(s + 0.2).toFixed(1)))}><span className="ms" style={{ fontSize: "22px" }}>add</span></button>
             <div className="ctrl-div" />
-            <button className="ctrl-btn" title="Fit width" onClick={() => { if (containerRef.current&&pdfDoc) { const w=containerRef.current.clientWidth-64; pdfDoc.getPage(currentPage).then(p => { const vp=p.getViewport({scale:1}); setScale(+(w/vp.width).toFixed(2)); }); } }}>
-              <span className="ms" style={{ fontSize:"22px" }}>fit_width</span>
+            <button className="ctrl-btn" title="Fit width" onClick={() => { if (containerRef.current && pdfDoc) { const w = containerRef.current.clientWidth - 64; pdfDoc.getPage(currentPage).then(p => { const vp = p.getViewport({ scale: 1 }); setScale(+(w / vp.width).toFixed(2)); }); } }}>
+              <span className="ms" style={{ fontSize: "22px" }}>fit_width</span>
             </button>
-            {rendering && <div style={{ width:"16px", height:"16px", border:"2px solid rgba(0,255,0,0.3)", borderTopColor:"#00FF00", borderRadius:"9999px", animation:"spin 0.7s linear infinite" }} />}
+            {rendering && <div style={{ width: "16px", height: "16px", border: "2px solid rgba(0,255,0,0.3)", borderTopColor: "#00FF00", borderRadius: "9999px", animation: "spin 0.7s linear infinite" }} />}
           </div>
         )}
 
         {/* ── MOBILE CONTROLS ── */}
-        {loadStatus==="ready" && (
+        {loadStatus === "ready" && (
           <div className="mob-ctrl-bar">
-            <button className="mob-ctrl-btn" disabled={currentPage<=1} onClick={() => setCurrentPage(p=>p-1)} style={{ opacity:currentPage<=1?0.3:1 }}><span className="ms">chevron_left</span><span className="lbl">Prev</span></button>
-            <div style={{ display:"flex", flexDirection:"column", alignItems:"center", gap:"2px" }}>
-              <span style={{ fontSize:"13px", fontWeight:700, color:text1 }}>{currentPage} / {totalPages}</span>
-              <span style={{ fontSize:"9px", color:text3 }}>{Math.round(scale*100)}%</span>
+            <button className="mob-ctrl-btn" disabled={currentPage <= 1} onClick={() => setCurrentPage(p => p - 1)} style={{ opacity: currentPage <= 1 ? 0.3 : 1 }}><span className="ms">chevron_left</span><span className="lbl">Prev</span></button>
+            <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: "2px" }}>
+              <span style={{ fontSize: "13px", fontWeight: 700, color: text1 }}>{currentPage} / {totalPages}</span>
+              <span style={{ fontSize: "9px", color: text3 }}>{Math.round(scale * 100)}%</span>
             </div>
-            <button className="mob-ctrl-btn" disabled={currentPage>=totalPages} onClick={() => setCurrentPage(p=>p+1)} style={{ opacity:currentPage>=totalPages?0.3:1 }}><span className="ms">chevron_right</span><span className="lbl">Next</span></button>
-            <div style={{ width:"1px", height:"36px", background:bdr, flexShrink:0 }} />
-            <button className="mob-ctrl-btn" onClick={() => setScale(s=>Math.max(0.5,+(s-0.2).toFixed(1)))}><span className="ms">zoom_out</span><span className="lbl">Out</span></button>
-            <button className="mob-ctrl-btn" onClick={() => setScale(s=>Math.min(3,+(s+0.2).toFixed(1)))}><span className="ms">zoom_in</span><span className="lbl">In</span></button>
-            <div style={{ width:"1px", height:"36px", background:bdr, flexShrink:0 }} />
-            <button className="mob-ctrl-btn highlight" onClick={() => { setChatOpen(true); setSheetHeight(55); }}><span className="ms">psychology</span><span className="lbl" style={{ color:"#00AA00" }}>AI</span></button>
+            <button className="mob-ctrl-btn" disabled={currentPage >= totalPages} onClick={() => setCurrentPage(p => p + 1)} style={{ opacity: currentPage >= totalPages ? 0.3 : 1 }}><span className="ms">chevron_right</span><span className="lbl">Next</span></button>
+            <div style={{ width: "1px", height: "36px", background: bdr, flexShrink: 0 }} />
+            <button className="mob-ctrl-btn" onClick={() => setScale(s => Math.max(0.5, +(s - 0.2).toFixed(1)))}><span className="ms">zoom_out</span><span className="lbl">Out</span></button>
+            <button className="mob-ctrl-btn" onClick={() => setScale(s => Math.min(3, +(s + 0.2).toFixed(1)))}><span className="ms">zoom_in</span><span className="lbl">In</span></button>
+            <div style={{ width: "1px", height: "36px", background: bdr, flexShrink: 0 }} />
+            <button className="mob-ctrl-btn highlight" onClick={() => { setChatOpen(true); setSheetHeight(55); }}><span className="ms">psychology</span><span className="lbl" style={{ color: "#00AA00" }}>AI</span></button>
           </div>
         )}
 
         {loadStatus !== "ready" && (
           <button className="mob-fab" onClick={() => { setChatOpen(true); setSheetHeight(55); }}>
-            <span className="ms" style={{ fontSize:"28px", color:"#0f172a" }}>psychology</span>
+            <span className="ms" style={{ fontSize: "28px", color: "#0f172a" }}>psychology</span>
           </button>
         )}
 
         {/* Mobile overlay */}
         {isMobile && chatOpen && (
-          <div className="mob-sheet-overlay" style={{ opacity:chatOpen?1:0, transition:"opacity 0.3s" }} onClick={() => setChatOpen(false)} />
+          <div className="mob-sheet-overlay" style={{ opacity: chatOpen ? 1 : 0, transition: "opacity 0.3s" }} onClick={() => setChatOpen(false)} />
         )}
 
         {/* Mobile sheet */}
         {isMobile && (
-          <div className="mob-sheet" style={{ height:chatOpen?`${sheetHeight}vh`:"0", transition:isDraggingSheet?"none":"height 0.35s cubic-bezier(0.32,0.72,0,1)", display:"flex" }}>
-            <div style={{ flexShrink:0, paddingBottom:"8px", cursor:"ns-resize", touchAction:"none" }}
+          <div className="mob-sheet" style={{ height: chatOpen ? `${sheetHeight}vh` : "0", transition: isDraggingSheet ? "none" : "height 0.35s cubic-bezier(0.32,0.72,0,1)", display: "flex" }}>
+            <div style={{ flexShrink: 0, paddingBottom: "8px", cursor: "ns-resize", touchAction: "none" }}
               onPointerDown={onSheetPointerDown} onPointerMove={onSheetPointerMove} onPointerUp={onSheetPointerUp}>
-              <div style={{ width:"40px", height:"4px", borderRadius:"9999px", background:isDark?"rgba(255,255,255,0.2)":"rgba(0,0,0,0.15)", margin:"12px auto 0" }} />
-              <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", padding:"12px 20px 0" }}>
-                <div style={{ display:"flex", alignItems:"center", gap:"10px" }}>
-                  <div style={{ width:"32px", height:"32px", borderRadius:"9px", background:"rgba(0,255,0,0.12)", display:"flex", alignItems:"center", justifyContent:"center" }}>
-                    <span className="ms" style={{ fontSize:"18px", color:"#00CC00" }}>psychology</span>
+              <div style={{ width: "40px", height: "4px", borderRadius: "9999px", background: isDark ? "rgba(255,255,255,0.2)" : "rgba(0,0,0,0.15)", margin: "12px auto 0" }} />
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "12px 20px 0" }}>
+                <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
+                  <div style={{ width: "32px", height: "32px", borderRadius: "9px", background: "rgba(0,255,0,0.12)", display: "flex", alignItems: "center", justifyContent: "center" }}>
+                    <span className="ms" style={{ fontSize: "18px", color: "#00CC00" }}>psychology</span>
                   </div>
                   <div>
-                    <div style={{ display:"flex", alignItems:"center", gap:"5px" }}>
-                      <p style={{ fontSize:"13px", fontWeight:700, color:text1, margin:0 }}>Neural AI</p>
-                      <span style={{ fontSize:"9px", fontWeight:700, padding:"1px 5px", background:"rgba(0,200,0,0.1)", border:"1px solid rgba(0,200,0,0.2)", borderRadius:"9999px", color:"#00AA00" }}>GROQ</span>
+                    <div style={{ display: "flex", alignItems: "center", gap: "5px" }}>
+                      <p style={{ fontSize: "13px", fontWeight: 700, color: text1, margin: 0 }}>Neural AI</p>
+                      <span style={{ fontSize: "9px", fontWeight: 700, padding: "1px 5px", background: "rgba(0,200,0,0.1)", border: "1px solid rgba(0,200,0,0.2)", borderRadius: "9999px", color: "#00AA00" }}>GROQ</span>
                     </div>
-                    <p style={{ fontSize:"9px", color:"#00AA00", fontWeight:700, margin:0 }}>p.{currentPage}/{totalPages} · sees page</p>
+                    <p style={{ fontSize: "9px", color: "#00AA00", fontWeight: 700, margin: 0 }}>p.{currentPage}/{totalPages} · sees page</p>
                   </div>
                 </div>
-                <button onClick={() => setChatOpen(false)} style={{ background:"none", border:"none", cursor:"pointer", color:text3, width:"36px", height:"36px", display:"flex", alignItems:"center", justifyContent:"center" }}>
-                  <span className="ms" style={{ fontSize:"20px" }}>keyboard_arrow_down</span>
+                <button onClick={() => setChatOpen(false)} style={{ background: "none", border: "none", cursor: "pointer", color: text3, width: "36px", height: "36px", display: "flex", alignItems: "center", justifyContent: "center" }}>
+                  <span className="ms" style={{ fontSize: "20px" }}>keyboard_arrow_down</span>
                 </button>
               </div>
             </div>
 
             {/* Quick actions mobile */}
-            <div style={{ flexShrink:0, padding:"8px 16px 0", borderBottom:`1px solid ${bdr}` }}>
-              <div style={{ display:"flex", gap:"8px", overflowX:"auto", paddingBottom:"12px" }}>
+            <div style={{ flexShrink: 0, padding: "8px 16px 0", borderBottom: `1px solid ${bdr}` }}>
+              <div style={{ display: "flex", gap: "8px", overflowX: "auto", paddingBottom: "12px" }}>
                 {quickActions.map(({ icon, label, prompt, isQuiz, isAnalyze }) => (
                   <button key={label}
                     onClick={() => isQuiz ? setQuizOpen(true) : isAnalyze ? setAnalyzeOpen(true) : sendMessage(prompt)}
-                    style={{ display:"flex", alignItems:"center", gap:"6px", padding:"7px 12px", background:(isQuiz||isAnalyze)?"rgba(0,200,0,0.1)":(isDark?"rgba(0,255,0,0.07)":"rgba(0,200,0,0.07)"), border:`1px solid ${(isQuiz||isAnalyze)?"rgba(0,200,0,0.3)":bdr}`, borderRadius:"9999px", cursor:"pointer", fontSize:"11px", fontWeight:700, color:(isQuiz||isAnalyze)?"#00AA00":text2, fontFamily:"'Lexend',sans-serif", whiteSpace:"nowrap", flexShrink:0 }}>
-                    <span className="ms" style={{ fontSize:"15px", color:"#00CC00" }}>{icon}</span>
+                    style={{ display: "flex", alignItems: "center", gap: "6px", padding: "7px 12px", background: (isQuiz || isAnalyze) ? "rgba(0,200,0,0.1)" : (isDark ? "rgba(0,255,0,0.07)" : "rgba(0,200,0,0.07)"), border: `1px solid ${(isQuiz || isAnalyze) ? "rgba(0,200,0,0.3)" : bdr}`, borderRadius: "9999px", cursor: "pointer", fontSize: "11px", fontWeight: 700, color: (isQuiz || isAnalyze) ? "#00AA00" : text2, fontFamily: "'Lexend',sans-serif", whiteSpace: "nowrap", flexShrink: 0 }}>
+                    <span className="ms" style={{ fontSize: "15px", color: "#00CC00" }}>{icon}</span>
                     {label}
                   </button>
                 ))}
               </div>
             </div>
 
-            <div className="chat-scroll" style={{ flex:1 }}>
+            <div className="chat-scroll" style={{ flex: 1 }}>
               {MessagesList}
               {aiLoading && (
-                <div style={{ background:isDark?"rgba(0,255,0,0.07)":"rgba(0,200,0,0.06)", border:`1px solid ${bdr}`, borderRadius:"16px", borderTopLeftRadius:"4px", padding:"14px", display:"flex", alignItems:"center", gap:"8px" }}>
-                  {[0,1,2].map(i => <div key={i} style={{ width:"8px", height:"8px", borderRadius:"9999px", background:"#00CC00", animation:`pulse 1s ease-in-out ${i*0.2}s infinite` }} />)}
+                <div style={{ background: isDark ? "rgba(0,255,0,0.07)" : "rgba(0,200,0,0.06)", border: `1px solid ${bdr}`, borderRadius: "16px", borderTopLeftRadius: "4px", padding: "14px", display: "flex", alignItems: "center", gap: "8px" }}>
+                  {[0, 1, 2].map(i => <div key={i} style={{ width: "8px", height: "8px", borderRadius: "9999px", background: "#00CC00", animation: `pulse 1s ease-in-out ${i * 0.2}s infinite` }} />)}
                 </div>
               )}
               <div ref={chatEndRef} />
             </div>
 
             {/* Mobile input */}
-            <div style={{ padding:"12px", borderTop:`1px solid ${bdr}`, flexShrink:0, paddingBottom:`calc(12px + env(safe-area-inset-bottom,0px))` }}>
-              <div style={{ position:"relative" }}>
+            <div style={{ padding: "12px", borderTop: `1px solid ${bdr}`, flexShrink: 0, paddingBottom: `calc(12px + env(safe-area-inset-bottom,0px))` }}>
+              <div style={{ position: "relative" }}>
                 <SlashHint />
                 <textarea
                   ref={chatInputRef}
@@ -1959,12 +2260,12 @@ function PDFViewerInner() {
                   placeholder="Ask anything… or type / for commands"
                   value={chatInput}
                   onChange={e => setChatInput(e.target.value)}
-                  onKeyDown={e => { if (e.key==="Enter"&&!e.shiftKey){e.preventDefault();sendMessage(chatInput);} }}
+                  onKeyDown={e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); sendMessage(chatInput); } }}
                   rows={2}
                 />
-                <button onClick={() => sendMessage(chatInput)} disabled={!chatInput.trim()||aiLoading}
-                  style={{ position:"absolute", right:"10px", bottom:"10px", width:"32px", height:"32px", background:"#00FF00", border:"none", borderRadius:"9px", display:"flex", alignItems:"center", justifyContent:"center", cursor:"pointer", opacity:(!chatInput.trim()||aiLoading)?0.4:1 }}>
-                  <span className="ms" style={{ fontSize:"18px", color:"#0f172a" }}>send</span>
+                <button onClick={() => sendMessage(chatInput)} disabled={!chatInput.trim() || aiLoading}
+                  style={{ position: "absolute", right: "10px", bottom: "10px", width: "32px", height: "32px", background: "#00FF00", border: "none", borderRadius: "9px", display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer", opacity: (!chatInput.trim() || aiLoading) ? 0.4 : 1 }}>
+                  <span className="ms" style={{ fontSize: "18px", color: "#0f172a" }}>send</span>
                 </button>
               </div>
             </div>
@@ -1972,9 +2273,9 @@ function PDFViewerInner() {
         )}
 
         {/* ── CONTEXT MENU ── */}
-        {ctxMenu && loadStatus==="ready" && (
+        {ctxMenu && loadStatus === "ready" && (
           <div className="ctx-menu"
-            style={{ left:Math.min(ctxMenu.x,window.innerWidth-250), top:Math.min(ctxMenu.y,window.innerHeight-420) }}
+            style={{ left: Math.min(ctxMenu.x, window.innerWidth - 250), top: Math.min(ctxMenu.y, window.innerHeight - 420) }}
             onClick={e => e.stopPropagation()}>
             <div className="ctx-section">✦ AI Actions · page {currentPage}</div>
             {ctxAiActions.map(({ icon, label, prompt, isQuiz, isAnalyze }) => (
@@ -1982,33 +2283,33 @@ function PDFViewerInner() {
                 onClick={() => {
                   if (isQuiz) setQuizOpen(true);
                   else if (isAnalyze) setAnalyzeOpen(true);
-                  else { sendMessage(prompt); if (!chatOpen){setChatOpen(true);if(isMobile)setSheetHeight(55);} }
+                  else { sendMessage(prompt); if (!chatOpen) { setChatOpen(true); if (isMobile) setSheetHeight(55); } }
                   setCtxMenu(null);
                 }}>
-                <span className="ms" style={{ fontSize:"17px", color:"#00CC00" }}>{icon}</span>
+                <span className="ms" style={{ fontSize: "17px", color: "#00CC00" }}>{icon}</span>
                 {label}
-                {!isQuiz && !isAnalyze && <span style={{ marginLeft:"auto", fontSize:"9px", color:"#00AA00", fontWeight:700, padding:"1px 5px", background:"rgba(0,200,0,0.1)", borderRadius:"9999px" }}>/current</span>}
+                {!isQuiz && !isAnalyze && <span style={{ marginLeft: "auto", fontSize: "9px", color: "#00AA00", fontWeight: 700, padding: "1px 5px", background: "rgba(0,200,0,0.1)", borderRadius: "9999px" }}>/current</span>}
               </button>
             ))}
             <div className="ctx-divider" />
             <div className="ctx-section">Navigation</div>
             {[
-              { icon:"arrow_back",    label:"Previous page", action:()=>setCurrentPage(p=>Math.max(1,p-1)),          hint:`p.${Math.max(1,currentPage-1)}` },
-              { icon:"arrow_forward", label:"Next page",     action:()=>setCurrentPage(p=>Math.min(totalPages,p+1)), hint:`p.${Math.min(totalPages,currentPage+1)}` },
-              { icon:"zoom_in",       label:"Zoom in",       action:()=>setScale(s=>Math.min(3,+(s+0.2).toFixed(1))),       hint:`${Math.round(Math.min(300,(scale+0.2)*100))}%` },
-              { icon:"zoom_out",      label:"Zoom out",      action:()=>setScale(s=>Math.max(0.5,+(s-0.2).toFixed(1))),     hint:`${Math.round(Math.max(50,(scale-0.2)*100))}%` },
-              { icon:"download",      label:"Download PDF",  action:async()=>{ const buf=PDF_CACHE.get(getCacheKey(branch,sem,subject,moduleKey)); if(!buf)return; const a=document.createElement("a"); a.href=URL.createObjectURL(new Blob([buf],{type:"application/pdf"})); a.download=fileName||`${moduleKey}.pdf`; a.click(); setTimeout(()=>URL.revokeObjectURL(a.href),3000); }},
+              { icon: "arrow_back", label: "Previous page", action: () => setCurrentPage(p => Math.max(1, p - 1)), hint: `p.${Math.max(1, currentPage - 1)}` },
+              { icon: "arrow_forward", label: "Next page", action: () => setCurrentPage(p => Math.min(totalPages, p + 1)), hint: `p.${Math.min(totalPages, currentPage + 1)}` },
+              { icon: "zoom_in", label: "Zoom in", action: () => setScale(s => Math.min(3, +(s + 0.2).toFixed(1))), hint: `${Math.round(Math.min(300, (scale + 0.2) * 100))}%` },
+              { icon: "zoom_out", label: "Zoom out", action: () => setScale(s => Math.max(0.5, +(s - 0.2).toFixed(1))), hint: `${Math.round(Math.max(50, (scale - 0.2) * 100))}%` },
+              { icon: "download", label: "Download PDF", action: async () => { const buf = await downloadPdf(); if (!buf) return; const a = document.createElement("a"); a.href = URL.createObjectURL(new Blob([buf], { type: "application/pdf" })); a.download = fileName || `${moduleKey}.pdf`; a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 3000); } },
             ].map(({ icon, label, action, hint }) => (
               <button key={label} className="ctx-item" onClick={() => { action(); setCtxMenu(null); }}>
-                <span className="ms" style={{ fontSize:"17px", color:text2 }}>{icon}</span>
+                <span className="ms" style={{ fontSize: "17px", color: text2 }}>{icon}</span>
                 {label}
-                {hint && <span style={{ marginLeft:"auto", fontSize:"9px", color:text3, fontWeight:700 }}>{hint}</span>}
+                {hint && <span style={{ marginLeft: "auto", fontSize: "9px", color: text3, fontWeight: 700 }}>{hint}</span>}
               </button>
             ))}
             <div className="ctx-divider" />
-            <div style={{ padding:"6px 12px", fontSize:"10px", color:text3, display:"flex", justifyContent:"space-between" }}>
+            <div style={{ padding: "6px 12px", fontSize: "10px", color: text3, display: "flex", justifyContent: "space-between" }}>
               <span>Page {currentPage} of {totalPages}</span>
-              <span>{Math.round(scale*100)}% zoom</span>
+              <span>{Math.round(scale * 100)}% zoom</span>
             </div>
           </div>
         )}
@@ -2062,10 +2363,10 @@ function PDFViewerInner() {
 export default function PDFViewerPage() {
   return (
     <Suspense fallback={
-      <div style={{ height:"100vh", display:"flex", alignItems:"center", justifyContent:"center", background:"#080f1a", fontFamily:"'Lexend',sans-serif" }}>
-        <div style={{ display:"flex", flexDirection:"column", alignItems:"center", gap:"16px" }}>
-          <div style={{ width:"36px", height:"36px", border:"3px solid rgba(0,255,0,0.2)", borderTopColor:"#00FF00", borderRadius:"9999px", animation:"spin 0.8s linear infinite" }} />
-          <p style={{ color:"#94a3b8", fontSize:"13px", fontWeight:500 }}>Loading PDF Viewer…</p>
+      <div style={{ height: "100vh", display: "flex", alignItems: "center", justifyContent: "center", background: "#080f1a", fontFamily: "'Lexend',sans-serif" }}>
+        <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: "16px" }}>
+          <div style={{ width: "36px", height: "36px", border: "3px solid rgba(0,255,0,0.2)", borderTopColor: "#00FF00", borderRadius: "9999px", animation: "spin 0.8s linear infinite" }} />
+          <p style={{ color: "#94a3b8", fontSize: "13px", fontWeight: 500 }}>Loading PDF Viewer…</p>
         </div>
         <style>{`@keyframes spin{to{transform:rotate(360deg);}}`}</style>
       </div>

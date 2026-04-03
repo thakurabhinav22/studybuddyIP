@@ -212,6 +212,15 @@ export default function AdminUploadPage() {
         setStatusMsg(msg);
       });
 
+      // Warm Redis immediately so viewers read from Redis before Firebase.
+      try {
+        await fetch("/api/notes/pdf", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ branch, sem, subject, module: moduleKey }),
+        });
+      } catch { }
+
       setStatus("success");
       setFile(null);
       // Optional: Reset description after success
