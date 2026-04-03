@@ -37,6 +37,7 @@ const PDF_LOCAL_CACHE_VERSION = 1;
 const PDF_LOCAL_CACHE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 const PDF_LOCAL_IDB_NAME = "studybuddy_pdf_cache";
 const PDF_LOCAL_IDB_STORE = "pdfs";
+const PDF_LOCAL_INDEX_KEY = "studybuddy:pdf-cache:index:v1";
 const PDF_STREAM_CHUNK_BYTES = 500 * 1024 / 4 * 3;
 const PDF_LOCAL_B64_CHUNK_SIZE = 500 * 1024;
 
@@ -130,12 +131,90 @@ function clearPdfLocalChunkKeys(branch, sem, subject, moduleKey, chunkCount) {
   } catch { }
 }
 
+function readPdfLocalIndex() {
+  if (typeof window === "undefined") return [];
+  try {
+    const raw = localStorage.getItem(PDF_LOCAL_INDEX_KEY);
+    const parsed = raw ? JSON.parse(raw) : [];
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+function writePdfLocalIndex(items) {
+  if (typeof window === "undefined") return;
+  try {
+    localStorage.setItem(PDF_LOCAL_INDEX_KEY, JSON.stringify(items));
+  } catch { }
+}
+
+function upsertPdfLocalIndex(cacheKey, savedAt) {
+  if (typeof window === "undefined") return;
+  const items = readPdfLocalIndex();
+  const next = items.filter((item) => item?.cacheKey !== cacheKey);
+  next.push({ cacheKey, savedAt: savedAt || Date.now() });
+  writePdfLocalIndex(next);
+}
+
+function touchPdfLocalIndex(cacheKey) {
+  if (typeof window === "undefined") return;
+  const items = readPdfLocalIndex();
+  const next = items.map((item) => item?.cacheKey === cacheKey ? { ...item, savedAt: Date.now() } : item);
+  writePdfLocalIndex(next);
+}
+
+function removePdfLocalIndex(cacheKey) {
+  if (typeof window === "undefined") return;
+  const items = readPdfLocalIndex();
+  writePdfLocalIndex(items.filter((item) => item?.cacheKey !== cacheKey));
+}
+
+async function cleanupInactivePdfCaches() {
+  if (typeof window === "undefined") return;
+  const items = readPdfLocalIndex();
+  if (!items.length) return;
+
+  const now = Date.now();
+  const active = [];
+
+  for (const item of items) {
+    const cacheKey = item?.cacheKey;
+    const savedAt = Number(item?.savedAt) || 0;
+    if (!cacheKey) continue;
+
+    if (!savedAt || (now - savedAt) > PDF_LOCAL_CACHE_TTL_MS) {
+      await deletePdfLocalIdb(cacheKey).catch(() => {});
+      removePdfLocalLegacyChunks(cacheKey);
+      continue;
+    }
+
+    active.push({ cacheKey, savedAt });
+  }
+
+  writePdfLocalIndex(active);
+}
+
+function removePdfLocalLegacyChunks(cacheKey) {
+  if (typeof window === "undefined") return;
+  try {
+    const meta = localStorage.getItem(cacheKey);
+    if (meta) {
+      const parsed = JSON.parse(meta);
+      const count = Number(parsed?.chunkCount) || 0;
+      for (let i = 0; i < count; i++) localStorage.removeItem(`${cacheKey}:chunk:${i}`);
+    }
+    localStorage.removeItem(cacheKey);
+  } catch { }
+}
+
 async function readPdfLocalCache(branch, sem, subject, moduleKey) {
   if (typeof window === "undefined") return null;
   try {
     const key = getPdfLocalCacheKey(branch, sem, subject, moduleKey);
     const cached = await getPdfLocalIdb(key);
     if (cached?.savedAt && (Date.now() - cached.savedAt) <= PDF_LOCAL_CACHE_TTL_MS && Array.isArray(cached.chunks) && cached.chunks.length) {
+      touchPdfLocalIndex(key);
       return {
         meta: cached.meta || null,
         chunks: cached.chunks,
@@ -164,6 +243,8 @@ async function readPdfLocalCache(branch, sem, subject, moduleKey) {
       source: legacy.source || "local",
       savedAt: legacy.savedAt || Date.now(),
     });
+    upsertPdfLocalIndex(key, legacy.savedAt || Date.now());
+    touchPdfLocalIndex(key);
 
     return {
       meta: legacy.meta || null,
@@ -194,6 +275,8 @@ async function writePdfLocalCache(branch, sem, subject, moduleKey, { meta, chunk
     await setPdfLocalIdb(key, { meta: meta || null, chunks: Array.isArray(chunks) ? chunks : [], source: source || "redis", savedAt });
     writePdfLocalMeta(branch, sem, subject, moduleKey, payload);
     clearPdfLocalChunkKeys(branch, sem, subject, moduleKey, chunkCount);
+    upsertPdfLocalIndex(key, savedAt);
+    touchPdfLocalIndex(key);
     return true;
   } catch {
     return false;
@@ -1442,6 +1525,10 @@ function PDFViewerInner() {
   useEffect(() => {
     const chk = () => setIsMobile(window.innerWidth <= 768);
     chk(); window.addEventListener("resize", chk); return () => window.removeEventListener("resize", chk);
+  }, []);
+
+  useEffect(() => {
+    cleanupInactivePdfCaches();
   }, []);
 
   const bg = isDark ? "#080f1a" : "#f0f4f0";
