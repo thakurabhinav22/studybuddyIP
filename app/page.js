@@ -209,6 +209,13 @@ export default function Home() {
   const { theme, setTheme, resolved } = useTheme();
   const isDark = resolved === "dark";
 
+  useEffect(() => {
+    const unsub = onAuthStateChanged(auth, (user) => {
+      if (user) router.replace("/dashboard");
+    });
+    return () => unsub();
+  }, [router]);
+
   /* derived colours */
   const bg      = isDark ? "#080f1a"               : "#F6FFF7";
   const surface = isDark ? "rgba(15,23,42,0.96)"   : "rgba(255,255,255,0.94)";
@@ -281,7 +288,7 @@ export default function Home() {
         <LoginModal
           onClose={() => setShowModal(false)}
           resolved={resolved}
-          onSignInSuccess={() => router.push("/dashboard")}
+          onSignInSuccess={() => router.replace("/dashboard")}
         />
       )}
 
