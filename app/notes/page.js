@@ -28,7 +28,8 @@ function userProfileKey(uid)                  { return `sb_user_profile|${uid}`;
 function dashboardCacheKey(uid)               { return `studybuddy:dashboard-cache:v1:${uid}`; }
 
 const USER_CACHE_TTL_MS  = 3 * 60 * 1000;
-const NOTES_CACHE_TTL_MS = 5 * 60 * 1000;
+const NOTES_IDB_NAME = "studybuddy_notes_cache";
+const NOTES_IDB_STORE = "kv";
 
 /* ── Fast djb2 hash ── */
 function hashStr(str) {
@@ -45,7 +46,15 @@ const MEM_USER    = new Map();
 
 /* ── L2 localStorage helpers ── */
 const LS = {
-  get(key)      { try { const v = localStorage.getItem(key); return v ? JSON.parse(v) : null; } catch { return null; } },
+  get(key)      {
+    try {
+      const v = localStorage.getItem(key);
+      return v ? JSON.parse(v) : null;
+    } catch {
+      try { localStorage.removeItem(key); } catch {}
+      return null;
+    }
+  },
   set(key, val) { try { localStorage.setItem(key, JSON.stringify(val)); } catch {} },
   del(key)      { try { localStorage.removeItem(key); } catch {} },
 };
@@ -57,6 +66,72 @@ function cacheGet(memMap, key) {
   return undefined;
 }
 function cacheSet(memMap, key, val) { memMap.set(key, val); LS.set(key, val); }
+
+/* ── IndexedDB helpers (L2b fallback/backup) ── */
+function openNotesDb() {
+  if (typeof indexedDB === "undefined") return Promise.resolve(null);
+  return new Promise((resolve, reject) => {
+    const req = indexedDB.open(NOTES_IDB_NAME, 1);
+    req.onupgradeneeded = () => {
+      const db = req.result;
+      if (!db.objectStoreNames.contains(NOTES_IDB_STORE)) {
+        db.createObjectStore(NOTES_IDB_STORE, { keyPath: "key" });
+      }
+    };
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => reject(req.error);
+  });
+}
+
+async function idbGet(key) {
+  const db = await openNotesDb().catch(() => null);
+  if (!db) return null;
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(NOTES_IDB_STORE, "readonly");
+    const store = tx.objectStore(NOTES_IDB_STORE);
+    const req = store.get(key);
+    req.onsuccess = () => resolve(req.result?.value ?? null);
+    req.onerror = () => reject(req.error);
+  }).catch(() => null);
+}
+
+async function idbSet(key, value) {
+  const db = await openNotesDb().catch(() => null);
+  if (!db) return false;
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(NOTES_IDB_STORE, "readwrite");
+    const store = tx.objectStore(NOTES_IDB_STORE);
+    const req = store.put({ key, value, updatedAt: Date.now() });
+    req.onsuccess = () => resolve(true);
+    req.onerror = () => reject(req.error);
+  }).catch(() => false);
+}
+
+async function getNotesCache(cKey) {
+  const memCached = MEM_NOTES.get(cKey);
+  if (memCached) return memCached;
+
+  const lsCached = LS.get(cKey);
+  if (lsCached) {
+    MEM_NOTES.set(cKey, lsCached);
+    void idbSet(cKey, lsCached);
+    return lsCached;
+  }
+
+  const idbCached = await idbGet(cKey);
+  if (idbCached) {
+    MEM_NOTES.set(cKey, idbCached);
+    LS.set(cKey, idbCached);
+    return idbCached;
+  }
+
+  return null;
+}
+
+function setNotesCache(cKey, value) {
+  cacheSet(MEM_NOTES, cKey, value);
+  void idbSet(cKey, value);
+}
 
 /* ── L3 Redis API helpers ── */
 async function redisGetSubjects(branch, sem) {
@@ -267,53 +342,42 @@ export default function NotesPage() {
     const semKey = normaliseSem(sem);
     const cKey   = notesKey(branch, semKey);
 
-    /* Seed immediately from L1/L2 */
-    const cached = cacheGet(MEM_NOTES, cKey);
-    if (cached?.subjects) {
-      setSubjects(cached.subjects);
-      setCacheStatus("hit");
-      setLastUpdated(cached.timestamp);
-      setActiveSubject((p) => p && cached.subjects[p] ? p : Object.keys(cached.subjects)[0] || null);
-    } else {
-      setNotesLoading(true);
-    }
     setNotesError(null);
-
-    const isFresh = !!cached?.timestamp && (Date.now() - cached.timestamp) < NOTES_CACHE_TTL_MS;
-    if (isFresh) return;
+    setNotesLoading(true);
 
     let cancelled = false;
     (async () => {
       try {
-        /* ── L3: Try Redis first ── */
+        /* ── L1/L2/L2b: Memory → localStorage → IndexedDB ── */
+        const cached = await getNotesCache(cKey);
+        if (cancelled) return;
+
+        if (cached?.subjects) {
+          setSubjects(cached.subjects);
+          setCacheStatus("hit");
+          setLastUpdated(cached.timestamp || Date.now());
+          setActiveSubject((p) => p && cached.subjects[p] ? p : Object.keys(cached.subjects)[0] || null);
+          setNotesLoading(false);
+          return;
+        }
+
+        /* ── L3: Redis/Firebase fallback only when local cache is unavailable ── */
         const payload = await redisGetSubjects(branch, semKey);
         if (cancelled) return;
 
         if (payload && payload.data && typeof payload.data === "object") {
           const redisData = payload.data;
           const incomingHash = hashStr(JSON.stringify(redisData));
-          const existing = cacheGet(MEM_NOTES, cKey);
-
-          if (existing?.hash !== incomingHash) {
-            const ts = Date.now();
-            cacheSet(MEM_NOTES, cKey, { subjects: redisData, hash: incomingHash, timestamp: ts });
-            setSubjects(redisData);
-            setLastUpdated(ts);
-            setActiveSubject((p) => p && redisData[p] ? p : Object.keys(redisData)[0] || null);
-            setCacheStatus(payload.source === "firebase" ? (existing ? "updated" : "fresh") : "updated");
-          } else {
-            // Hash matches — data is identical, no re-render needed
-            setCacheStatus(payload.source === "redis" ? "redis" : "hit");
-          }
+          const ts = Date.now();
+          setNotesCache(cKey, { subjects: redisData, hash: incomingHash, timestamp: ts });
+          setSubjects(redisData);
+          setLastUpdated(ts);
+          setActiveSubject((p) => p && redisData[p] ? p : Object.keys(redisData)[0] || null);
+          setCacheStatus(payload.source === "firebase" ? "fresh" : "redis");
           setNotesLoading(false);
           return;
         }
         setNotesLoading(false);
-        if (cached?.subjects) {
-          setSubjects(cached.subjects);
-          setCacheStatus("hit");
-          return;
-        }
         setSubjects({});
         setActiveSubject(null);
         setNotesError("Could not load subjects right now.");
@@ -611,6 +675,9 @@ export default function NotesPage() {
         .badge-chunked{display:inline-flex;align-items:center;gap:4px;padding:2px 8px;background:rgba(0,200,0,0.1);border:1px solid rgba(0,200,0,0.25);border-radius:9999px;font-size:10px;font-weight:700;color:#009900;}
         .badge-checking{display:inline-flex;align-items:center;gap:4px;padding:2px 8px;background:rgba(148,163,184,0.1);border:1px solid rgba(148,163,184,0.2);border-radius:9999px;font-size:10px;font-weight:700;color:${text3};}
         .cache-badge{display:inline-flex;align-items:center;gap:5px;padding:3px 10px;border-radius:9999px;font-size:10px;font-weight:700;animation:slideIn 0.25s ease both;}
+        .notes-loading-desktop{display:flex;align-items:center;justify-content:center;padding:56px 20px;}
+        .notes-loading-mobile{display:none;padding:8px 2px;}
+        .notes-loading-mobile-grid{display:grid;grid-template-columns:1fr;gap:12px;}
         .mob-nav{display:none;position:fixed;bottom:20px;left:50%;transform:translateX(-50%);z-index:300;background:${isDark?"rgba(14,20,36,0.95)":"rgba(255,255,255,0.92)"};backdrop-filter:blur(28px);-webkit-backdrop-filter:blur(28px);border:1px solid ${isDark?"rgba(255,255,255,0.12)":"rgba(0,0,0,0.07)"};border-radius:9999px;padding:8px 24px;align-items:center;gap:6px;box-shadow:0 12px 48px rgba(0,0,0,0.22), 0 2px 10px rgba(0,0,0,0.12);min-width:340px;}
         .mob-tab{width:54px;height:54px;border-radius:9999px;display:flex;align-items:center;justify-content:center;background:none;border:none;cursor:pointer;font-family:'Inter',sans-serif;-webkit-tap-highlight-color:transparent;transition:transform 0.22s cubic-bezier(0.34,1.56,0.64,1),background 0.18s;flex-shrink:0;}
         .mob-tab:active{transform:scale(0.80);}
@@ -636,6 +703,8 @@ export default function NotesPage() {
           .sb-header{display:none!important;}
           .mob-header{display:flex!important;}
           .mob-nav{display:flex!important;}
+          .notes-loading-desktop{display:none;}
+          .notes-loading-mobile{display:block;}
           .sb-scroll{padding:16px 14px calc(140px + env(safe-area-inset-bottom,0px));}
           .subject-grid{grid-template-columns:repeat(2,1fr);gap:10px;}
           .subject-card{padding:16px 14px;gap:8px;border-radius:16px;}
@@ -791,10 +860,31 @@ export default function NotesPage() {
             )}
 
             {notesLoading && (
-              <div style={{ display:"flex", alignItems:"center", justifyContent:"center", padding:"60px 20px", gap:"14px" }}>
-                <div style={{ width:"28px", height:"28px", border:`3px solid ${bdr}`, borderTopColor:"#00FF00", borderRadius:"9999px", animation:"spin 0.7s linear infinite" }} />
-                <p style={{ fontSize:"14px", color:text2, fontWeight:500 }}>Loading subjects…</p>
-              </div>
+              <>
+                <div className="notes-loading-desktop">
+                  <div style={{ display:"flex", alignItems:"center", justifyContent:"center", gap:"14px" }}>
+                    <div style={{ width:"28px", height:"28px", border:`3px solid ${bdr}`, borderTopColor:"#00FF00", borderRadius:"9999px", animation:"spin 0.7s linear infinite" }} />
+                    <p style={{ fontSize:"14px", color:text2, fontWeight:500 }}>Loading subjects…</p>
+                  </div>
+                </div>
+
+                <div className="notes-loading-mobile">
+                  <div className="notes-loading-mobile-grid">
+                    {[...Array(4)].map((_, i) => (
+                      <div key={i} style={{ background:card, border:`1px solid ${bdr}`, borderRadius:"16px", padding:"14px" }}>
+                        <div style={{ display:"flex", alignItems:"center", gap:"10px", marginBottom:"10px" }}>
+                          <Skeleton w="34px" h="34px" r="10px" isDark={isDark} />
+                          <div style={{ flex:1, display:"flex", flexDirection:"column", gap:"6px" }}>
+                            <Skeleton w="70%" h="12px" r="6px" isDark={isDark} />
+                            <Skeleton w="46%" h="10px" r="6px" isDark={isDark} />
+                          </div>
+                        </div>
+                        <Skeleton w="100%" h="10px" r="6px" isDark={isDark} />
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              </>
             )}
 
             {notesError && (

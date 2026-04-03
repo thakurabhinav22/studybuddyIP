@@ -675,8 +675,15 @@ export default function Dashboard() {
         body{font-family:'Inter',sans-serif;background:${bg};overflow:hidden;}
         @keyframes skeletonPulse{0%,100%{opacity:1;}50%{opacity:0.5;}}
         @keyframes skeletonShimmer{0%{transform:translateX(-100%);}100%{transform:translateX(200%);}}
+        .dash-loading-desktop{display:flex;height:100vh;background:${bg};}
+        .dash-loading-mobile{display:none;height:100vh;background:${bg};flex-direction:column;}
+        @media(max-width:768px){
+          .dash-loading-desktop{display:none;}
+          .dash-loading-mobile{display:flex;}
+        }
       `}</style>
-      <div style={{ display: "flex", height: "100vh", background: bg }}>
+
+      <div className="dash-loading-desktop">
         <div style={{ width: "260px", minWidth: "260px", background: sidebar, borderRight: `1px solid ${bdr}`, padding: "24px 20px", display: "flex", flexDirection: "column", gap: "16px" }}>
           <div style={{ display: "flex", alignItems: "center", gap: "12px", marginBottom: "24px" }}>
             <Skeleton w="40px" h="40px" r="10px" isDark={isDark} />
@@ -716,6 +723,48 @@ export default function Dashboard() {
               </div>
             </div>
           </div>
+        </div>
+      </div>
+
+      <div className="dash-loading-mobile">
+        <div style={{ height: "64px", background: header, borderBottom: `1px solid ${bdr}`, padding: "0 14px", display: "flex", alignItems: "center", gap: "10px" }}>
+          <Skeleton w="34px" h="34px" r="9px" isDark={isDark} />
+          <Skeleton w="100%" h="36px" r="9999px" isDark={isDark} />
+          <Skeleton w="36px" h="36px" r="9999px" isDark={isDark} />
+        </div>
+
+        <div style={{ flex: 1, overflowY: "auto", padding: "16px 14px 120px", display: "flex", flexDirection: "column", gap: "14px" }}>
+          <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
+            <Skeleton w="72%" h="26px" r="8px" isDark={isDark} />
+            <Skeleton w="48%" h="12px" r="6px" isDark={isDark} />
+          </div>
+
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "10px" }}>
+            {[...Array(4)].map((_, i) => (
+              <div key={i} style={{ background: card, border: `1px solid ${bdr}`, borderRadius: "16px", padding: "12px" }}>
+                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "8px" }}>
+                  <Skeleton w="30px" h="30px" r="9px" isDark={isDark} />
+                  <Skeleton w="40px" h="12px" r="9999px" isDark={isDark} />
+                </div>
+                <Skeleton w="64%" h="10px" r="6px" isDark={isDark} />
+                <div style={{ marginTop: "8px" }}><Skeleton w="80%" h="24px" r="8px" isDark={isDark} /></div>
+              </div>
+            ))}
+          </div>
+
+          {[...Array(2)].map((_, i) => (
+            <div key={i} style={{ background: card, border: `1px solid ${bdr}`, borderRadius: "16px", padding: "14px", display: "flex", gap: "12px" }}>
+              <Skeleton w="74px" h="74px" r="12px" isDark={isDark} />
+              <div style={{ flex: 1, display: "flex", flexDirection: "column", gap: "8px" }}>
+                <Skeleton w="34%" h="10px" r="6px" isDark={isDark} />
+                <Skeleton w="72%" h="12px" r="6px" isDark={isDark} />
+                <Skeleton w="90%" h="10px" r="6px" isDark={isDark} />
+                <div style={{ display: "flex", justifyContent: "flex-end", marginTop: "4px" }}>
+                  <Skeleton w="90px" h="30px" r="10px" isDark={isDark} />
+                </div>
+              </div>
+            </div>
+          ))}
         </div>
       </div>
     </>
