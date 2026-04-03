@@ -515,6 +515,10 @@ export default function Dashboard() {
   const [showGreeting, setShowGreeting] = useState(false);
   const [showNotifs, setShowNotifs] = useState(false);
   const [showIOSNotifs, setShowIOSNotifs] = useState(false);
+  const [showAnalytics, setShowAnalytics] = useState(false);
+  const [aiInsights, setAiInsights] = useState([]);
+  const [aiInsightsLoading, setAiInsightsLoading] = useState(false);
+  const [aiInsightsError, setAiInsightsError] = useState("");
   const [mobileSearch, setMobileSearch] = useState(false);
   const [cacheHydrated, setCacheHydrated] = useState(false);
   const [lastSyncedAt, setLastSyncedAt] = useState(null);
@@ -629,11 +633,230 @@ export default function Dashboard() {
   const solvedProblems = userData?.stats?.solvedProblems ?? 0;
   const streak = userData?.stats?.streak ?? 0;
 
+  const formatCompactNumber = useCallback((input) => {
+    const n = Number(input);
+    if (!Number.isFinite(n)) return "—";
+    const abs = Math.abs(n);
+    if (abs < 1000) return `${Math.round(n)}`;
+
+    const suffixes = ["", "K", "M", "B", "T"];
+    const power = Math.floor(Math.log10(abs) / 3);
+    if (power >= suffixes.length) return n.toExponential(2);
+
+    const scaled = n / (1000 ** power);
+    const decimals = Math.abs(scaled) >= 100 ? 0 : Math.abs(scaled) >= 10 ? 1 : 2;
+    const rounded = scaled.toFixed(decimals).replace(/\.0+$|\.(\d*[1-9])0+$/, ".$1");
+    return `${rounded}${suffixes[power]}`;
+  }, []);
+
+  const formatStreakDuration = useCallback((totalDays) => {
+    const days = Number(totalDays) || 0;
+    if (days <= 0) return { value: "—", subtext: "Start today!" };
+
+    if (days < 30) {
+      return {
+        value: `${days} day${days === 1 ? "" : "s"}`,
+        subtext: "Keep it up!",
+      };
+    }
+
+    if (days < 365) {
+      const months = Math.floor(days / 30);
+      const remDays = days % 30;
+      const value = remDays > 0
+        ? `${months}m ${remDays}d`
+        : `${months} month${months === 1 ? "" : "s"}`;
+      return {
+        value,
+        subtext: `${days} days total`,
+      };
+    }
+
+    const years = Math.floor(days / 365);
+    const remDays = days % 365;
+    const months = Math.floor(remDays / 30);
+    const value = months > 0
+      ? `${years}y ${months}m`
+      : `${years} year${years === 1 ? "" : "s"}`;
+    return {
+      value,
+      subtext: `${days} days total`,
+    };
+  }, []);
+
+  const streakDisplay = formatStreakDuration(streak);
+
+  const aiLevels = ["Remember", "Understand", "Apply", "Analyze", "Evaluate", "Create"];
+  const askedByLevel = useMemo(() => {
+    const raw = userData?.stats?.askedByLevel;
+    const entries = aiLevels.map((level) => ({
+      level,
+      value: Number(raw?.[level] ?? 0) || 0,
+    }));
+    const max = entries.reduce((m, e) => Math.max(m, e.value), 0);
+    return { entries, max, total: entries.reduce((s, e) => s + e.value, 0) };
+  }, [userData?.stats?.askedByLevel]);
+
+  const weakByLevel = useMemo(() => {
+    const raw = userData?.stats?.weakByLevel;
+    const entries = aiLevels.map((level) => ({
+      level,
+      value: Number(raw?.[level] ?? 0) || 0,
+    }));
+    const max = entries.reduce((m, e) => Math.max(m, e.value), 0);
+    return { entries, max, total: entries.reduce((s, e) => s + e.value, 0) };
+  }, [userData?.stats?.weakByLevel]);
+
+  const hasAiAnalytics = askedByLevel.total > 0 || weakByLevel.total > 0;
+
+  const generateAnalyticsInsights = useCallback(async () => {
+    if (!hasAiAnalytics || aiInsightsLoading) return;
+
+    setAiInsightsLoading(true);
+    setAiInsightsError("");
+    try {
+      const payload = {
+        streak,
+        studyHours,
+        aiQuestions,
+        solvedProblems,
+        askedByLevel: askedByLevel.entries.reduce((acc, item) => ({ ...acc, [item.level]: item.value }), {}),
+        weakByLevel: weakByLevel.entries.reduce((acc, item) => ({ ...acc, [item.level]: item.value }), {}),
+      };
+
+      const res = await fetch("/api/groq", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          model: "llama-3.3-70b-versatile",
+          temperature: 0.2,
+          max_tokens: 500,
+          messages: [
+            {
+              role: "system",
+              content: "You are an academic performance coach. Analyze the student's metrics and return ONLY a JSON array of 4 to 6 short actionable improvement points. Each point must be practical and specific. No markdown, no explanation outside the JSON array.",
+            },
+            {
+              role: "user",
+              content: `Student dashboard stats: ${JSON.stringify(payload)}`,
+            },
+          ],
+        }),
+      });
+
+      if (!res.ok) throw new Error("Failed to analyze stats");
+      const data = await res.json();
+      const content = data?.choices?.[0]?.message?.content || "";
+
+      let nextInsights = [];
+      const match = content.match(/\[[\s\S]*\]/);
+      if (match) {
+        const parsed = JSON.parse(match[0]);
+        if (Array.isArray(parsed)) {
+          nextInsights = parsed.map((item) => `${item}`.trim()).filter(Boolean);
+        }
+      }
+
+      if (!nextInsights.length) {
+        nextInsights = content
+          .split(/\n+/)
+          .map((line) => line.replace(/^[-*\d.\s]+/, "").trim())
+          .filter(Boolean)
+          .slice(0, 6);
+      }
+
+      if (!nextInsights.length) throw new Error("No insights generated");
+      setAiInsights(nextInsights);
+    } catch (err) {
+      setAiInsightsError(err?.message || "Could not generate insights right now.");
+    } finally {
+      setAiInsightsLoading(false);
+    }
+  }, [
+    hasAiAnalytics,
+    aiInsightsLoading,
+    streak,
+    studyHours,
+    aiQuestions,
+    solvedProblems,
+    askedByLevel.entries,
+    weakByLevel.entries,
+  ]);
+
+  const radarModel = useMemo(() => {
+    const labels = aiLevels;
+    const askedValues = labels.map((level) => Number(userData?.stats?.askedByLevel?.[level] ?? 0) || 0);
+    const weakValues = labels.map((level) => Number(userData?.stats?.weakByLevel?.[level] ?? 0) || 0);
+    const maxValue = Math.max(1, ...askedValues, ...weakValues);
+
+    const size = 300;
+    const center = size / 2;
+    const radius = 105;
+    const steps = 4;
+
+    const pointAt = (index, valueRatio = 1) => {
+      const angle = (-Math.PI / 2) + (index * (2 * Math.PI / labels.length));
+      const r = radius * valueRatio;
+      const x = center + Math.cos(angle) * r;
+      const y = center + Math.sin(angle) * r;
+      return { x, y };
+    };
+
+    const toPointString = (values) => values
+      .map((value, i) => {
+        const ratio = maxValue ? value / maxValue : 0;
+        const p = pointAt(i, ratio);
+        return `${p.x.toFixed(1)},${p.y.toFixed(1)}`;
+      })
+      .join(" ");
+
+    const toPoints = (values) => values.map((value, i) => {
+      const ratio = maxValue ? value / maxValue : 0;
+      const p = pointAt(i, ratio);
+      return { level: labels[i], value, x: p.x, y: p.y };
+    });
+
+    const gridPolygons = Array.from({ length: steps }, (_, i) => {
+      const ratio = (i + 1) / steps;
+      return labels
+        .map((_, idx) => {
+          const p = pointAt(idx, ratio);
+          return `${p.x.toFixed(1)},${p.y.toFixed(1)}`;
+        })
+        .join(" ");
+    });
+
+    const axisLines = labels.map((_, idx) => {
+      const p = pointAt(idx, 1);
+      return { x1: center, y1: center, x2: p.x, y2: p.y };
+    });
+
+    const labelPoints = labels.map((label, idx) => {
+      const p = pointAt(idx, 1.18);
+      return { label, x: p.x, y: p.y };
+    });
+
+    return {
+      size,
+      center,
+      gridPolygons,
+      axisLines,
+      labelPoints,
+      askedPolygon: toPointString(askedValues),
+      weakPolygon: toPointString(weakValues),
+      askedPoints: toPoints(askedValues),
+      weakPoints: toPoints(weakValues),
+      askedValues,
+      weakValues,
+      maxValue,
+    };
+  }, [aiLevels, userData?.stats?.askedByLevel, userData?.stats?.weakByLevel]);
+
   const stats = [
     { icon: "schedule", label: "Study Hours", value: studyHours ? `${studyHours}h` : "—", subtext: studyHours ? "+12% vs last week" : "No data yet", progress: Math.min((studyHours / 50) * 100, 100) },
-    { icon: "question_answer", label: "AI Questions", value: aiQuestions, subtext: aiQuestions ? "Active with Neural AI" : "Ask your first question", progress: Math.min((aiQuestions / 200) * 100, 100) },
+    { icon: "question_answer", label: "AI Questions", value: aiQuestions ? formatCompactNumber(aiQuestions) : "—", subtext: aiQuestions ? "Active with Neural AI" : "Ask your first question", progress: Math.min((aiQuestions / 200) * 100, 100) },
     { icon: "task_alt", label: "Solved Problems", value: solvedProblems || "—", subtext: solvedProblems ? "+8% vs last week" : "No data yet", progress: Math.min((solvedProblems / 100) * 100, 100) },
-    { icon: "local_fire_department", label: "Active Streak", value: streak ? `${streak} days` : "—", subtext: streak ? "Keep it up!" : "Start today!", progress: Math.min((streak / 30) * 100, 100) },
+    { icon: "local_fire_department", label: "Active Streak", value: streakDisplay.value, subtext: streakDisplay.subtext, progress: Math.min((streak / 30) * 100, 100) },
   ];
 
   const recentNotes = useMemo(() => {
@@ -791,9 +1014,17 @@ export default function Dashboard() {
             <section style={{ animation: "fadeUp 0.4s ease 0.05s both" }}>
               <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "20px" }}>
                 <h3 style={{ fontSize: "18px", fontWeight: 800, letterSpacing: "-0.02em", color: text1, margin: 0 }}>Academic Overview</h3>
-                <span style={{ fontSize: "10px", fontWeight: 800, color: text3, background: isDark ? "rgba(255,255,255,0.05)" : "rgba(0,200,0,0.06)", padding: "4px 12px", borderRadius: "9999px", textTransform: "uppercase", letterSpacing: "0.1em" }}>
-                  {cacheHydrated && !lastSyncedAt ? "Cached" : "Live"}
-                </span>
+                <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                  <button
+                    onClick={() => setShowAnalytics((p) => !p)}
+                    style={{ fontSize: "10px", fontWeight: 800, color: "#00AA00", background: "rgba(0,200,0,0.08)", border: "1px solid rgba(0,200,0,0.22)", padding: "4px 10px", borderRadius: "9999px", textTransform: "uppercase", letterSpacing: "0.08em", cursor: "pointer", fontFamily: "'Inter',sans-serif" }}
+                  >
+                    {showAnalytics ? "Hide Analytics" : "Show Analytics"}
+                  </button>
+                  <span style={{ fontSize: "10px", fontWeight: 800, color: text3, background: isDark ? "rgba(255,255,255,0.05)" : "rgba(0,200,0,0.06)", padding: "4px 12px", borderRadius: "9999px", textTransform: "uppercase", letterSpacing: "0.1em" }}>
+                    {cacheHydrated && !lastSyncedAt ? "Cached" : "Live"}
+                  </span>
+                </div>
               </div>
               <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(220px,1fr))", gap: "16px" }}>
                 {stats.map(s => <StatCard key={s.label} {...s} isDark={isDark} />)}
@@ -803,7 +1034,7 @@ export default function Dashboard() {
             <section style={{ animation: "fadeUp 0.4s ease 0.1s both" }}>
               <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "20px" }}>
                 <h3 style={{ fontSize: "18px", fontWeight: 800, letterSpacing: "-0.02em", color: text1, margin: 0 }}>Recent Notes</h3>
-                <button onClick={() => setActivePage("notes")} style={{ fontSize: "13px", fontWeight: 800, color: "#00AA00", background: "none", border: "none", cursor: "pointer", textDecoration: "underline", textUnderlineOffset: "3px", fontFamily: "'Inter',sans-serif" }}>View All</button>
+                <button onClick={() => router.push("/notes")} style={{ fontSize: "13px", fontWeight: 800, color: "#00AA00", background: "none", border: "none", cursor: "pointer", textDecoration: "underline", textUnderlineOffset: "3px", fontFamily: "'Inter',sans-serif" }}>View All</button>
               </div>
               {recentNotes.length === 0 ? (
                 <div className="note-card">
@@ -950,6 +1181,10 @@ export default function Dashboard() {
         .note-card:hover{box-shadow:${isDark ? "0 8px 28px rgba(0,255,0,0.1)" : "0 8px 28px rgba(0,200,0,0.12)"};}
         .note-icon-box{width:100px;min-width:100px;height:100px;border-radius:14px;background:linear-gradient(135deg,rgba(0,255,0,0.18),rgba(0,255,0,0.05));display:flex;align-items:center;justify-content:center;}
         .empty-state{display:flex;flex-direction:column;align-items:center;justify-content:center;padding:40px 20px;gap:12px;opacity:0.5;}
+        .analytics-grid{display:grid;grid-template-columns:1fr 1fr;gap:14px;}
+        .analytics-modal-overlay{position:fixed;inset:0;background:rgba(2,6,12,0.58);backdrop-filter:blur(8px);-webkit-backdrop-filter:blur(8px);display:flex;align-items:center;justify-content:center;padding:24px;z-index:600;}
+        .analytics-modal{width:min(760px,100%);max-height:min(86vh,760px);overflow:auto;background:${card};border:1px solid ${bdr};border-radius:20px;box-shadow:0 24px 60px rgba(0,0,0,0.35);padding:18px;}
+        .analytics-radar-wrap{background:${isDark ? "rgba(255,255,255,0.03)" : "rgba(0,0,0,0.02)"};border:1px solid ${bdr};border-radius:12px;padding:12px;overflow:auto;}
 
         /* ── Mobile bottom nav ── */
         .mob-nav{
@@ -1002,6 +1237,9 @@ export default function Dashboard() {
           .mob-header{display:flex!important;}
           .mob-nav{display:flex!important;}
           .dash-scroll{padding:20px 16px 110px;}
+          .analytics-grid{grid-template-columns:1fr;}
+          .analytics-modal-overlay{align-items:flex-end;padding:0;}
+          .analytics-modal{width:100%;max-height:88vh;border-radius:22px 22px 0 0;padding:16px 14px 24px;}
         }
       `}</style>
 
@@ -1141,6 +1379,106 @@ export default function Dashboard() {
           </div>
         </main>
       </div>
+
+      {showAnalytics && (
+        <div className="analytics-modal-overlay" onClick={() => setShowAnalytics(false)}>
+          <div className="analytics-modal" onClick={(e) => e.stopPropagation()}>
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "12px", gap: "10px", flexWrap: "wrap" }}>
+              <div>
+                <h4 style={{ fontSize: "15px", fontWeight: 800, color: text1, margin: "0 0 3px" }}>AI Analytics</h4>
+                <p style={{ fontSize: "11px", color: text3, margin: 0 }}>
+                  Asked: {formatCompactNumber(askedByLevel.total)} · Weak: {formatCompactNumber(weakByLevel.total)}
+                </p>
+              </div>
+              <button
+                onClick={() => setShowAnalytics(false)}
+                style={{ width: "34px", height: "34px", borderRadius: "9999px", border: `1px solid ${bdr}`, background: isDark ? "rgba(255,255,255,0.05)" : "rgba(0,0,0,0.04)", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }}
+              >
+                <span className="ms" style={{ fontSize: "18px", color: text2 }}>close</span>
+              </button>
+            </div>
+
+            {!hasAiAnalytics ? (
+              <p style={{ fontSize: "12px", color: text2, margin: 0 }}>No AI analytics available yet.</p>
+            ) : (
+              <div style={{ display: "flex", flexDirection: "column", gap: "12px" }}>
+                <div className="analytics-radar-wrap">
+                  <svg width={radarModel.size} height={radarModel.size} viewBox={`0 0 ${radarModel.size} ${radarModel.size}`} style={{ display: "block", margin: "0 auto" }}>
+                    {radarModel.gridPolygons.map((points, i) => (
+                      <polygon key={`grid-modal-${i}`} points={points} fill="none" stroke={isDark ? "rgba(255,255,255,0.12)" : "rgba(0,0,0,0.12)"} strokeWidth="1" />
+                    ))}
+
+                    {radarModel.axisLines.map((line, i) => (
+                      <line key={`axis-modal-${i}`} x1={line.x1} y1={line.y1} x2={line.x2} y2={line.y2} stroke={isDark ? "rgba(255,255,255,0.14)" : "rgba(0,0,0,0.12)"} strokeWidth="1" />
+                    ))}
+
+                    <polygon points={radarModel.askedPolygon} fill="rgba(0,255,0,0.22)" stroke="#00FF00" strokeWidth="2" />
+                    <polygon points={radarModel.weakPolygon} fill="rgba(59,130,246,0.20)" stroke="#3b82f6" strokeWidth="2" />
+
+                    {radarModel.askedPoints.map(({ level, value, x, y }) => (
+                      <circle key={`asked-point-${level}`} cx={x} cy={y} r="4" fill="#00FF00" stroke={isDark ? "#0f172a" : "#ffffff"} strokeWidth="1.5" style={{ cursor: "pointer" }}>
+                        <title>{`${level} · Asked: ${formatCompactNumber(value)} (${value})`}</title>
+                      </circle>
+                    ))}
+
+                    {radarModel.weakPoints.map(({ level, value, x, y }) => (
+                      <circle key={`weak-point-${level}`} cx={x} cy={y} r="4" fill="#3b82f6" stroke={isDark ? "#0f172a" : "#ffffff"} strokeWidth="1.5" style={{ cursor: "pointer" }}>
+                        <title>{`${level} · Weak: ${formatCompactNumber(value)} (${value})`}</title>
+                      </circle>
+                    ))}
+
+                    {radarModel.labelPoints.map(({ label, x, y }) => (
+                      <text key={`label-modal-${label}`} x={x} y={y} textAnchor="middle" dominantBaseline="middle" style={{ fontSize: "10px", fill: isDark ? "#94a3b8" : "#475569", fontWeight: 700 }}>
+                        {label}
+                      </text>
+                    ))}
+                  </svg>
+                </div>
+
+                <div className="analytics-grid" style={{ gap: "10px" }}>
+                  <div style={{ background: isDark ? "rgba(0,255,0,0.06)" : "rgba(0,200,0,0.08)", border: `1px solid ${bdr}`, borderRadius: "10px", padding: "10px" }}>
+                    <p style={{ fontSize: "10px", fontWeight: 800, color: "#00AA00", margin: "0 0 4px", textTransform: "uppercase", letterSpacing: "0.08em" }}>Asked</p>
+                    <p style={{ fontSize: "14px", fontWeight: 900, color: text1, margin: 0 }}>{formatCompactNumber(askedByLevel.total)}</p>
+                  </div>
+                  <div style={{ background: isDark ? "rgba(59,130,246,0.08)" : "rgba(59,130,246,0.10)", border: `1px solid ${bdr}`, borderRadius: "10px", padding: "10px" }}>
+                    <p style={{ fontSize: "10px", fontWeight: 800, color: "#3b82f6", margin: "0 0 4px", textTransform: "uppercase", letterSpacing: "0.08em" }}>Weak</p>
+                    <p style={{ fontSize: "14px", fontWeight: 900, color: text1, margin: 0 }}>{formatCompactNumber(weakByLevel.total)}</p>
+                  </div>
+                </div>
+
+                <div style={{ background: isDark ? "rgba(255,255,255,0.03)" : "rgba(0,0,0,0.02)", border: `1px solid ${bdr}`, borderRadius: "12px", padding: "12px" }}>
+                  <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "8px", gap: "10px", flexWrap: "wrap" }}>
+                    <p style={{ fontSize: "11px", fontWeight: 800, color: text2, margin: 0, textTransform: "uppercase", letterSpacing: "0.08em" }}>AI Improvement Points</p>
+                    <button
+                      onClick={generateAnalyticsInsights}
+                      disabled={aiInsightsLoading}
+                      style={{ padding: "6px 10px", borderRadius: "9999px", border: `1px solid ${bdr}`, background: aiInsightsLoading ? (isDark ? "rgba(255,255,255,0.04)" : "rgba(0,0,0,0.03)") : "rgba(0,200,0,0.08)", color: aiInsightsLoading ? text3 : "#00AA00", fontSize: "10px", fontWeight: 800, cursor: aiInsightsLoading ? "not-allowed" : "pointer", fontFamily: "'Inter',sans-serif" }}
+                    >
+                      {aiInsightsLoading ? "Analyzing..." : (aiInsights.length ? "Regenerate AI" : "Generate AI")}
+                    </button>
+                  </div>
+
+                  {aiInsightsError && (
+                    <p style={{ fontSize: "11px", color: "#ef4444", margin: "0 0 8px" }}>{aiInsightsError}</p>
+                  )}
+
+                  {!aiInsights.length && !aiInsightsLoading ? (
+                    <p style={{ fontSize: "12px", color: text2, margin: 0 }}>No insights yet. Tap Refresh AI to analyze.</p>
+                  ) : (
+                    <ul style={{ margin: 0, paddingLeft: "18px", display: "grid", gap: "6px" }}>
+                      {aiInsights.map((point, idx) => (
+                        <li key={`${idx}-${point.slice(0, 10)}`} style={{ fontSize: "12px", color: text1, lineHeight: 1.5 }}>
+                          {point}
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
 
       {/* ══ MOBILE BOTTOM NAV ══ */}
       <nav className="mob-nav">
