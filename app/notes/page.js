@@ -3,8 +3,9 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import { useRouter } from "next/navigation";
 import { auth, db } from "@/firebase";
-import { onAuthStateChanged, signOut } from "firebase/auth";
+import { onAuthStateChanged } from "firebase/auth";
 import { ref, get, update } from "firebase/database";
+import { logoutAndClearCache } from "@/lib/logout";
 
 /* ═══════════════════════════════════════════
    REDIS-BACKED CACHE LAYER
@@ -748,7 +749,7 @@ export default function NotesPage() {
                 <span className="sl">{label}</span>
               </button>
             ))}
-            <button className="nav-link danger" onClick={() => signOut(auth).then(() => router.replace("/"))}>
+            <button className="nav-link danger" onClick={() => logoutAndClearCache(auth).then(() => router.replace("/"))}>
               <span className="ms" style={{ fontSize:"20px", flexShrink:0 }}>logout</span>
               <span className="sl">Sign Out</span>
             </button>

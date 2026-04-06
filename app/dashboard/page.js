@@ -3,8 +3,9 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import { useRouter } from "next/navigation";
 import { auth, db } from "@/firebase";
-import { onAuthStateChanged, signOut } from "firebase/auth";
+import { onAuthStateChanged } from "firebase/auth";
 import { ref, get, set } from "firebase/database";
+import { logoutAndClearCache } from "@/lib/logout";
 
 const DASH_CACHE_VERSION = 1;
 const DASH_CACHE_TTL_MS = 3 * 60 * 1000;
@@ -1288,7 +1289,7 @@ export default function Dashboard() {
                 <span className="sl">{label}</span>
               </button>
             ))}
-            <button className="nav-link danger" onClick={() => signOut(auth).then(() => router.replace("/"))}>
+            <button className="nav-link danger" onClick={() => logoutAndClearCache(auth).then(() => router.replace("/"))}>
               <span className="ms" style={{ fontSize: "20px", flexShrink: 0 }}>logout</span>
               <span className="sl">Sign Out</span>
             </button>

@@ -2,7 +2,8 @@
 import { useState, useEffect, useRef } from "react";
 import { useRouter } from "next/navigation";
 import { auth } from "@/firebase";
-import { onAuthStateChanged, signOut } from "firebase/auth";
+import { onAuthStateChanged } from "firebase/auth";
+import { logoutAndClearCache } from "@/lib/logout";
 
 // ── Theme Hook ──
 function useTheme() {
@@ -263,7 +264,7 @@ export default function SettingsPage() {
 
             <button
               className="nav-link danger"
-              onClick={() => signOut(auth).then(() => router.replace("/"))}
+              onClick={() => logoutAndClearCache(auth).then(() => router.replace("/"))}
             >
               <span className="ms" style={{ fontSize: "20px", flexShrink: 0 }}>logout</span>
               <span className="sl">Sign Out</span>

@@ -2,8 +2,9 @@
 import { useState, useRef, useEffect } from "react";
 import { useRouter } from "next/navigation";
 import { auth, db } from "@/firebase";
-import { onAuthStateChanged, signOut } from "firebase/auth";
+import { onAuthStateChanged } from "firebase/auth";
 import { ref as dbRef, onValue, set, update } from "firebase/database";
+import { logoutAndClearCache } from "@/lib/logout";
 
 /* ─────────────────────────────────────────
    CHUNK CONFIG
@@ -314,7 +315,7 @@ export default function AdminUploadPage() {
                 <span className="ms" style={{ fontSize:"20px" }}>{icon}</span>{label}
               </button>
             ))}
-            <button className="nav-link danger" onClick={() => signOut(auth).then(() => router.replace("/"))}>
+            <button className="nav-link danger" onClick={() => logoutAndClearCache(auth).then(() => router.replace("/"))}>
               <span className="ms" style={{ fontSize:"20px" }}>logout</span>Sign Out
             </button>
           </nav>

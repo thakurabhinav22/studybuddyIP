@@ -2,8 +2,9 @@
 import { useState, useEffect } from "react";
 import { useRouter } from "next/navigation";
 import { auth, db } from "@/firebase";
-import { onAuthStateChanged, signOut } from "firebase/auth";
+import { onAuthStateChanged } from "firebase/auth";
 import { ref, onValue } from "firebase/database";
+import { logoutAndClearCache } from "@/lib/logout";
 
 const TEST_IDB_NAME = "studybuddy_test_cache";
 const TEST_IDB_STORE = "kv";
@@ -488,7 +489,7 @@ export default function TestPage() {
                 <span className="sl">{label}</span>
               </button>
             ))}
-            <button className="nav-link danger" onClick={() => signOut(auth).then(() => router.replace("/"))}>
+            <button className="nav-link danger" onClick={() => logoutAndClearCache(auth).then(() => router.replace("/"))}>
               <span className="ms" style={{ fontSize: "20px" }}>logout</span>
               <span className="sl">Sign Out</span>
             </button>

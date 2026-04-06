@@ -2,8 +2,9 @@
 import { useState, useEffect, useRef } from "react";
 import { useRouter } from "next/navigation";
 import { auth, db } from "@/firebase";
-import { onAuthStateChanged, signOut } from "firebase/auth";
+import { onAuthStateChanged } from "firebase/auth";
 import { ref, onValue, update } from "firebase/database";
+import { logoutAndClearCache } from "@/lib/logout";
 
 // ── Theme Hook ──
 function useTheme() {
@@ -303,7 +304,7 @@ export default function Profile() {
 
             <button
               className="nav-link danger"
-              onClick={() => signOut(auth).then(() => router.replace("/"))}
+              onClick={() => logoutAndClearCache(auth).then(() => router.replace("/"))}
             >
               <span className="ms" style={{ fontSize: "20px", flexShrink: 0 }}>logout</span>
               <span className="sl">Sign Out</span>
@@ -567,7 +568,7 @@ export default function Profile() {
               )}
 
               <button
-                onClick={() => signOut(auth).then(() => router.replace("/"))}
+                onClick={() => logoutAndClearCache(auth).then(() => router.replace("/"))}
                 style={{
                   display: "flex", alignItems: "center", justifyContent: "center", gap: "10px",
                   padding: "16px 24px", background: "rgba(248,113,113,0.08)",
@@ -601,6 +602,14 @@ export default function Profile() {
           onClick={() => router.push("/profile")}
         >
           <span className="ms">person</span>
+        </button>
+        <button
+          className="mob-tab danger"
+          onClick={() => logoutAndClearCache(auth).then(() => router.replace("/"))}
+          title="Sign Out"
+          aria-label="Sign Out"
+        >
+          <span className="ms">logout</span>
         </button>
       </nav>
     </>
