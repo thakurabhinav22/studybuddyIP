@@ -499,7 +499,7 @@ export default function NotesPage() {
       if (contentType === "application/pdf") {
         router.push(`/pdfviewer?branch=${encodeURIComponent(userData?.branch||"")}&sem=${encodeURIComponent(semKey)}&subject=${encodeURIComponent(activeSubject)}&module=${encodeURIComponent(mod.key)}`);
       } else {
-        window.open(`/api/notes/pdf?type=file&branch=${encodeURIComponent(userData?.branch||"")}&sem=${encodeURIComponent(semKey)}&subject=${encodeURIComponent(activeSubject)}&module=${encodeURIComponent(mod.key)}`, "_blank");
+        window.open(`/docviewer?branch=${encodeURIComponent(userData?.branch||"")}&sem=${encodeURIComponent(semKey)}&subject=${encodeURIComponent(activeSubject)}&module=${encodeURIComponent(mod.key)}`, "_blank");
       }
     } else if (mod.resourcesPDF) {
       window.open(mod.resourcesPDF, "_blank");
@@ -520,7 +520,7 @@ export default function NotesPage() {
       if (contentType === "application/pdf") {
         router.push(`/pdfviewer?branch=${encodeURIComponent(userData?.branch||"")}&sem=${encodeURIComponent(semKey)}&subject=${encodeURIComponent(activeSubject)}&module=${encodeURIComponent(mod.key)}`);
       } else {
-        window.open(`/api/notes/pdf?type=file&branch=${encodeURIComponent(userData?.branch||"")}&sem=${encodeURIComponent(semKey)}&subject=${encodeURIComponent(activeSubject)}&module=${encodeURIComponent(mod.key)}`, "_blank");
+        window.open(`/docviewer?branch=${encodeURIComponent(userData?.branch||"")}&sem=${encodeURIComponent(semKey)}&subject=${encodeURIComponent(activeSubject)}&module=${encodeURIComponent(mod.key)}`, "_blank");
       }
       return;
     }

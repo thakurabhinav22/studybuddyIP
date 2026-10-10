@@ -1093,7 +1093,7 @@ export default function Dashboard() {
                               if (contentType === "application/pdf") {
                                 router.push(`/pdfviewer?branch=${encodeURIComponent(noteBranch)}&sem=${encodeURIComponent(noteSem)}&subject=${encodeURIComponent(noteSubject)}&module=${encodeURIComponent(noteModule)}`);
                               } else {
-                                window.open(`/api/notes/pdf?type=file&branch=${encodeURIComponent(noteBranch)}&sem=${encodeURIComponent(noteSem)}&subject=${encodeURIComponent(noteSubject)}&module=${encodeURIComponent(noteModule)}`, "_blank");
+                                window.open(`/docviewer?branch=${encodeURIComponent(noteBranch)}&sem=${encodeURIComponent(noteSem)}&subject=${encodeURIComponent(noteSubject)}&module=${encodeURIComponent(noteModule)}`, "_blank");
                               }
                               return;
                             }

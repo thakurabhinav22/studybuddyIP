@@ -1103,7 +1103,7 @@ export default function AdminPage() {
                           const url = `/pdfviewer?branch=${encodeURIComponent(fileExplorerPath[0])}&sem=${encodeURIComponent(semNum)}&subject=${encodeURIComponent(fileExplorerPath[2])}&module=${encodeURIComponent(item)}`;
                           window.open(url, '_blank');
                         } else {
-                          const url = `/api/notes/pdf?branch=${encodeURIComponent(fileExplorerPath[0])}&sem=${encodeURIComponent(semNum)}&subject=${encodeURIComponent(fileExplorerPath[2])}&module=${encodeURIComponent(item)}&type=file`;
+                          const url = `/docviewer?branch=${encodeURIComponent(fileExplorerPath[0])}&sem=${encodeURIComponent(semNum)}&subject=${encodeURIComponent(fileExplorerPath[2])}&module=${encodeURIComponent(item)}`;
                           window.open(url, '_blank');
                         }
                       } else if (noteData?.resourcesPDF) {
