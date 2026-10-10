@@ -27,15 +27,32 @@ export function AuthProvider({ children }) {
         clearTimeout(fallback);
 
         if (firebaseUser) {
-          // Set user immediately — don't wait for DB
-          setUser(firebaseUser);
+          const isTcetEmail = firebaseUser.email && firebaseUser.email.endsWith("@tcetmumbai.in");
+          
+          if (isTcetEmail) {
+            setUser(firebaseUser);
+          }
 
-          // DB write happens in background, completely non-blocking
           if (db) {
             try {
               const { ref, get, set } = await import("firebase/database");
               const userRef = ref(db, `users/${firebaseUser.uid}`);
               const snap = await get(userRef);
+
+              const accountExists = snap.exists();
+              const isAdmin = accountExists && snap.val().role === "admin";
+
+              if (!isTcetEmail && !accountExists) {
+                  console.log("❌ Unauthorized email domain (New Account blocked)");
+                  const { getAuth } = await import("firebase/auth");
+                  getAuth().signOut();
+                  setUser(null);
+                  return;
+              }
+              
+              if (!isTcetEmail && accountExists) {
+                setUser(firebaseUser);
+              }
 
               const payload = {
                 uid: firebaseUser.uid,
@@ -50,6 +67,7 @@ export function AuthProvider({ children }) {
               if (!snap.exists()) {
                 await set(userRef, {
                   ...payload,
+                  role: "student",
                   joinedAt: new Date().toISOString(),
                   studyHours: 0,
                   aiQuestions: 0,

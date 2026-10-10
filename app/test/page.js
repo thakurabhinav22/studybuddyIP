@@ -239,6 +239,7 @@ export default function TestPage() {
       unsubUser = onValue(userRef, async (snap) => {
         if (snap.exists()) {
           const data = snap.val();
+            if (data.role === 'admin') { router.replace('/admin'); return; }
           const branch = data.branch;
           const semRaw = data.sem;
           const sem = semRaw ? Number(semRaw.toString().replace(/\D/g, "")) : null;

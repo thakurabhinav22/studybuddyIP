@@ -62,9 +62,21 @@ function LoginModal({ onClose, resolved, onSignInSuccess }) {
       const result = await signInWithPopup(auth, googleProvider);
       const u = result.user;
 
-      const nameParts = (u.displayName || "").trim().split(/\s+/);
       const userRef   = ref(db, `users/${u.uid}`);
       const snapshot  = await get(userRef);
+
+      const isTcetEmail = u.email && u.email.endsWith("@tcetmumbai.in");
+      const accountExists = snapshot.exists();
+      const isAdmin = accountExists && snapshot.val().role === "admin";
+
+      if (!isTcetEmail && !accountExists) {
+        await auth.signOut();
+        setError("New accounts must use a @tcetmumbai.in email.");
+        setLoading(false);
+        return;
+      }
+
+      const nameParts = (u.displayName || "").trim().split(/\s+/);
 
       if (!snapshot.exists()) {
         await set(userRef, {
@@ -75,6 +87,7 @@ function LoginModal({ onClose, resolved, onSignInSuccess }) {
           fullName:    u.displayName  || "",
           photoURL:    u.photoURL     || "",
           branch:      null,
+          role:        "student",
           createdAt:   new Date().toISOString(),
           lastSignInAt:new Date().toISOString(),
         });
@@ -82,7 +95,7 @@ function LoginModal({ onClose, resolved, onSignInSuccess }) {
         await set(ref(db, `users/${u.uid}/lastSignInAt`), new Date().toISOString());
       }
 
-      onSignInSuccess();          // ← caller decides what to do
+      onSignInSuccess(isAdmin);
     } catch (err) {
       if (err.code === "auth/popup-closed-by-user") setError("Sign-in cancelled.");
       else setError("Sign-in failed. Please try again.");
@@ -210,8 +223,35 @@ export default function Home() {
   const isDark = resolved === "dark";
 
   useEffect(() => {
-    const unsub = onAuthStateChanged(auth, (user) => {
-      if (user) router.replace("/dashboard");
+    const unsub = onAuthStateChanged(auth, async (user) => {
+      if (user) {
+        const isTcetEmail = user.email && user.email.endsWith("@tcetmumbai.in");
+        let isAdmin = false;
+        let accountExists = false;
+        
+        try {
+          const userRef = ref(db, `users/${user.uid}`);
+          const snapshot = await get(userRef);
+          if (snapshot.exists()) {
+            accountExists = true;
+            if (snapshot.val().role === "admin") {
+              isAdmin = true;
+            }
+          }
+        } catch (e) {
+          console.error(e);
+        }
+
+        if (isTcetEmail || accountExists) {
+          if (isAdmin) {
+            router.replace("/admin");
+          } else {
+            router.replace("/dashboard");
+          }
+        } else {
+          await auth.signOut();
+        }
+      }
     });
     return () => unsub();
   }, [router]);
@@ -288,7 +328,13 @@ export default function Home() {
         <LoginModal
           onClose={() => setShowModal(false)}
           resolved={resolved}
-          onSignInSuccess={() => router.replace("/dashboard")}
+          onSignInSuccess={(isAdmin) => {
+            if (isAdmin) {
+              router.replace("/admin");
+            } else {
+              router.replace("/dashboard");
+            }
+          }}
         />
       )}
 

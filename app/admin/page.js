@@ -1,64 +1,11 @@
 "use client";
-import { useState, useRef, useEffect } from "react";
+import { useState, useEffect } from "react";
 import { useRouter } from "next/navigation";
 import { auth, db } from "@/firebase";
 import { onAuthStateChanged } from "firebase/auth";
-import { ref as dbRef, onValue, set, update } from "firebase/database";
+import { ref as dbRef, onValue, set, remove, get } from "firebase/database";
 import { logoutAndClearCache } from "@/lib/logout";
 
-/* ─────────────────────────────────────────
-   CHUNK CONFIG
-   Firebase Realtime DB node limit ≈ 10MB
-   We chunk base64 into 500KB pieces safely
-───────────────────────────────────────── */
-const CHUNK_SIZE = 500 * 1024; // 500KB per chunk (base64 chars)
-
-async function fileToBase64(file) {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => resolve(reader.result.split(",")[1]);
-    reader.onerror = reject;
-    reader.readAsDataURL(file);
-  });
-}
-
-function chunkString(str, size) {
-  const chunks = [];
-  for (let i = 0; i < str.length; i += size) {
-    chunks.push(str.slice(i, i + size));
-  }
-  return chunks;
-}
-
-async function uploadPDFChunked(db, path, file, onProgress) {
-  onProgress(5, "Reading file…");
-  const base64 = await fileToBase64(file);
-  onProgress(20, "Splitting into chunks…");
-  const chunks = chunkString(base64, CHUNK_SIZE);
-  const totalChunks = chunks.length;
-  onProgress(25, `Uploading ${totalChunks} chunks…`);
-
-  const metaRef = dbRef(db, `${path}/pdfMeta`);
-  await set(metaRef, {
-    totalChunks,
-    fileName: file.name,
-    fileSize: file.size,
-    mimeType: "application/pdf",
-    uploadedAt: Date.now(),
-  });
-
-  for (let i = 0; i < chunks.length; i++) {
-    const chunkRef = dbRef(db, `${path}/pdfChunks/chunk_${i}`);
-    await set(chunkRef, chunks[i]);
-    const pct = 25 + Math.round(((i + 1) / totalChunks) * 70);
-    onProgress(pct, `Uploading chunk ${i + 1} of ${totalChunks}…`);
-  }
-  onProgress(100, "Done!");
-}
-
-/* ─────────────────────────────────────────
-   THEME HOOK
-───────────────────────────────────────── */
 function useTheme() {
   const KEY = "studybuddy_theme";
   const [theme, setThemeState] = useState("system");
@@ -80,172 +27,642 @@ function useTheme() {
   return { theme, setTheme, resolved };
 }
 
-const BRANCHES = ["IT", "CS", "EXTC", "MECH", "CIVIL"];
-const SEMS = ["Sem:1","Sem:2","Sem:3","Sem:4","Sem:5","Sem:6","Sem:7","Sem:8"];
-const NAV_ITEMS = [
-  { id: "dashboard", icon: "dashboard", label: "Dashboard", href: "/dashboard" },
-  { id: "notes", icon: "description", label: "Notes", href: "/notes" },
-  { id: "test", icon: "quiz", label: "Test", href: "/test" },
-  { id: "ai", icon: "psychology", label: "Neural AI", href: "/ai" },
-  { id: "profile", icon: "person", label: "Profile", href: "/profile" },
-  { id: "settings", icon: "settings", label: "Settings", href: "/settings" },
-];
-
-/* ═══════════════════════════════════════════
-   MAIN COMPONENT - Updated with Description
-═══════════════════════════════════════════ */
-export default function AdminUploadPage() {
-  const router = useRouter();
-  const { resolved } = useTheme();
+function ThemeSwitcher({ theme, setTheme, resolved }) {
   const isDark = resolved === "dark";
+  const opts = [
+    { value:"light",  icon:"light_mode",     label:"Light"  },
+    { value:"dark",   icon:"dark_mode",       label:"Dark"   },
+    { value:"system", icon:"desktop_windows", label:"System" },
+  ];
+  return (
+    <div style={{ display:"inline-flex", alignItems:"center", gap:"4px", padding:"5px", borderRadius:"9999px", background: isDark ? "rgba(255,255,255,0.06)" : "rgba(0,0,0,0.05)", border:`1px solid ${isDark ? "rgba(255,255,255,0.1)" : "rgba(0,0,0,0.08)"}` }}>
+      {opts.map(({ value, icon, label }) => {
+        const active = theme === value;
+        return (
+          <button key={value} onClick={() => setTheme(value)} title={label}
+            style={{ display:"flex", alignItems:"center", gap:"6px", padding:"7px 14px", borderRadius:"9999px", border:"none", cursor:"pointer", fontFamily:"'Lexend',sans-serif", fontSize:"12px", fontWeight:700, background: active ? (isDark ? "rgba(0,255,0,0.18)" : "#00FF00") : "transparent", color: active ? (isDark ? "#00FF00" : "#0f172a") : (isDark ? "#64748b" : "#94a3b8") }}
+          >
+            <span className="ms" style={{ fontSize:"15px" }}>{icon}</span>
+            {label}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
 
-  const fileRef = useRef(null);
+export default function AdminPage() {
+  const router = useRouter();
+  const { theme, setTheme, resolved } = useTheme();
+  const isDark = resolved === "dark";
 
   const [authUser, setAuthUser] = useState(null);
   const [userData, setUserData] = useState(null);
   const [authLoading, setAuthLoading] = useState(true);
+  const [users, setUsers] = useState([]);
+  const [loading, setLoading] = useState(true);
+  
+  const [activeTab, setActiveTab] = useState("dashboard");
+  const [showLogoutModal, setShowLogoutModal] = useState(false);
+  const [showProfileMenu, setShowProfileMenu] = useState(false);
+  
+  const [selectedBranch, setSelectedBranch] = useState("All");
+  const [selectedSem, setSelectedSem] = useState("All");
+  const [searchQuery, setSearchQuery] = useState("");
+  const [sortBy, setSortBy] = useState("name");
+  const [undoAction, setUndoAction] = useState(null);
+  const [editingStudent, setEditingStudent] = useState(null);
+  const [editForm, setEditForm] = useState({ fullName: "", branch: "", sem: "" });
 
-  const [branch, setBranch] = useState("IT");
-  const [sem, setSem] = useState("Sem:3");
-  const [subject, setSubject] = useState("");
-  const [moduleKey, setModuleKey] = useState("module1");
-  const [moduleTitle, setModuleTitle] = useState("");
-  const [moduleDescription, setModuleDescription] = useState(""); // ← NEW FIELD
 
-  const [file, setFile] = useState(null);
-  const [dragOver, setDragOver] = useState(false);
-  const [progress, setProgress] = useState(0);
-  const [statusMsg, setStatusMsg] = useState("");
-  const [status, setStatus] = useState("idle");
-  const [errorMsg, setErrorMsg] = useState("");
-  const [subjects, setSubjects] = useState({});
+  const [instSettings, setInstSettings] = useState({ collegeName: "", totalSems: 8 });
+  const [settingsSaving, setSettingsSaving] = useState(false);
+  const [settingsMessage, setSettingsMessage] = useState("");
 
-  /* Auth */
+  const [newAdminEmail, setNewAdminEmail] = useState("");
+  const [adminMessage, setAdminMessage] = useState("");
+  const [adminSaving, setAdminSaving] = useState(false);
+
+  const [noteTitle, setNoteTitle] = useState("");
+  const [noteSem, setNoteSem] = useState("1");
+  const [noteBranch, setNoteBranch] = useState("");
+  const [noteFile, setNoteFile] = useState(null);
+  const [notesMessage, setNotesMessage] = useState("");
+  const [notesSaving, setNotesSaving] = useState(false);
+  
   useEffect(() => {
-    const unsub = onAuthStateChanged(auth, (u) => {
+    const unsub = onAuthStateChanged(auth, async (u) => {
       if (!u) { router.replace("/"); return; }
       setAuthUser(u);
-      onValue(dbRef(db, `users/${u.uid}`), (snap) => {
-        if (snap.exists()) setUserData(snap.val());
-        setAuthLoading(false);
-      });
+      
+      const snap = await get(dbRef(db, `users/${u.uid}`));
+      if (snap.exists()) {
+        const data = snap.val();
+        if (data.role !== "admin") {
+          router.replace("/dashboard");
+          return;
+        }
+        setUserData(data);
+        fetchUsers();
+        fetchSettings();
+      } else {
+        router.replace("/");
+      }
+      setAuthLoading(false);
     });
     return () => unsub();
   }, [router]);
 
-  /* Load subjects */
-  useEffect(() => {
-    const r = dbRef(db, `notes/${branch}/${sem}/subjects`);
-    return onValue(r, (snap) => {
+  const fetchUsers = () => {
+    onValue(dbRef(db, "users"), (snap) => {
       if (snap.exists()) {
-        setSubjects(snap.val());
-        setSubject(Object.keys(snap.val())[0] || "");
+        const usersObj = snap.val();
+        const usersList = Object.keys(usersObj).map(uid => ({ ...usersObj[uid], uid }));
+        setUsers(usersList);
       } else {
-        setSubjects({});
-        setSubject("");
+        setUsers([]);
       }
+      setLoading(false);
     });
-  }, [branch, sem]);
+  };
 
-  /* Colors */
+  const fetchSettings = async () => {
+    const snap = await get(dbRef(db, "settings/institution"));
+    if (snap.exists()) {
+      setInstSettings(snap.val());
+    }
+  };
+
+  const handlePromote = async (uid, currentSem) => {
+    if (!currentSem || currentSem === "Alumni") return;
+    const maxSem = parseInt(instSettings.totalSems, 10) || 8;
+    let nextSem = parseInt(currentSem, 10) + 1;
+    if (nextSem > maxSem) {
+      nextSem = "Alumni";
+    }
+    try {
+      await set(dbRef(db, `users/${uid}/sem`), nextSem);
+    } catch (error) {
+      console.error("Error promoting student:", error);
+    }
+  };
+
+  const handleDelete = async (uid) => {
+    if (!confirm("Are you sure you want to delete this user?")) return;
+    try {
+      await remove(dbRef(db, `users/${uid}`));
+    } catch (error) {
+      console.error("Error deleting user:", error);
+    }
+  };
+  
+  const handleRemoveAdmin = async (uid) => {
+    if (!confirm("Are you sure you want to remove admin privileges for this user?")) return;
+    try {
+      await set(dbRef(db, `users/${uid}/role`), "student");
+    } catch (error) {
+      console.error("Error removing admin:", error);
+    }
+  };
+
+  const handleAddAdmin = async (e) => {
+    e.preventDefault();
+    setAdminMessage("");
+    if (!newAdminEmail) return;
+    setAdminSaving(true);
+    const userToPromote = users.find(u => u.email.toLowerCase() === newAdminEmail.toLowerCase());
+    if (userToPromote) {
+      try {
+        await set(dbRef(db, `users/${userToPromote.uid}/role`), "admin");
+        setAdminMessage("User promoted to admin successfully!");
+        setNewAdminEmail("");
+      } catch (err) {
+        setAdminMessage("Error promoting user.");
+      }
+    } else {
+      setAdminMessage("No user found with this email. They must sign in first.");
+    }
+    setAdminSaving(false);
+    setTimeout(() => setAdminMessage(""), 3000);
+  };
+
+  const handleSaveSettings = async (e) => {
+    e.preventDefault();
+    setSettingsMessage("");
+    setSettingsSaving(true);
+    try {
+      await set(dbRef(db, "settings/institution"), instSettings);
+      setSettingsMessage("Settings saved successfully!");
+    } catch (err) {
+      setSettingsMessage("Error saving settings.");
+    }
+    setSettingsSaving(false);
+    setTimeout(() => setSettingsMessage(""), 3000);
+  };
+
+  const handleUploadNote = async (e) => {
+    e.preventDefault();
+    setNotesMessage("");
+    if (!noteTitle || !noteBranch) {
+      setNotesMessage("Please fill title and branch.");
+      setTimeout(() => setNotesMessage(""), 3000);
+      return;
+    }
+    setNotesSaving(true);
+    try {
+      const noteId = Date.now().toString();
+      const newNote = {
+        title: noteTitle,
+        sem: noteSem,
+        branch: noteBranch,
+        uploadedAt: new Date().toISOString(),
+        uploadedBy: userData.fullName || userData.email,
+        fileName: noteFile ? noteFile.name : "No file",
+      };
+      await set(dbRef(db, `notes/${noteId}`), newNote);
+      setNotesMessage("Note saved successfully!");
+      setNoteTitle("");
+      setNoteFile(null);
+    } catch (err) {
+      setNotesMessage("Error saving note.");
+    }
+    setNotesSaving(false);
+    setTimeout(() => setNotesMessage(""), 3000);
+  };
+
+
+  const handleConfirmLogout = () => {
+    logoutAndClearCache(auth).then(() => router.replace("/"));
+  };
+
+  const handlePromoteAll = () => {
+    if (processedStudents.length === 0) return;
+    const maxSem = parseInt(instSettings.totalSems, 10) || 8;
+    
+    const snapshot = processedStudents.map(s => ({ uid: s.uid, sem: s.sem }));
+    
+    processedStudents.forEach(student => {
+      let currentSem = student.sem;
+      if (!currentSem || currentSem === "Alumni") return;
+      let nextSem = parseInt(currentSem, 10) + 1;
+      if (nextSem > maxSem) nextSem = "Alumni";
+      set(dbRef(db, `users/${student.uid}/sem`), nextSem).catch(console.error);
+    });
+    
+    if (undoAction && undoAction.timer) clearTimeout(undoAction.timer);
+    
+    const timer = setTimeout(() => {
+      setUndoAction(null);
+    }, 10000);
+    
+    setUndoAction({
+      message: `Promoted ${processedStudents.length} students.`,
+      snapshot,
+      timer
+    });
+    
+    setSelectedSem("All");
+    setSelectedBranch("All");
+    setSearchQuery("");
+  };
+
+  const handleUndo = () => {
+    if (!undoAction) return;
+    clearTimeout(undoAction.timer);
+    undoAction.snapshot.forEach(record => {
+      set(dbRef(db, `users/${record.uid}/sem`), record.sem || null).catch(console.error);
+    });
+    setUndoAction(null);
+  };
+
+  const handleToggleBlock = async (uid, isBlocked) => {
+    if (!confirm(`Are you sure you want to ${isBlocked ? 'unblock' : 'block'} this student?`)) return;
+    try {
+      await set(dbRef(db, `users/${uid}/blocked`), !isBlocked);
+    } catch (error) {
+      console.error("Error toggling block:", error);
+    }
+  };
+
+  const handleSaveEdit = async () => {
+    if (!editingStudent) return;
+    try {
+      if (editForm.fullName !== undefined) await set(dbRef(db, `users/${editingStudent.uid}/fullName`), editForm.fullName);
+      if (editForm.branch !== undefined) await set(dbRef(db, `users/${editingStudent.uid}/branch`), editForm.branch);
+      if (editForm.sem !== undefined) await set(dbRef(db, `users/${editingStudent.uid}/sem`), editForm.sem === "Alumni" ? "Alumni" : parseInt(editForm.sem));
+      setEditingStudent(null);
+    } catch (err) {
+      console.error(err);
+    }
+  };
+
+
   const bg = isDark ? "#080f1a" : "#f5f8f5";
-  const sidebar = isDark ? "rgba(8,15,26,0.96)" : "rgba(255,255,255,0.85)";
-  const header = isDark ? "rgba(8,15,26,0.92)" : "rgba(255,255,255,0.85)";
+  const sidebarBg = isDark ? "rgba(8,15,26,0.96)" : "rgba(255,255,255,0.85)";
+  const headerBg = isDark ? "rgba(8,15,26,0.92)" : "rgba(255,255,255,0.85)";
   const card = isDark ? "rgba(15,23,42,0.9)" : "#ffffff";
   const text1 = isDark ? "#f1f5f9" : "#0f172a";
   const text2 = isDark ? "#94a3b8" : "#475569";
   const text3 = isDark ? "#475569" : "#94a3b8";
   const bdr = isDark ? "rgba(0,255,0,0.1)" : "rgba(0,200,0,0.12)";
-  const inputBg = isDark ? "rgba(255,255,255,0.04)" : "rgba(0,200,0,0.04)";
-  const inputBdr = isDark ? "rgba(255,255,255,0.1)" : "rgba(0,200,0,0.2)";
 
-  const fullName = userData?.fullName || authUser?.displayName || "";
-  const firstName = userData?.firstName || authUser?.displayName?.split(" ")[0] || "";
-  const photoURL = userData?.photoURL || authUser?.photoURL || "";
+  if (authLoading) return null;
 
-  const AvatarEl = ({ size = 40 }) => (
-    <div style={{ width: `${size}px`, height: `${size}px`, borderRadius: "9999px", border: "2.5px solid #00FF00", overflow: "hidden", background: isDark ? "rgba(255,255,255,0.1)" : "#e2e8f0", flexShrink: 0 }}>
-      {photoURL
-        ? <img src={photoURL} alt={fullName} style={{ width: "100%", height: "100%", objectFit: "cover" }} referrerPolicy="no-referrer" />
-        : <div style={{ width: "100%", height: "100%", display: "flex", alignItems: "center", justifyContent: "center", background: "#00FF00", color: "#0f172a", fontSize: `${size * 0.4}px`, fontWeight: 900, fontFamily: "'Lexend',sans-serif" }}>
-            {firstName ? firstName[0].toUpperCase() : "?"}
+  const studentsOnly = users.filter(u => u.role !== "admin");
+  const adminsOnly = users.filter(u => u.role === "admin");
+  
+  const branches = ["All", ...new Set(studentsOnly.map(s => s.branch).filter(Boolean))];
+  const sems = ["All", ...new Set(studentsOnly.map(s => s.sem).filter(Boolean).sort((a,b) => a - b))];
+  
+  let processedStudents = studentsOnly;
+  if (selectedBranch !== "All") processedStudents = processedStudents.filter(s => s.branch === selectedBranch);
+  if (selectedSem !== "All") processedStudents = processedStudents.filter(s => String(s.sem) === String(selectedSem));
+  
+  if (searchQuery.trim() !== "") {
+    const q = searchQuery.toLowerCase();
+    processedStudents = processedStudents.filter(s => 
+      (s.fullName && s.fullName.toLowerCase().includes(q)) || 
+      (s.email && s.email.toLowerCase().includes(q))
+    );
+  }
+  
+  processedStudents = [...processedStudents].sort((a, b) => {
+    if (sortBy === "name") return (a.fullName || "").localeCompare(b.fullName || "");
+    if (sortBy === "branch") return (a.branch || "").localeCompare(b.branch || "");
+    if (sortBy === "semAsc") return (a.sem || 0) - (b.sem || 0);
+    if (sortBy === "semDesc") return (b.sem || 0) - (a.sem || 0);
+    return 0;
+  });
+
+  const renderDashboard = () => (
+    <>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))", gap: "20px" }}>
+        <div style={{ background: card, border: `1px solid ${bdr}`, borderRadius: "20px", padding: "24px", display: "flex", flexDirection: "column", gap: "12px", boxShadow: "0 4px 20px rgba(0,0,0,0.05)" }}>
+          <div style={{ display: "flex", alignItems: "center", gap: "12px" }}>
+            <div style={{ width: "36px", height: "36px", borderRadius: "10px", background: "rgba(0,255,0,0.1)", display: "flex", alignItems: "center", justifyContent: "center" }}>
+              <span className="ms" style={{ color: "#00FF00", fontSize: "20px" }}>groups</span>
+            </div>
+            <span style={{ fontSize: "14px", fontWeight: 700, color: text2 }}>Total Students</span>
           </div>
-      }
+          <div style={{ fontSize: "32px", fontWeight: 900, color: text1 }}>{studentsOnly.length}</div>
+        </div>
+        
+        <div style={{ background: card, border: `1px solid ${bdr}`, borderRadius: "20px", padding: "24px", display: "flex", flexDirection: "column", gap: "12px", boxShadow: "0 4px 20px rgba(0,0,0,0.05)" }}>
+          <div style={{ display: "flex", alignItems: "center", gap: "12px" }}>
+            <div style={{ width: "36px", height: "36px", borderRadius: "10px", background: "rgba(59,130,246,0.1)", display: "flex", alignItems: "center", justifyContent: "center" }}>
+              <span className="ms" style={{ color: "#3b82f6", fontSize: "20px" }}>account_tree</span>
+            </div>
+            <span style={{ fontSize: "14px", fontWeight: 700, color: text2 }}>Active Branches</span>
+          </div>
+          <div style={{ fontSize: "32px", fontWeight: 900, color: text1 }}>{new Set(studentsOnly.map(s => s.branch).filter(Boolean)).size}</div>
+        </div>
+        
+        <div style={{ background: card, border: `1px solid ${bdr}`, borderRadius: "20px", padding: "24px", display: "flex", flexDirection: "column", gap: "12px", boxShadow: "0 4px 20px rgba(0,0,0,0.05)" }}>
+          <div style={{ display: "flex", alignItems: "center", gap: "12px" }}>
+            <div style={{ width: "36px", height: "36px", borderRadius: "10px", background: "rgba(245,158,11,0.1)", display: "flex", alignItems: "center", justifyContent: "center" }}>
+              <span className="ms" style={{ color: "#f59e0b", fontSize: "20px" }}>admin_panel_settings</span>
+            </div>
+            <span style={{ fontSize: "14px", fontWeight: 700, color: text2 }}>Total Admins</span>
+          </div>
+          <div style={{ fontSize: "32px", fontWeight: 900, color: text1 }}>{adminsOnly.length}</div>
+        </div>
+      </div>
+
+      <div className="admin-card">
+        <div style={{ display: "flex", flexDirection: "column", gap: "16px" }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: "16px" }}>
+            <div style={{ display: "flex", alignItems: "center", gap: "12px" }}>
+              <h3 style={{ fontSize: "18px", fontWeight: 700, color: text1, margin: 0 }}>Student List</h3>
+              <span style={{ fontSize: "12px", color: text3, fontWeight: 600 }}>Total: {processedStudents.length}</span>
+            </div>
+            {(selectedBranch !== "All" || selectedSem !== "All") && processedStudents.length > 0 && (
+              <button 
+                onClick={handlePromoteAll}
+                style={{ background: "rgba(0,255,0,0.1)", color: "#00DD00", border: "1px solid rgba(0,255,0,0.2)", padding: "6px 12px", borderRadius: "8px", fontSize: "12px", fontWeight: 700, cursor: "pointer", transition: "all 0.2s", display: "flex", alignItems: "center", gap: "6px" }}
+              >
+                <span className="ms" style={{ fontSize: "16px" }}>upgrade</span>
+                Promote All
+              </button>
+            )}
+          </div>
+          
+          <div style={{ display: "flex", flexWrap: "wrap", gap: "12px", alignItems: "center" }}>
+            <div style={{ display: "flex", alignItems: "center", background: isDark ? "rgba(255,255,255,0.05)" : "#f1f5f9", border: `1px solid ${bdr}`, borderRadius: "8px", padding: "6px 12px", flex: 1, minWidth: "200px" }}>
+              <span className="ms" style={{ fontSize: "16px", color: text3, marginRight: "8px" }}>search</span>
+              <input 
+                type="text" 
+                placeholder="Search by name or email..." 
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                style={{ background: "transparent", border: "none", outline: "none", color: text1, fontSize: "13px", fontWeight: 500, width: "100%", fontFamily: "'Lexend',sans-serif" }}
+              />
+            </div>
+
+            <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+              <span style={{ fontSize: "12px", color: text3, fontWeight: 700, textTransform: "uppercase" }}>Branch:</span>
+              <select 
+                value={selectedBranch} 
+                onChange={(e) => setSelectedBranch(e.target.value)}
+                style={{ background: isDark ? "rgba(255,255,255,0.05)" : "#f1f5f9", border: `1px solid ${bdr}`, color: text1, padding: "6px 12px", borderRadius: "8px", fontSize: "13px", fontWeight: 600, outline: "none", cursor: "pointer", fontFamily: "'Lexend',sans-serif" }}
+              >
+                {branches.map(b => <option key={b} value={b}>{b}</option>)}
+              </select>
+            </div>
+
+            <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+              <span style={{ fontSize: "12px", color: text3, fontWeight: 700, textTransform: "uppercase" }}>Sem:</span>
+              <select 
+                value={selectedSem} 
+                onChange={(e) => setSelectedSem(e.target.value)}
+                style={{ background: isDark ? "rgba(255,255,255,0.05)" : "#f1f5f9", border: `1px solid ${bdr}`, color: text1, padding: "6px 12px", borderRadius: "8px", fontSize: "13px", fontWeight: 600, outline: "none", cursor: "pointer", fontFamily: "'Lexend',sans-serif" }}
+              >
+                {sems.map(s => <option key={s} value={s}>{s === "All" ? "All" : `Sem ${s}`}</option>)}
+              </select>
+            </div>
+
+            <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+              <span style={{ fontSize: "12px", color: text3, fontWeight: 700, textTransform: "uppercase" }}>Sort:</span>
+              <select 
+                value={sortBy} 
+                onChange={(e) => setSortBy(e.target.value)}
+                style={{ background: isDark ? "rgba(255,255,255,0.05)" : "#f1f5f9", border: `1px solid ${bdr}`, color: text1, padding: "6px 12px", borderRadius: "8px", fontSize: "13px", fontWeight: 600, outline: "none", cursor: "pointer", fontFamily: "'Lexend',sans-serif" }}
+              >
+                <option value="name">Name (A-Z)</option>
+                <option value="branch">Branch (A-Z)</option>
+                <option value="semAsc">Sem (Low-High)</option>
+                <option value="semDesc">Sem (High-Low)</option>
+              </select>
+            </div>
+          </div>
+        </div>
+
+        {loading ? (
+          <div style={{ textAlign: "center", padding: "40px", color: text3 }}>Loading...</div>
+        ) : (
+          <div style={{ display: "flex", flexDirection: "column" }}>
+            {processedStudents.map((student) => (
+              <div key={student.uid} className="student-row">
+                <div style={{ display: "flex", alignItems: "center", gap: "16px" }}>
+                  <div style={{ width: "40px", height: "40px", borderRadius: "50%", background: "#e2e8f0", overflow: "hidden" }}>
+                    {student.photoURL ? (
+                      <img src={student.photoURL} alt={student.fullName} style={{ width: "100%", height: "100%", objectFit: "cover" }} referrerPolicy="no-referrer" />
+                    ) : (
+                      <div style={{ width: "100%", height: "100%", display: "flex", alignItems: "center", justifyContent: "center", background: "#00FF00", color: "#0f172a", fontWeight: "bold" }}>
+                        {student.fullName ? student.fullName.charAt(0) : "?"}
+                      </div>
+                    )}
+                  </div>
+                  <div>
+                    <div style={{ fontSize: "14px", fontWeight: 600, color: text1, display: "flex", alignItems: "center", gap: "6px" }}>
+                      {student.fullName || "Unknown"}
+                      {student.blocked && (
+                        <span style={{ fontSize: "10px", background: "rgba(239,68,68,0.1)", color: "#ef4444", padding: "2px 6px", borderRadius: "4px", fontWeight: 700, textTransform: "uppercase" }}>Blocked</span>
+                      )}
+                    </div>
+                    <div style={{ fontSize: "12px", color: text2 }}>{student.email}</div>
+                  </div>
+                </div>
+
+                <div style={{ display: "flex", alignItems: "center", gap: "24px" }}>
+                  <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", minWidth: "80px" }}>
+                    <span style={{ fontSize: "10px", textTransform: "uppercase", color: text3, fontWeight: 700 }}>Branch</span>
+                    <span style={{ fontSize: "13px", fontWeight: 600, color: text1 }}>{student.branch || "N/A"}</span>
+                  </div>
+                  <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", minWidth: "60px" }}>
+                    <span style={{ fontSize: "10px", textTransform: "uppercase", color: text3, fontWeight: 700 }}>Sem</span>
+                    <span style={{ fontSize: "13px", fontWeight: 600, color: text1 }}>{student.sem || "N/A"}</span>
+                  </div>
+                  <div style={{ display: "flex", gap: "8px", minWidth: "200px", justifyContent: "flex-end" }}>
+                    <button 
+                      onClick={() => { setEditingStudent(student); setEditForm({ fullName: student.fullName || "", branch: student.branch || "", sem: student.sem || "" }); }}
+                      style={{ background: isDark ? "rgba(255,255,255,0.05)" : "#f1f5f9", color: text1, border: `1px solid ${bdr}`, padding: "6px 12px", borderRadius: "8px", fontSize: "12px", fontWeight: 700, cursor: "pointer", transition: "all 0.2s", display: "flex", alignItems: "center", gap: "6px" }}
+                    >
+                      <span className="ms" style={{ fontSize: "16px" }}>edit</span>
+                      Edit
+                    </button>
+                    <button 
+                      onClick={() => handleToggleBlock(student.uid, student.blocked)}
+                      style={{ background: student.blocked ? "rgba(239,68,68,0.1)" : "rgba(245,158,11,0.1)", color: student.blocked ? "#ef4444" : "#f59e0b", border: `1px solid ${student.blocked ? "rgba(239,68,68,0.2)" : "rgba(245,158,11,0.2)"}`, padding: "6px 12px", borderRadius: "8px", fontSize: "12px", fontWeight: 700, cursor: "pointer", transition: "all 0.2s", display: "flex", alignItems: "center", gap: "6px" }}
+                    >
+                      <span className="ms" style={{ fontSize: "16px" }}>{student.blocked ? "lock_open" : "block"}</span>
+                      {student.blocked ? "Unblock" : "Block"}
+                    </button>
+                    <button 
+                      className="btn-promote" 
+                      onClick={() => handlePromote(student.uid, student.sem)}
+                      disabled={!student.sem || student.sem === "Alumni"}
+                    >
+                      <span className="ms" style={{ fontSize: "16px" }}>upgrade</span>
+                      Promote
+                    </button>
+                    <button 
+                      className="btn-delete" 
+                      onClick={() => handleDelete(student.uid)}
+                    >
+                      <span className="ms" style={{ fontSize: "16px" }}>delete</span>
+                      Delete
+                    </button>
+                  </div>
+                </div>
+              </div>
+            ))}
+            {processedStudents.length === 0 && !loading && (
+              <div style={{ padding: "32px", textAlign: "center", color: text3 }}>No students found matching your criteria.</div>
+            )}
+          </div>
+        )}
+      </div>
+
+      {undoAction && (
+        <div style={{ position: "fixed", bottom: "32px", left: "50%", transform: "translateX(-50%)", background: isDark ? "#1e293b" : "#ffffff", border: `1px solid ${bdr}`, padding: "16px 24px", borderRadius: "16px", display: "flex", alignItems: "center", gap: "16px", boxShadow: "0 10px 30px rgba(0,0,0,0.2)", zIndex: 100 }}>
+          <span style={{ color: text1, fontSize: "14px", fontWeight: 600 }}>{undoAction.message}</span>
+          <button onClick={handleUndo} style={{ background: "rgba(245,158,11,0.1)", color: "#f59e0b", border: "none", padding: "6px 16px", borderRadius: "8px", fontSize: "13px", fontWeight: 700, cursor: "pointer" }}>
+            Undo (10s)
+          </button>
+        </div>
+      )}
+
+    </>
+  );
+
+  const renderAdmins = () => (
+    <div className="admin-card">
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "16px", flexWrap: "wrap", gap: "16px" }}>
+        <h3 style={{ fontSize: "18px", fontWeight: 700, color: text1, margin: 0 }}>Manage Admins</h3>
+        <form onSubmit={handleAddAdmin} style={{ display: "flex", gap: "8px", alignItems: "center" }}>
+          <input 
+            type="email" 
+            placeholder="User's email to promote" 
+            value={newAdminEmail}
+            onChange={e => setNewAdminEmail(e.target.value)}
+            style={{ background: isDark ? "rgba(255,255,255,0.05)" : "#f1f5f9", border: `1px solid ${bdr}`, color: text1, padding: "8px 12px", borderRadius: "8px", fontSize: "13px", fontWeight: 500, outline: "none", width: "220px", fontFamily: "'Lexend',sans-serif" }}
+            required
+          />
+          <button type="submit" disabled={adminSaving} style={{ background: "rgba(0,255,0,0.1)", color: "#00DD00", border: "1px solid rgba(0,255,0,0.2)", padding: "8px 16px", borderRadius: "8px", fontSize: "13px", fontWeight: 700, cursor: "pointer", transition: "all 0.2s" }}>
+            {adminSaving ? "Promoting..." : "Promote to Admin"}
+          </button>
+        </form>
+      </div>
+      {adminMessage && <div style={{ fontSize: "13px", color: adminMessage.includes("Error") || adminMessage.includes("No user") ? "#ef4444" : "#00FF00", marginBottom: "16px", fontWeight: 600 }}>{adminMessage}</div>}
+      <div style={{ display: "flex", flexDirection: "column" }}>
+        {adminsOnly.map((admin) => (
+          <div key={admin.uid} className="student-row">
+            <div style={{ display: "flex", alignItems: "center", gap: "16px" }}>
+              <div style={{ width: "40px", height: "40px", borderRadius: "50%", background: "#e2e8f0", overflow: "hidden" }}>
+                {admin.photoURL ? (
+                  <img src={admin.photoURL} alt={admin.fullName} style={{ width: "100%", height: "100%", objectFit: "cover" }} referrerPolicy="no-referrer" />
+                ) : (
+                  <div style={{ width: "100%", height: "100%", display: "flex", alignItems: "center", justifyContent: "center", background: "#00FF00", color: "#0f172a", fontWeight: "bold" }}>
+                    {admin.fullName ? admin.fullName.charAt(0) : "A"}
+                  </div>
+                )}
+              </div>
+              <div>
+                <div style={{ fontSize: "14px", fontWeight: 600, color: text1, display: "flex", alignItems: "center", gap: "6px" }}>
+                  {admin.fullName || "Unknown Admin"}
+                  <span className="ms" style={{ fontSize: "16px", color: "#00FF00" }} title="Admin">verified</span>
+                  {admin.blocked && (
+                    <span style={{ fontSize: "10px", background: "rgba(239,68,68,0.1)", color: "#ef4444", padding: "2px 6px", borderRadius: "4px", fontWeight: 700, textTransform: "uppercase" }}>Blocked</span>
+                  )}
+                </div>
+                <div style={{ fontSize: "12px", color: text2 }}>{admin.email}</div>
+              </div>
+            </div>
+            <div style={{ display: "flex", gap: "8px" }}>
+              <button 
+                onClick={() => { setEditingStudent(admin); setEditForm({ fullName: admin.fullName || "", branch: admin.branch || "", sem: admin.sem || "" }); }}
+                style={{ background: isDark ? "rgba(255,255,255,0.05)" : "#f1f5f9", color: text1, border: `1px solid ${bdr}`, padding: "6px 12px", borderRadius: "8px", fontSize: "12px", fontWeight: 700, cursor: "pointer", transition: "all 0.2s", display: "flex", alignItems: "center", gap: "6px" }}
+              >
+                <span className="ms" style={{ fontSize: "16px" }}>edit</span>
+                Edit
+              </button>
+              <button 
+                onClick={() => handleToggleBlock(admin.uid, admin.blocked)}
+                style={{ background: admin.blocked ? "rgba(239,68,68,0.1)" : "rgba(245,158,11,0.1)", color: admin.blocked ? "#ef4444" : "#f59e0b", border: `1px solid ${admin.blocked ? "rgba(239,68,68,0.2)" : "rgba(245,158,11,0.2)"}`, padding: "6px 12px", borderRadius: "8px", fontSize: "12px", fontWeight: 700, cursor: "pointer", transition: "all 0.2s", display: "flex", alignItems: "center", gap: "6px" }}
+              >
+                <span className="ms" style={{ fontSize: "16px" }}>{admin.blocked ? "lock_open" : "block"}</span>
+                {admin.blocked ? "Unblock" : "Block"}
+              </button>
+              <button 
+                className="btn-delete" 
+                onClick={() => handleRemoveAdmin(admin.uid)}
+                disabled={admin.uid === authUser?.uid}
+                title={admin.uid === authUser?.uid ? "You cannot delete yourself" : ""}
+              >
+                <span className="ms" style={{ fontSize: "16px" }}>delete</span>
+                Remove Admin
+              </button>
+            </div>
+          </div>
+        ))}
+      </div>
     </div>
   );
 
-  const handleFileDrop = (e) => {
-    e.preventDefault();
-    setDragOver(false);
-    const f = e.dataTransfer?.files?.[0] || e.target?.files?.[0];
-    if (f?.type === "application/pdf") {
-      setFile(f); 
-      setStatus("idle"); 
-      setErrorMsg("");
-    } else {
-      setErrorMsg("Only PDF files are accepted."); 
-      setStatus("error");
-    }
-  };
+  const renderNotes = () => (
+    <div className="admin-card">
+      <h3 style={{ fontSize: "18px", fontWeight: 700, color: text1, margin: 0, marginBottom: "16px" }}>Upload Notes</h3>
+      <form onSubmit={handleUploadNote} style={{ display: "flex", flexDirection: "column", gap: "16px", maxWidth: "500px" }}>
+        <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
+          <label style={{ fontSize: "12px", fontWeight: 600, color: text3, textTransform: "uppercase" }}>Note Title</label>
+          <input type="text" value={noteTitle} onChange={e => setNoteTitle(e.target.value)} required placeholder="e.g. Data Structures Ch 1" style={{ background: isDark ? "rgba(255,255,255,0.05)" : "#f1f5f9", border: `1px solid ${bdr}`, color: text1, padding: "10px 14px", borderRadius: "8px", fontSize: "14px", outline: "none", fontFamily: "'Lexend',sans-serif" }} />
+        </div>
+        <div style={{ display: "flex", gap: "16px" }}>
+          <div style={{ display: "flex", flexDirection: "column", gap: "6px", flex: 1 }}>
+            <label style={{ fontSize: "12px", fontWeight: 600, color: text3, textTransform: "uppercase" }}>Branch</label>
+            <input type="text" value={noteBranch} onChange={e => setNoteBranch(e.target.value)} required placeholder="e.g. IT, CS" style={{ background: isDark ? "rgba(255,255,255,0.05)" : "#f1f5f9", border: `1px solid ${bdr}`, color: text1, padding: "10px 14px", borderRadius: "8px", fontSize: "14px", outline: "none", fontFamily: "'Lexend',sans-serif" }} />
+          </div>
+          <div style={{ display: "flex", flexDirection: "column", gap: "6px", flex: 1 }}>
+            <label style={{ fontSize: "12px", fontWeight: 600, color: text3, textTransform: "uppercase" }}>Semester</label>
+            <input type="number" value={noteSem} onChange={e => setNoteSem(e.target.value)} required min="1" style={{ background: isDark ? "rgba(255,255,255,0.05)" : "#f1f5f9", border: `1px solid ${bdr}`, color: text1, padding: "10px 14px", borderRadius: "8px", fontSize: "14px", outline: "none", fontFamily: "'Lexend',sans-serif" }} />
+          </div>
+        </div>
+        <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
+          <label style={{ fontSize: "12px", fontWeight: 600, color: text3, textTransform: "uppercase" }}>File (Optional stub)</label>
+          <input type="file" onChange={e => setNoteFile(e.target.files[0])} style={{ color: text1, fontSize: "14px", fontFamily: "'Lexend',sans-serif" }} />
+        </div>
+        <button type="submit" disabled={notesSaving} style={{ background: "rgba(0,255,0,0.1)", color: "#00DD00", border: "1px solid rgba(0,255,0,0.2)", padding: "10px 16px", borderRadius: "8px", fontSize: "14px", fontWeight: 700, cursor: "pointer", transition: "all 0.2s", alignSelf: "flex-start", marginTop: "8px" }}>
+          {notesSaving ? "Saving..." : "Upload Note"}
+        </button>
+        {notesMessage && <div style={{ fontSize: "13px", color: notesMessage.includes("Error") ? "#ef4444" : "#00FF00", fontWeight: 600 }}>{notesMessage}</div>}
+      </form>
+    </div>
+  );
 
-  const handleUpload = async () => {
-    if (!file || !subject || !moduleKey || !moduleTitle) {
-      setErrorMsg("Fill all required fields (Title, Subject, Module & PDF).");
-      setStatus("error"); 
-      return;
-    }
-
-    setStatus("uploading"); 
-    setErrorMsg("");
-
-    try {
-      const dbPath = `notes/${branch}/${sem}/subjects/${subject}/modules/${moduleKey}`;
-
-      // Save Title + Description directly under the module node
-      await update(dbRef(db, dbPath), {
-        Title: moduleTitle,
-        Description: moduleDescription.trim() || "",   // ← Stored here
-      });
-
-      // Upload PDF in chunks
-      await uploadPDFChunked(db, dbPath, file, (pct, msg) => {
-        setProgress(pct);
-        setStatusMsg(msg);
-      });
-
-      // Warm Redis immediately so viewers read from Redis before Firebase.
-      try {
-        await fetch("/api/notes/pdf", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ branch, sem, subject, module: moduleKey }),
-        });
-      } catch { }
-
-      setStatus("success");
-      setFile(null);
-      // Optional: Reset description after success
-      // setModuleDescription("");
-    } catch (err) {
-      setStatus("error");
-      setErrorMsg(err.message);
-    }
-  };
-
-  const inp = {
-    width: "100%", padding: "12px 16px",
-    background: inputBg, border: `1px solid ${inputBdr}`,
-    borderRadius: "12px", color: text1, fontSize: "13px",
-    fontFamily: "'Lexend',sans-serif", fontWeight: 500, outline: "none",
-  };
-
-  const lbl = {
-    fontSize: "11px", fontWeight: 700, color: text3,
-    textTransform: "uppercase", letterSpacing: "0.1em",
-    marginBottom: "8px", display: "block",
-  };
-
-  if (authLoading) return null;
+  const renderSettings = () => (
+    <div className="admin-card">
+      <h3 style={{ fontSize: "18px", fontWeight: 700, color: text1, margin: 0, marginBottom: "16px" }}>Institution Settings</h3>
+      <form onSubmit={handleSaveSettings} style={{ display: "flex", flexDirection: "column", gap: "16px", maxWidth: "400px" }}>
+        <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
+          <label style={{ fontSize: "12px", fontWeight: 600, color: text3, textTransform: "uppercase" }}>College Name</label>
+          <input 
+            type="text" 
+            value={instSettings.collegeName} 
+            onChange={e => setInstSettings({...instSettings, collegeName: e.target.value})} 
+            placeholder="e.g. TCET" 
+            style={{ background: isDark ? "rgba(255,255,255,0.05)" : "#f1f5f9", border: `1px solid ${bdr}`, color: text1, padding: "10px 14px", borderRadius: "8px", fontSize: "14px", outline: "none", fontFamily: "'Lexend',sans-serif" }} 
+          />
+        </div>
+        <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
+          <label style={{ fontSize: "12px", fontWeight: 600, color: text3, textTransform: "uppercase" }}>Total Semesters</label>
+          <input 
+            type="number" 
+            value={instSettings.totalSems} 
+            onChange={e => setInstSettings({...instSettings, totalSems: e.target.value})} 
+            min="1" 
+            style={{ background: isDark ? "rgba(255,255,255,0.05)" : "#f1f5f9", border: `1px solid ${bdr}`, color: text1, padding: "10px 14px", borderRadius: "8px", fontSize: "14px", outline: "none", fontFamily: "'Lexend',sans-serif" }} 
+          />
+        </div>
+        <p style={{ fontSize: "12px", color: text2, lineHeight: 1.5 }}>
+          If Total Semesters is set to {instSettings.totalSems || 8}, any student promoted past Semester {instSettings.totalSems || 8} will be marked as "Alumni".
+        </p>
+        <button type="submit" disabled={settingsSaving} style={{ background: "rgba(0,255,0,0.1)", color: "#00DD00", border: "1px solid rgba(0,255,0,0.2)", padding: "10px 16px", borderRadius: "8px", fontSize: "14px", fontWeight: 700, cursor: "pointer", transition: "all 0.2s", alignSelf: "flex-start", marginTop: "8px" }}>
+          {settingsSaving ? "Saving..." : "Save Settings"}
+        </button>
+        {settingsMessage && <div style={{ fontSize: "13px", color: settingsMessage.includes("Error") ? "#ef4444" : "#00FF00", fontWeight: 600 }}>{settingsMessage}</div>}
+      </form>
+    </div>
+  );
 
   return (
     <>
@@ -256,67 +673,57 @@ export default function AdminUploadPage() {
         html,body{height:100%;}
         body{font-family:'Lexend',sans-serif;background:${bg};color:${text1};overflow:hidden;}
         .ms{font-family:'Material Symbols Outlined'!important;font-weight:normal;font-style:normal;line-height:1;display:inline-block;}
-        @keyframes fadeUp{from{opacity:0;transform:translateY(12px);}to{opacity:1;transform:translateY(0);}}
-        @keyframes spin{to{transform:rotate(360deg);}}
-        @keyframes successPop{0%{transform:scale(0.85);opacity:0;}60%{transform:scale(1.05);}100%{transform:scale(1);opacity:1;}}
-        @keyframes shimmer{0%{background-position:-200% 0;}100%{background-position:200% 0;}}
         .sb-root{display:flex;height:100vh;overflow:hidden;}
-        .sb-sidebar{width:260px;min-width:260px;height:100vh;background:${sidebar};backdrop-filter:blur(12px);border-right:1px solid ${bdr};display:flex;flex-direction:column;padding:24px 20px;z-index:20;}
+        .sb-sidebar{width:260px;min-width:260px;height:100vh;background:${sidebarBg};backdrop-filter:blur(12px);border-right:1px solid ${bdr};display:flex;flex-direction:column;padding:24px 20px;z-index:20;}
         .nav-link{display:flex;align-items:center;gap:12px;padding:12px 14px;border-radius:9999px;font-size:13px;font-weight:600;color:${text2};transition:all 0.2s;cursor:pointer;border:none;background:none;width:100%;text-align:left;font-family:'Lexend',sans-serif;}
         .nav-link:hover{background:rgba(0,200,0,0.08);color:${text1};}
         .nav-link.active{background:#00FF00;color:#0f172a;box-shadow:0 6px 20px rgba(0,255,0,0.28);}
-        .nav-link.danger{color:#f87171;}
-        .nav-link.danger:hover{background:rgba(248,113,113,0.1);}
         .sb-main{flex:1;display:flex;flex-direction:column;height:100vh;overflow:hidden;}
-        .sb-header{height:72px;background:${header};backdrop-filter:blur(12px);border-bottom:1px solid ${bdr};padding:0 32px;display:flex;align-items:center;justify-content:space-between;flex-shrink:0;}
+        .sb-header{height:72px;background:${headerBg};backdrop-filter:blur(12px);border-bottom:1px solid ${bdr};padding:0 32px;display:flex;align-items:center;justify-content:space-between;flex-shrink:0;}
         .sb-scroll{flex:1;overflow-y:auto;padding:36px;display:flex;flex-direction:column;gap:28px;}
         .sb-scroll::-webkit-scrollbar{width:4px;}
         .sb-scroll::-webkit-scrollbar-thumb{background:rgba(0,200,0,0.2);border-radius:2px;}
-        .form-card{background:${card};border:1px solid ${bdr};border-radius:24px;padding:32px;display:flex;flex-direction:column;gap:22px;animation:fadeUp 0.35s ease both;}
-        .form-row-2{display:grid;grid-template-columns:1fr 1fr;gap:18px;}
-        .form-row-3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:18px;}
-        select{appearance:none;cursor:pointer;background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%2364748b' stroke-width='2'%3E%3Cpolyline points='6 9 12 15 18 9'/%3E%3C/svg%3E");background-repeat:no-repeat;background-position:right 14px center;}
-        .drop-zone{border:2px dashed ${bdr};border-radius:20px;padding:44px 24px;display:flex;flex-direction:column;align-items:center;gap:14px;cursor:pointer;transition:all 0.22s;text-align:center;}
-        .drop-zone:hover,.drop-zone.over{border-color:#00FF00;background:rgba(0,255,0,0.03);}
-        .drop-zone.has-file{border-color:rgba(0,255,0,0.5);background:rgba(0,255,0,0.05);}
-        .progress-track{width:100%;height:8px;background:${isDark?"rgba(255,255,255,0.06)":"rgba(0,0,0,0.06)"};border-radius:9999px;overflow:hidden;}
-        .progress-fill{height:100%;border-radius:9999px;background:linear-gradient(90deg,#00AA00,#00FF00,#00AA00);background-size:200% 100%;animation:shimmer 1.5s linear infinite;transition:width 0.3s ease;}
-        .btn-up{width:100%;padding:16px;background:#00FF00;color:#0f172a;border:none;border-radius:14px;font-size:14px;font-weight:700;font-family:'Lexend',sans-serif;cursor:pointer;display:flex;align-items:center;justify-content:center;gap:10px;transition:all 0.22s cubic-bezier(0.34,1.56,0.64,1);box-shadow:0 4px 20px rgba(0,255,0,0.3);}
-        .btn-up:hover:not(:disabled){transform:translateY(-2px);box-shadow:0 8px 28px rgba(0,255,0,0.45);}
-        .btn-up:disabled{opacity:0.4;cursor:not-allowed;transform:none;}
-        @media(max-width:768px){.sb-sidebar{display:none;}.form-row-2,.form-row-3{grid-template-columns:1fr;}.sb-scroll{padding:20px 16px 80px;}}
+        .admin-card{background:${card};border:1px solid ${bdr};border-radius:24px;padding:32px;display:flex;flex-direction:column;gap:22px;}
+        .student-row{display:flex;align-items:center;justify-content:space-between;padding:16px;border-bottom:1px solid ${bdr};}
+        .student-row:last-child{border-bottom:none;}
+        .btn-promote{background:rgba(0,255,0,0.1);color:#00DD00;border:1px solid rgba(0,255,0,0.2);padding:6px 12px;border-radius:8px;font-size:12px;font-weight:700;cursor:pointer;transition:all 0.2s;display:flex;align-items:center;gap:6px;}
+        .btn-promote:hover{background:rgba(0,255,0,0.2);}
+        .btn-promote:disabled{opacity:0.5;cursor:not-allowed;}
+        .btn-delete{background:rgba(239,68,68,0.1);color:#ef4444;border:1px solid rgba(239,68,68,0.2);padding:6px 12px;border-radius:8px;font-size:12px;font-weight:700;cursor:pointer;transition:all 0.2s;display:flex;align-items:center;gap:6px;}
+        .btn-delete:hover{background:rgba(239,68,68,0.2);}
+        .btn-delete:disabled{opacity:0.5;cursor:not-allowed;}
+        @media(max-width:768px){.sb-sidebar{display:none;}.sb-scroll{padding:20px 16px 80px;}}
       `}</style>
 
       <div className="sb-root">
-        {/* Sidebar - unchanged */}
+        {/* Sidebar */}
         <aside className="sb-sidebar">
-          {/* ... your existing sidebar code ... */}
-          <div style={{ display:"flex", alignItems:"center", gap:"12px", marginBottom:"40px", padding:"0 4px" }}>
-            <div style={{ width:"40px", height:"40px", background:"#00FF00", borderRadius:"10px", display:"flex", alignItems:"center", justifyContent:"center", boxShadow:"0 0 16px rgba(0,255,0,0.35)" }}>
-              <span className="ms" style={{ color:"#0f172a", fontSize:"22px" }}>school</span>
+          <div style={{ display: "flex", alignItems: "center", gap: "12px", marginBottom: "40px", padding: "0 10px" }}>
+            <div style={{ width: "40px", height: "40px", background: "#00FF00", borderRadius: "10px", display: "flex", alignItems: "center", justifyContent: "center", boxShadow: "0 0 16px rgba(0,255,0,0.35)" }}>
+              <span className="ms" style={{ color: "#0f172a", fontSize: "22px" }}>school</span>
             </div>
             <div>
-              <h1 style={{ fontSize:"1.1rem", fontWeight:700, letterSpacing:"-0.04em", color:text1, lineHeight:1 }}>StudyBuddy</h1>
-              <p style={{ fontSize:"10px", fontWeight:700, color:"#00AA00", textTransform:"uppercase", letterSpacing:"0.12em", marginTop:"3px" }}>Engineering AI</p>
+              <h2 style={{ fontSize: "16px", fontWeight: 700, color: text1, margin: 0, lineHeight: 1.2 }}>Admin Panel</h2>
+              <span style={{ fontSize: "11px", color: text2 }}>StudyBuddy App</span>
             </div>
           </div>
-          <nav style={{ flex:1, display:"flex", flexDirection:"column", gap:"4px" }}>
-            {NAV_ITEMS.slice(0,4).map(({id,icon,label,href}) => (
-              <button key={id} className="nav-link" onClick={() => router.push(href)}>
-                <span className="ms" style={{ fontSize:"20px" }}>{icon}</span>{label}
-              </button>
-            ))}
-            <button className="nav-link active">
-              <span className="ms" style={{ fontSize:"20px" }}>upload_file</span>Admin Upload
+          
+          <nav style={{ display: "flex", flexDirection: "column", gap: "8px", flex: 1 }}>
+            <button className={`nav-link ${activeTab === 'dashboard' ? 'active' : ''}`} onClick={() => setActiveTab('dashboard')}>
+              <span className="ms" style={{ fontSize: "20px" }}>dashboard</span>
+              Dashboard
             </button>
-            <div style={{ padding:"16px 4px 8px", fontSize:"10px", fontWeight:700, color:text3, textTransform:"uppercase", letterSpacing:"0.12em" }}>Account</div>
-            {NAV_ITEMS.slice(4).map(({id,icon,label,href}) => (
-              <button key={id} className="nav-link" onClick={() => router.push(href)}>
-                <span className="ms" style={{ fontSize:"20px" }}>{icon}</span>{label}
-              </button>
-            ))}
-            <button className="nav-link danger" onClick={() => logoutAndClearCache(auth).then(() => router.replace("/"))}>
-              <span className="ms" style={{ fontSize:"20px" }}>logout</span>Sign Out
+            <button className={`nav-link ${activeTab === 'notes' ? 'active' : ''}`} onClick={() => setActiveTab('notes')}>
+              <span className="ms" style={{ fontSize: "20px" }}>cloud_upload</span>
+              Upload Notes
+            </button>
+            <button className={`nav-link ${activeTab === 'admins' ? 'active' : ''}`} onClick={() => setActiveTab('admins')}>
+              <span className="ms" style={{ fontSize: "20px" }}>manage_accounts</span>
+              Manage Admins
+            </button>
+            <button className={`nav-link ${activeTab === 'settings' ? 'active' : ''}`} onClick={() => setActiveTab('settings')}>
+              <span className="ms" style={{ fontSize: "20px" }}>settings</span>
+              Institution Config
             </button>
           </nav>
         </aside>
@@ -324,226 +731,173 @@ export default function AdminUploadPage() {
         {/* Main Content */}
         <main className="sb-main">
           <header className="sb-header">
-            {/* ... your existing header ... */}
-            <div style={{ display:"flex", alignItems:"center", gap:"12px" }}>
-              <div style={{ width:"36px", height:"36px", background:"#00FF00", borderRadius:"9px", display:"flex", alignItems:"center", justifyContent:"center", boxShadow:"0 0 12px rgba(0,255,0,0.4)" }}>
-                <span className="ms" style={{ color:"#0f172a", fontSize:"20px" }}>upload_file</span>
-              </div>
-              <div>
-                <h2 style={{ fontSize:"15px", fontWeight:700, color:text1, margin:0 }}>Admin Upload</h2>
-                <p style={{ fontSize:"11px", color:text3, margin:0 }}>Chunks PDF → stores in Firebase Realtime DB · No storage fees</p>
-              </div>
+            <div>
+              <h1 style={{ fontSize: "1.2rem", fontWeight: 700, color: text1, margin: 0 }}>
+                {activeTab === 'dashboard' && 'Student Dashboard'}
+                {activeTab === 'notes' && 'Upload Notes'}
+                {activeTab === 'admins' && 'Manage Admins'}
+                {activeTab === 'settings' && 'Settings'}
+              </h1>
             </div>
-            <div style={{ display:"flex", alignItems:"center", gap:"10px", cursor:"pointer" }} onClick={() => router.push("/profile")}>
-              <div style={{ textAlign:"right" }}>
-                <p style={{ fontSize:"12px", fontWeight:700, color:text1, margin:0 }}>{fullName || "—"}</p>
-                <p style={{ fontSize:"10px", color:"#00AA00", fontWeight:700, margin:0 }}>Admin</p>
-              </div>
-              <AvatarEl size={40} />
+            
+            <div style={{ display: "flex", alignItems: "center", gap: "16px" }}>
+              <ThemeSwitcher theme={theme} setTheme={setTheme} resolved={resolved} />
+              
+              {userData && (
+                <div style={{ position: "relative" }}>
+                  <div 
+                    onClick={() => setShowProfileMenu(!showProfileMenu)}
+                    style={{ cursor: "pointer", width: "40px", height: "40px", borderRadius: "50%", overflow: "hidden", background: "#e2e8f0", border: `2px solid ${bdr}`, transition: "transform 0.2s" }}
+                    onMouseEnter={e => e.currentTarget.style.transform = "scale(1.05)"}
+                    onMouseLeave={e => e.currentTarget.style.transform = "scale(1)"}
+                  >
+                    {userData.photoURL ? (
+                      <img src={userData.photoURL} alt="Admin" style={{ width: "100%", height: "100%", objectFit: "cover" }} referrerPolicy="no-referrer" />
+                    ) : (
+                      <div style={{ width: "100%", height: "100%", display: "flex", alignItems: "center", justifyContent: "center", background: "#00FF00", color: "#0f172a", fontWeight: "bold", fontSize: "14px" }}>
+                        {userData.fullName ? userData.fullName.charAt(0) : "A"}
+                      </div>
+                    )}
+                  </div>
+                  
+                  {showProfileMenu && (
+                    <div style={{ position: "absolute", top: "100%", right: "0", marginTop: "12px", background: card, border: `1px solid ${bdr}`, borderRadius: "16px", padding: "12px", minWidth: "220px", boxShadow: "0 10px 30px rgba(0,0,0,0.2)", zIndex: 50 }}>
+                      <div style={{ display: "flex", alignItems: "center", gap: "8px", padding: "8px", borderBottom: `1px solid ${bdr}`, marginBottom: "8px" }}>
+                        <div style={{ display: "flex", flexDirection: "column" }}>
+                          <div style={{ display: "flex", alignItems: "center", gap: "4px" }}>
+                            <span style={{ fontSize: "14px", fontWeight: 700, color: text1 }}>{userData.fullName || "Admin"}</span>
+                            <span className="ms" style={{ fontSize: "14px", color: "#00FF00" }} title="Admin">verified</span>
+                          </div>
+                          <span style={{ fontSize: "11px", color: text3 }}>{userData.email}</span>
+                        </div>
+                      </div>
+                      <button 
+                        onClick={() => {
+                          setShowProfileMenu(false);
+                          setShowLogoutModal(true);
+                        }}
+                        style={{ width: "100%", display: "flex", alignItems: "center", gap: "8px", padding: "10px", background: "rgba(239,68,68,0.1)", color: "#ef4444", border: "none", borderRadius: "8px", cursor: "pointer", fontSize: "13px", fontWeight: 600, transition: "background 0.2s" }}
+                        onMouseEnter={e => e.currentTarget.style.background = "rgba(239,68,68,0.2)"}
+                        onMouseLeave={e => e.currentTarget.style.background = "rgba(239,68,68,0.1)"}
+                      >
+                        <span className="ms" style={{ fontSize: "18px" }}>logout</span>
+                        Sign Out
+                      </button>
+                    </div>
+                  )}
+                </div>
+              )}
             </div>
           </header>
 
           <div className="sb-scroll">
-            {/* Heading */}
-            <div style={{ animation:"fadeUp 0.3s ease both" }}>
-              <h2 style={{ fontSize:"clamp(1.4rem,3vw,1.9rem)", fontWeight:700, letterSpacing:"-0.03em", color:text1, marginBottom:"6px" }}>Upload Module PDF</h2>
-              <p style={{ fontSize:"14px", color:text2, margin:0 }}>PDF is split into 500KB chunks and stored directly in Firebase Realtime Database.</p>
-            </div>
-
-            {/* How it works - unchanged */}
-            <div style={{ display:"flex", gap:"12px", flexWrap:"wrap", animation:"fadeUp 0.35s ease both" }}>
-              {[
-                { icon:"upload_file", label:"1. Pick PDF", sub:"Any size" },
-                { icon:"cut", label:"2. Auto-chunks", sub:"500KB each" },
-                { icon:"database", label:"3. Saves to Firebase", sub:"Realtime DB" },
-                { icon:"picture_as_pdf",label:"4. Students view it", sub:"Your PDF viewer" },
-              ].map(({icon,label,sub}) => (
-                <div key={label} style={{ flex:"1 1 160px", background:card, border:`1px solid ${bdr}`, borderRadius:"16px", padding:"16px", display:"flex", alignItems:"center", gap:"12px" }}>
-                  <div style={{ width:"40px", height:"40px", borderRadius:"12px", background:"rgba(0,255,0,0.1)", display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0 }}>
-                    <span className="ms" style={{ fontSize:"22px", color:"#00CC00" }}>{icon}</span>
-                  </div>
-                  <div>
-                    <p style={{ fontSize:"12px", fontWeight:700, color:text1, margin:0 }}>{label}</p>
-                    <p style={{ fontSize:"11px", color:text3, margin:0 }}>{sub}</p>
-                  </div>
-                </div>
-              ))}
-            </div>
-
-            {/* Success & Error Messages */}
-            {status === "success" && (
-              <div style={{ background:"rgba(0,255,0,0.08)", border:"1px solid rgba(0,255,0,0.3)", borderRadius:"16px", padding:"20px 24px", display:"flex", alignItems:"center", gap:"16px", animation:"successPop 0.5s cubic-bezier(0.34,1.56,0.64,1) both" }}>
-                <div style={{ width:"52px", height:"52px", borderRadius:"14px", background:"rgba(0,255,0,0.15)", display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0 }}>
-                  <span className="ms" style={{ fontSize:"30px", color:"#00DD00" }}>check_circle</span>
-                </div>
-                <div>
-                  <p style={{ fontSize:"14px", fontWeight:700, color:text1, margin:"0 0 4px" }}>Upload Complete!</p>
-                  <p style={{ fontSize:"12px", color:text2, margin:0 }}>
-                    Module saved successfully with Title and Description.
-                  </p>
-                </div>
-              </div>
-            )}
-
-            {status === "error" && errorMsg && (
-              <div style={{ background:"rgba(239,68,68,0.08)", border:"1px solid rgba(239,68,68,0.25)", borderRadius:"16px", padding:"16px 20px", display:"flex", alignItems:"center", gap:"12px", animation:"fadeUp 0.3s ease both" }}>
-                <span className="ms" style={{ fontSize:"24px", color:"#ef4444" }}>error</span>
-                <p style={{ fontSize:"13px", color:text1, margin:0 }}>{errorMsg}</p>
-              </div>
-            )}
-
-            {/* Form */}
-            <div className="form-card">
-              {/* Path preview */}
-              <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", borderBottom:`1px solid ${bdr}`, paddingBottom:"16px", flexWrap:"wrap", gap:"8px" }}>
-                <div style={{ display:"flex", alignItems:"center", gap:"10px" }}>
-                  <div style={{ width:"8px", height:"8px", borderRadius:"9999px", background:"#00FF00", boxShadow:"0 0 8px rgba(0,255,0,0.7)" }} />
-                  <h3 style={{ fontSize:"14px", fontWeight:700, color:text1, margin:0 }}>Target Path</h3>
-                </div>
-                <code style={{ fontSize:"11px", color:text3, background:isDark?"rgba(255,255,255,0.05)":"rgba(0,0,0,0.04)", padding:"4px 10px", borderRadius:"8px" }}>
-                  notes/{branch}/{sem}/subjects/{subject||"…"}/modules/{moduleKey}
-                </code>
-              </div>
-
-              {/* Branch / Sem / Subject */}
-              <div className="form-row-3">
-                <div>
-                  <label style={lbl}>Branch</label>
-                  <select style={inp} value={branch} onChange={e => setBranch(e.target.value)}>
-                    {BRANCHES.map(b => <option key={b}>{b}</option>)}
-                  </select>
-                </div>
-                <div>
-                  <label style={lbl}>Semester</label>
-                  <select style={inp} value={sem} onChange={e => setSem(e.target.value)}>
-                    {SEMS.map(s => <option key={s}>{s}</option>)}
-                  </select>
-                </div>
-                <div>
-                  <label style={lbl}>Subject</label>
-                  {Object.keys(subjects).length > 0
-                    ? <select style={inp} value={subject} onChange={e => setSubject(e.target.value)}>
-                        {Object.keys(subjects).map(c => <option key={c}>{c}</option>)}
-                      </select>
-                    : <input style={inp} placeholder="e.g. CN" value={subject} onChange={e => setSubject(e.target.value.toUpperCase())} />
-                  }
-                </div>
-              </div>
-
-              {/* Module Details - Updated with Description */}
-              <div className="form-row-3">
-                <div>
-                  <label style={lbl}>Module</label>
-                  <select style={inp} value={moduleKey} onChange={e => setModuleKey(e.target.value)}>
-                    {[1,2,3,4,5,6,7,8].map(n => <option key={n} value={`module${n}`}>module{n}</option>)}
-                  </select>
-                </div>
-                <div>
-                  <label style={lbl}>Module Title <span style={{color:"#ef4444"}}>*</span></label>
-                  <input 
-                    style={inp} 
-                    placeholder="e.g. Introduction to Computer Networks" 
-                    value={moduleTitle} 
-                    onChange={e => setModuleTitle(e.target.value)} 
-                  />
-                </div>
-                <div>
-                  <label style={lbl}>Module Description</label>
-                  <textarea
-                    style={{
-                      ...inp,
-                      minHeight: "88px",
-                      resize: "vertical",
-                      padding: "12px 16px",
-                      lineHeight: "1.5",
-                    }}
-                    placeholder="Brief description of what this module covers (optional)"
-                    value={moduleDescription}
-                    onChange={e => setModuleDescription(e.target.value)}
-                  />
-                </div>
-              </div>
-
-              {/* PDF Drop Zone */}
-              <div>
-                <label style={lbl}>PDF File</label>
-                <div
-                  className={`drop-zone${dragOver?" over":""}${file?" has-file":""}`}
-                  onDragOver={e => { e.preventDefault(); setDragOver(true); }}
-                  onDragLeave={() => setDragOver(false)}
-                  onDrop={handleFileDrop}
-                  onClick={() => fileRef.current?.click()}
-                >
-                  <input ref={fileRef} type="file" accept="application/pdf" style={{ display:"none" }} onChange={handleFileDrop} />
-                  {file ? (
-                    <>
-                      <div style={{ width:"56px", height:"56px", borderRadius:"14px", background:"rgba(239,68,68,0.1)", display:"flex", alignItems:"center", justifyContent:"center" }}>
-                        <span className="ms" style={{ fontSize:"32px", color:"#ef4444" }}>picture_as_pdf</span>
-                      </div>
-                      <div>
-                        <p style={{ fontSize:"14px", fontWeight:700, color:text1, margin:"0 0 4px" }}>{file.name}</p>
-                        <p style={{ fontSize:"12px", color:text3, margin:0 }}>
-                          {(file.size/1024/1024).toFixed(2)} MB ·{" "}
-                          <span style={{ color:"#00AA00", fontWeight:700 }}>
-                            ~{Math.ceil((file.size * 1.37) / CHUNK_SIZE)} chunks
-                          </span>
-                        </p>
-                      </div>
-                      <button
-                        onClick={e => { e.stopPropagation(); setFile(null); setStatus("idle"); }}
-                        style={{ background:"rgba(239,68,68,0.1)", border:"none", borderRadius:"8px", padding:"6px 14px", cursor:"pointer", fontSize:"12px", fontWeight:700, color:"#ef4444", fontFamily:"'Lexend',sans-serif" }}
-                      >Remove</button>
-                    </>
-                  ) : (
-                    <>
-                      <div style={{ width:"64px", height:"64px", borderRadius:"16px", background:isDark?"rgba(255,255,255,0.04)":"rgba(0,200,0,0.06)", display:"flex", alignItems:"center", justifyContent:"center" }}>
-                        <span className="ms" style={{ fontSize:"36px", color:text3 }}>cloud_upload</span>
-                      </div>
-                      <div>
-                        <p style={{ fontSize:"14px", fontWeight:700, color:text1, margin:"0 0 4px" }}>Drag & drop PDF here</p>
-                        <p style={{ fontSize:"12px", color:text3, margin:0 }}>or click to browse · PDF only</p>
-                      </div>
-                    </>
-                  )}
-                </div>
-              </div>
-
-              {/* Upload progress */}
-              {status === "uploading" && (
-                <div style={{ display:"flex", flexDirection:"column", gap:"12px" }}>
-                  <div style={{ display:"flex", justifyContent:"space-between" }}>
-                    <span style={{ fontSize:"12px", fontWeight:600, color:text2 }}>{statusMsg}</span>
-                    <span style={{ fontSize:"12px", fontWeight:700, color:"#00AA00" }}>{progress}%</span>
-                  </div>
-                  <div className="progress-track">
-                    <div className="progress-fill" style={{ width:`${progress}%` }} />
-                  </div>
-                </div>
-              )}
-
-              {/* Upload button */}
-              <button className="btn-up" disabled={status==="uploading"||!file} onClick={handleUpload}>
-                {status === "uploading"
-                  ? <><div style={{ width:"18px", height:"18px", border:"2.5px solid rgba(15,23,42,0.3)", borderTopColor:"#0f172a", borderRadius:"9999px", animation:"spin 0.7s linear infinite" }} />Uploading {progress}%…</>
-                  : <><span className="ms" style={{ fontSize:"20px" }}>upload_file</span>Upload & Chunk to Firebase</>
-                }
-              </button>
-            </div>
-
-            {/* Warning card */}
-            <div style={{ background:isDark?"rgba(245,158,11,0.06)":"rgba(245,158,11,0.05)", border:"1px solid rgba(245,158,11,0.2)", borderRadius:"16px", padding:"16px 20px", display:"flex", gap:"12px", animation:"fadeUp 0.5s ease both" }}>
-              <span className="ms" style={{ fontSize:"22px", color:"#f59e0b", flexShrink:0 }}>warning</span>
-              <div>
-                <p style={{ fontSize:"13px", fontWeight:700, color:text1, margin:"0 0 4px" }}>Large PDFs take time</p>
-                <p style={{ fontSize:"12px", color:text2, margin:0, lineHeight:1.6 }}>
-                  A 10MB PDF becomes ~13MB of base64, split into ~27 chunks. Each chunk is a separate Firebase write.
-                  Keep the page open during upload. Recommended max: <strong>15MB per PDF</strong> for best performance.
-                </p>
-              </div>
-            </div>
+            {activeTab === 'dashboard' && renderDashboard()}
+            {activeTab === 'notes' && renderNotes()}
+            {activeTab === 'admins' && renderAdmins()}
+            {activeTab === 'settings' && renderSettings()}
           </div>
         </main>
       </div>
+
+      
+      {/* Edit Student Modal */}
+      {editingStudent && (
+        <div style={{ position: "fixed", top: 0, left: 0, width: "100%", height: "100%", background: "rgba(0,0,0,0.5)", backdropFilter: "blur(4px)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 100 }}>
+          <div style={{ background: card, padding: "32px", borderRadius: "24px", width: "400px", maxWidth: "90%", boxShadow: "0 25px 50px -12px rgba(0,0,0,0.25)", border: `1px solid ${bdr}` }}>
+            <h3 style={{ fontSize: "20px", fontWeight: 700, color: text1, marginBottom: "20px" }}>Edit Student</h3>
+            
+            <div style={{ display: "flex", flexDirection: "column", gap: "16px", marginBottom: "32px" }}>
+              <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
+                <label style={{ fontSize: "12px", fontWeight: 600, color: text3, textTransform: "uppercase" }}>Full Name</label>
+                <input 
+                  type="text" 
+                  value={editForm.fullName} 
+                  onChange={e => setEditForm({...editForm, fullName: e.target.value})} 
+                  style={{ background: isDark ? "rgba(255,255,255,0.05)" : "#f1f5f9", border: `1px solid ${bdr}`, color: text1, padding: "10px 14px", borderRadius: "8px", fontSize: "14px", outline: "none", fontFamily: "'Lexend',sans-serif" }} 
+                />
+              </div>
+              <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
+                <label style={{ fontSize: "12px", fontWeight: 600, color: text3, textTransform: "uppercase" }}>Branch</label>
+                <select 
+                  value={editForm.branch} 
+                  onChange={e => setEditForm({...editForm, branch: e.target.value})} 
+                  style={{ background: isDark ? "rgba(255,255,255,0.05)" : "#f1f5f9", border: `1px solid ${bdr}`, color: text1, padding: "10px 14px", borderRadius: "8px", fontSize: "14px", outline: "none", fontFamily: "'Lexend',sans-serif", cursor: "pointer" }}
+                >
+                  <option value="">Select Branch</option>
+                  <option value="IT">IT</option>
+                  <option value="CS">CS</option>
+                  <option value="EXTC">EXTC</option>
+                  <option value="AI&DS">AI&DS</option>
+                  <option value="COMP">COMP</option>
+                  {editForm.branch && !["IT","CS","EXTC","AI&DS","COMP"].includes(editForm.branch) && (
+                    <option value={editForm.branch}>{editForm.branch}</option>
+                  )}
+                </select>
+              </div>
+              <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
+                <label style={{ fontSize: "12px", fontWeight: 600, color: text3, textTransform: "uppercase" }}>Semester</label>
+                <select 
+                  value={editForm.sem} 
+                  onChange={e => setEditForm({...editForm, sem: e.target.value})} 
+                  style={{ background: isDark ? "rgba(255,255,255,0.05)" : "#f1f5f9", border: `1px solid ${bdr}`, color: text1, padding: "10px 14px", borderRadius: "8px", fontSize: "14px", outline: "none", fontFamily: "'Lexend',sans-serif", cursor: "pointer" }}
+                >
+                  <option value="">Select Semester</option>
+                  {[1,2,3,4,5,6,7,8].map(s => <option key={s} value={s}>Sem {s}</option>)}
+                  <option value="Alumni">Alumni</option>
+                </select>
+              </div>
+            </div>
+
+            <div style={{ display: "flex", gap: "12px", justifyContent: "flex-end" }}>
+              <button 
+                onClick={() => setEditingStudent(null)} 
+                style={{ padding: "10px 20px", borderRadius: "12px", border: "none", background: isDark ? "rgba(255,255,255,0.05)" : "#f1f5f9", color: text1, fontWeight: 600, cursor: "pointer", transition: "background 0.2s" }}
+              >
+                Cancel
+              </button>
+              <button 
+                onClick={handleSaveEdit} 
+                style={{ padding: "10px 20px", borderRadius: "12px", border: "none", background: "#00FF00", color: "#0f172a", fontWeight: 700, cursor: "pointer", transition: "opacity 0.2s" }}
+              >
+                Save Changes
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Custom Logout Modal */}
+      {showLogoutModal && (
+        <div style={{ position: "fixed", top: 0, left: 0, width: "100%", height: "100%", background: "rgba(0,0,0,0.5)", backdropFilter: "blur(4px)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 100 }}>
+          <div style={{ background: card, padding: "32px", borderRadius: "24px", width: "400px", maxWidth: "90%", boxShadow: "0 25px 50px -12px rgba(0,0,0,0.25)", border: `1px solid ${bdr}` }}>
+            <div style={{ display: "flex", alignItems: "center", gap: "12px", marginBottom: "16px" }}>
+              <div style={{ width: "40px", height: "40px", borderRadius: "12px", background: "rgba(239,68,68,0.1)", display: "flex", alignItems: "center", justifyContent: "center" }}>
+                <span className="ms" style={{ color: "#ef4444", fontSize: "24px" }}>logout</span>
+              </div>
+              <h3 style={{ fontSize: "20px", fontWeight: 700, color: text1, margin: 0 }}>Sign Out</h3>
+            </div>
+            <p style={{ color: text2, marginBottom: "32px", lineHeight: 1.5, fontSize: "14px" }}>Are you sure you want to sign out of the Admin Dashboard?</p>
+            <div style={{ display: "flex", gap: "12px", justifyContent: "flex-end" }}>
+              <button 
+                onClick={() => setShowLogoutModal(false)} 
+                style={{ padding: "10px 20px", borderRadius: "12px", border: "none", background: isDark ? "rgba(255,255,255,0.05)" : "#f1f5f9", color: text1, fontWeight: 600, cursor: "pointer", transition: "background 0.2s" }}
+                onMouseEnter={e => e.currentTarget.style.background = isDark ? "rgba(255,255,255,0.1)" : "#e2e8f0"}
+                onMouseLeave={e => e.currentTarget.style.background = isDark ? "rgba(255,255,255,0.05)" : "#f1f5f9"}
+              >
+                Cancel
+              </button>
+              <button 
+                onClick={handleConfirmLogout} 
+                style={{ padding: "10px 20px", borderRadius: "12px", border: "none", background: "#ef4444", color: "#ffffff", fontWeight: 600, cursor: "pointer", transition: "background 0.2s" }}
+                onMouseEnter={e => e.currentTarget.style.background = "#dc2626"}
+                onMouseLeave={e => e.currentTarget.style.background = "#ef4444"}
+              >
+                Sign Out
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </>
   );
 }

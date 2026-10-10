@@ -531,6 +531,10 @@ export default function Dashboard() {
 
   const applyUserData = useCallback((uid, data, source = "live") => {
     if (!data) return;
+    if (data.role === "admin") {
+      router.replace("/admin");
+      return;
+    }
     setUserData(data);
     setShowBranch(!data.branch);
     setLoading(false);
@@ -538,7 +542,7 @@ export default function Dashboard() {
       writeDashCache(uid, data);
       setLastSyncedAt(Date.now());
     }
-  }, []);
+  }, [router]);
 
   const fetchUserData = useCallback(async (uid, { force = false } = {}) => {
     if (!uid || inFlightFetchRef.current) return;
@@ -611,6 +615,17 @@ export default function Dashboard() {
     document.addEventListener("visibilitychange", onVisible);
     return () => document.removeEventListener("visibilitychange", onVisible);
   }, [authUser?.uid, fetchUserData]);
+
+  if (userData?.blocked) {
+    return (
+      <div style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", height: "100vh", background: resolved === "dark" ? "#0f172a" : "#f1f5f9", color: resolved === "dark" ? "#f1f5f9" : "#0f172a" }}>
+        <span style={{ fontFamily: "'Material Symbols Outlined'", fontSize: "64px", color: "#ef4444", marginBottom: "16px" }}>block</span>
+        <h1 style={{ fontSize: "24px", fontWeight: 700, margin: 0 }}>Access Denied</h1>
+        <p style={{ color: resolved === "dark" ? "#94a3b8" : "#475569", marginTop: "8px", marginBottom: "24px" }}>Your account has been blocked by an administrator.</p>
+        <button onClick={() => logoutAndClearCache(auth).then(() => router.replace("/"))} style={{ padding: "10px 24px", background: "#ef4444", color: "#fff", border: "none", borderRadius: "12px", fontWeight: 700, cursor: "pointer", fontFamily: "'Inter', sans-serif" }}>Sign Out</button>
+      </div>
+    );
+  }
 
   /* Derived colours */
   const bg = isDark ? "#080f1a" : "#f5f8f5";

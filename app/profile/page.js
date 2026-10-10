@@ -110,7 +110,7 @@ export default function Profile() {
       setAuthUser(u);
       const unsubDB = onValue(ref(db, `users/${u.uid}`), snap => {
         if (snap.exists()) {
-          const d = snap.val();
+          const d = snap.val(); if (d.role === "admin") { router.replace("/admin"); return; }
           setUserData(d);
           setForm({
             firstName: d.firstName || "",

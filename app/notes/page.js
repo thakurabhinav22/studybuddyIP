@@ -325,6 +325,7 @@ export default function NotesPage() {
           const snap = await get(ref(db, `users/${u.uid}`));
           if (snap.exists()) {
             const data = snap.val();
+            if (data.role === 'admin') { router.replace('/admin'); return; }
             cacheSet(MEM_USER, uKey, { data, timestamp: Date.now() });
             setUserData(data);
           }
