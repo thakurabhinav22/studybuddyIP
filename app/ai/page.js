@@ -166,7 +166,7 @@ export default function AiPage() {
       if (!u) { router.replace("/"); return; }
       setAuthUser(u);
       const unsubDB = onValue(ref(db, `users/${u.uid}`), (snap) => {
-        if (snap.exists()) { const data = snap.val(); if (data.role === "admin") { router.replace("/admin"); return; } setUserData(data); }
+        if (snap.exists()) { const data = snap.val(); setUserData(data); }
         setAuthLoading(false);
       });
       return () => unsubDB();

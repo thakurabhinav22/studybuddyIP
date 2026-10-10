@@ -5,6 +5,8 @@ import { auth, db } from "@/firebase";
 import { onAuthStateChanged } from "firebase/auth";
 import { ref as dbRef, onValue, set, remove, get } from "firebase/database";
 import { logoutAndClearCache } from "@/lib/logout";
+import { ref as storageRef, uploadBytesResumable, getDownloadURL, deleteObject } from "firebase/storage";
+import { storage } from "@/firebase";
 
 function useTheme() {
   const KEY = "studybuddy_theme";
@@ -76,7 +78,7 @@ export default function AdminPage() {
   const [editForm, setEditForm] = useState({ fullName: "", branch: "", sem: "" });
 
 
-  const [instSettings, setInstSettings] = useState({ collegeName: "", totalSems: 8 });
+  const [instSettings, setInstSettings] = useState({ collegeName: "", totalSems: 8, branches: "" });
   const [settingsSaving, setSettingsSaving] = useState(false);
   const [settingsMessage, setSettingsMessage] = useState("");
 
@@ -87,14 +89,19 @@ export default function AdminPage() {
   const [noteTitle, setNoteTitle] = useState("");
   const [noteSem, setNoteSem] = useState("1");
   const [noteBranch, setNoteBranch] = useState("");
+  const [noteSubject, setNoteSubject] = useState("");
+  const [noteModule, setNoteModule] = useState("");
   const [noteFile, setNoteFile] = useState(null);
   const [notesMessage, setNotesMessage] = useState("");
   const [notesSaving, setNotesSaving] = useState(false);
+  const [uploadProgress, setUploadProgress] = useState(0);
   const [newTeacherEmail, setNewTeacherEmail] = useState("");
   const [teacherMessage, setTeacherMessage] = useState("");
   const [teacherSaving, setTeacherSaving] = useState(false);
-  const [allNotes, setAllNotes] = useState([]);
-
+  const [allNotes, setAllNotes] = useState({});
+  const [fileExplorerPath, setFileExplorerPath] = useState([]);
+  const [renameModal, setRenameModal] = useState({ isOpen: false, oldName: "", newName: "", pathArr: [] });
+  const [deleteModal, setDeleteModal] = useState({ isOpen: false, branch: "", sem: "", subject: "", moduleKey: "", fileUrl: "" });
   
   useEffect(() => {
     const unsub = onAuthStateChanged(auth, async (u) => {
@@ -136,20 +143,27 @@ export default function AdminPage() {
   const fetchSettings = async () => {
     const snap = await get(dbRef(db, "settings/institution"));
     if (snap.exists()) {
-      setInstSettings(snap.val());
+      const val = snap.val();
+      setInstSettings({ ...val, branches: val.branches || "" });
     }
   };
 
-  const fetchNotes = () => {
-    onValue(dbRef(db, "notes"), (snap) => {
+  const [notesError, setNotesError] = useState("");
+
+  const fetchNotes = async () => {
+    try {
+      setNotesError("");
+      const snap = await get(dbRef(db, "notes"));
       if (snap.exists()) {
-        const notesObj = snap.val();
-        const notesList = Object.keys(notesObj).map(id => ({ ...notesObj[id], id }));
-        setAllNotes(notesList);
+        setAllNotes(snap.val());
       } else {
-        setAllNotes([]);
+        setAllNotes({});
+        setNotesError("Snap does not exist at /notes");
       }
-    });
+    } catch (err) {
+      console.error("Error fetching notes:", err);
+      setNotesError(err.message || "Unknown error fetching notes");
+    }
   };
 
 
@@ -206,13 +220,29 @@ export default function AdminPage() {
     setTimeout(() => setAdminMessage(""), 3000);
   };
 
-  const handleDeleteNote = async (id) => {
-    if (!confirm("Are you sure you want to delete this note?")) return;
+  const handleDeleteNote = (branch, sem, subject, moduleKey, fileUrl) => {
+    setDeleteModal({ isOpen: true, branch, sem, subject, moduleKey, fileUrl });
+  };
+
+  const submitDeleteNote = async () => {
+    const { branch, sem, subject, moduleKey, fileUrl } = deleteModal;
     try {
-      await remove(dbRef(db, `notes/${id}`));
+      await remove(dbRef(db, `notes/${branch}/${sem}/subjects/${subject}/modules/${moduleKey}`));
+      // If it's stored in Firebase Storage, try to delete it
+      if (fileUrl && fileUrl.includes("firebasestorage.app")) {
+        try {
+          // Decode the URL path to get the storage reference
+          const decodedUrl = decodeURIComponent(fileUrl.split('/o/')[1].split('?')[0]);
+          await deleteObject(storageRef(storage, decodedUrl));
+        } catch (e) {
+          console.error("Error deleting file from storage:", e);
+        }
+      }
     } catch (error) {
       console.error("Error deleting note:", error);
     }
+    setDeleteModal({ isOpen: false, branch: "", sem: "", subject: "", moduleKey: "", fileUrl: "" });
+    fetchNotes();
   };
 
   const handleSaveSettings = async (e) => {
@@ -232,36 +262,70 @@ export default function AdminPage() {
   const handleUploadNote = async (e) => {
     e.preventDefault();
     setNotesMessage("");
-    if (!noteTitle || !noteBranch) {
-      setNotesMessage("Please fill title and branch.");
+    if (!noteTitle || !noteBranch || !noteSubject || !noteModule) {
+      setNotesMessage("Please fill all fields.");
       setTimeout(() => setNotesMessage(""), 3000);
       return;
     }
     setNotesSaving(true);
+    setUploadProgress(0);
     try {
-      const noteId = Date.now().toString();
+      const semKey = `Sem:${noteSem}`;
+      let fileUrl = "";
+      if (noteFile) {
+        const sRef = storageRef(storage, `notes/${noteBranch}/${semKey}/${noteSubject}/${noteModule}/${noteFile.name}`);
+        const uploadTask = uploadBytesResumable(sRef, noteFile);
+        
+        await new Promise((resolve, reject) => {
+          uploadTask.on(
+            "state_changed",
+            (snapshot) => {
+              const progress = (snapshot.bytesTransferred / snapshot.totalBytes) * 100;
+              setUploadProgress(progress);
+            },
+            (error) => reject(error),
+            async () => {
+              fileUrl = await getDownloadURL(uploadTask.snapshot.ref);
+              resolve();
+            }
+          );
+        });
+      }
+      
       const newNote = {
-        title: noteTitle,
-        sem: noteSem,
-        branch: noteBranch,
+        Title: noteTitle,
+        resourcesPDF: fileUrl,
         uploadedAt: new Date().toISOString(),
         uploadedBy: userData.fullName || userData.email,
         fileName: noteFile ? noteFile.name : "No file",
       };
-      await set(dbRef(db, `notes/${noteId}`), newNote);
+      
+      await set(dbRef(db, `notes/${noteBranch}/${semKey}/subjects/${noteSubject}/Subject`), noteSubject);
+      await set(dbRef(db, `notes/${noteBranch}/${semKey}/subjects/${noteSubject}/modules/${noteModule}`), newNote);
+      
       setNotesMessage("Note saved successfully!");
       setNoteTitle("");
+      setNoteModule("");
       setNoteFile(null);
+      setUploadProgress(0);
     } catch (err) {
+      console.error(err);
       setNotesMessage("Error saving note.");
+      setUploadProgress(0);
     }
     setNotesSaving(false);
     setTimeout(() => setNotesMessage(""), 3000);
   };
 
 
-  const handleConfirmLogout = () => {
-    logoutAndClearCache(auth).then(() => router.replace("/"));
+  const handleConfirmLogout = async () => {
+    try {
+      await logoutAndClearCache(auth);
+    } catch (e) {
+      console.error("Logout error", e);
+    } finally {
+      router.replace("/");
+    }
   };
 
   const handlePromoteAll = () => {
@@ -775,54 +839,68 @@ export default function AdminPage() {
           <div style={{ height: "1px", background: bdr, width: "100%" }} />
 
           {/* Metadata Grid */}
-          <div style={{ display: "grid", gridTemplateColumns: "1fr", gap: "16px" }}>
-            <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
-              <label style={{ fontSize: "11px", fontWeight: 700, color: text3, textTransform: "uppercase", letterSpacing: "0.05em" }}>Document Title</label>
-              <input type="text" value={noteTitle} onChange={e => setNoteTitle(e.target.value)} required placeholder="e.g. Chapter 4: Neural Networks" style={{ background: isDark ? "rgba(255,255,255,0.05)" : "#f1f5f9", border: `1px solid ${bdr}`, color: text1, padding: "12px 16px", borderRadius: "10px", fontSize: "14px", fontWeight: 500, outline: "none", fontFamily: "'Lexend',sans-serif", transition: "border 0.2s" }} onFocus={e=>e.currentTarget.style.borderColor="#00FF00"} onBlur={e=>e.currentTarget.style.borderColor=bdr} />
-            </div>
+            <div style={{ display: "grid", gridTemplateColumns: "1fr", gap: "16px" }}>
+              <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
+                <label style={{ fontSize: "11px", fontWeight: 700, color: text3, textTransform: "uppercase", letterSpacing: "0.05em" }}>Document Title</label>
+                <input type="text" value={noteTitle} onChange={e => setNoteTitle(e.target.value)} required placeholder="e.g. Intro to ML" style={{ background: isDark ? "rgba(255,255,255,0.05)" : "#f1f5f9", border: `1px solid ${bdr}`, color: text1, padding: "12px 16px", borderRadius: "10px", fontSize: "14px", fontWeight: 500, outline: "none", fontFamily: "'Lexend',sans-serif", transition: "border 0.2s" }} onFocus={e=>e.currentTarget.style.borderColor="#00FF00"} onBlur={e=>e.currentTarget.style.borderColor=bdr} />
+              </div>
 
-            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "16px" }}>
-              <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
-                <label style={{ fontSize: "11px", fontWeight: 700, color: text3, textTransform: "uppercase", letterSpacing: "0.05em" }}>Branch</label>
-                <select 
-                  value={noteBranch} 
-                  onChange={e => setNoteBranch(e.target.value)} 
-                  required 
-                  style={{ background: isDark ? "rgba(255,255,255,0.05)" : "#f1f5f9", border: `1px solid ${bdr}`, color: text1, padding: "12px 16px", borderRadius: "10px", fontSize: "14px", fontWeight: 600, outline: "none", fontFamily: "'Lexend',sans-serif", cursor: "pointer" }}
-                >
-                  <option value="">Select Branch</option>
-                  <option value="IT">IT</option>
-                  <option value="CS">CS</option>
-                  <option value="EXTC">EXTC</option>
-                  <option value="AI&DS">AI&DS</option>
-                  <option value="COMP">COMP</option>
-                  {noteBranch && !["IT","CS","EXTC","AI&DS","COMP"].includes(noteBranch) && (
-                    <option value={noteBranch}>{noteBranch}</option>
-                  )}
-                </select>
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "16px" }}>
+                <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
+                  <label style={{ fontSize: "11px", fontWeight: 700, color: text3, textTransform: "uppercase", letterSpacing: "0.05em" }}>Subject Code</label>
+                  <input type="text" value={noteSubject} onChange={e => setNoteSubject(e.target.value.toUpperCase())} required placeholder="e.g. OS, DBMS" style={{ background: isDark ? "rgba(255,255,255,0.05)" : "#f1f5f9", border: `1px solid ${bdr}`, color: text1, padding: "12px 16px", borderRadius: "10px", fontSize: "14px", fontWeight: 500, outline: "none", fontFamily: "'Lexend',sans-serif", transition: "border 0.2s" }} onFocus={e=>e.currentTarget.style.borderColor="#00FF00"} onBlur={e=>e.currentTarget.style.borderColor=bdr} />
+                </div>
+                <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
+                  <label style={{ fontSize: "11px", fontWeight: 700, color: text3, textTransform: "uppercase", letterSpacing: "0.05em" }}>Module Name</label>
+                  <input type="text" value={noteModule} onChange={e => setNoteModule(e.target.value)} required placeholder="e.g. Module 1" style={{ background: isDark ? "rgba(255,255,255,0.05)" : "#f1f5f9", border: `1px solid ${bdr}`, color: text1, padding: "12px 16px", borderRadius: "10px", fontSize: "14px", fontWeight: 500, outline: "none", fontFamily: "'Lexend',sans-serif", transition: "border 0.2s" }} onFocus={e=>e.currentTarget.style.borderColor="#00FF00"} onBlur={e=>e.currentTarget.style.borderColor=bdr} />
+                </div>
               </div>
-              <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
-                <label style={{ fontSize: "11px", fontWeight: 700, color: text3, textTransform: "uppercase", letterSpacing: "0.05em" }}>Semester</label>
-                <select 
-                  value={noteSem} 
-                  onChange={e => setNoteSem(e.target.value)} 
-                  required 
-                  style={{ background: isDark ? "rgba(255,255,255,0.05)" : "#f1f5f9", border: `1px solid ${bdr}`, color: text1, padding: "12px 16px", borderRadius: "10px", fontSize: "14px", fontWeight: 600, outline: "none", fontFamily: "'Lexend',sans-serif", cursor: "pointer" }}
-                >
-                  <option value="">Select Sem</option>
-                  {[1,2,3,4,5,6,7,8].map(s => <option key={s} value={s}>Sem {s}</option>)}
-                </select>
+
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "16px" }}>
+                <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
+                  <label style={{ fontSize: "11px", fontWeight: 700, color: text3, textTransform: "uppercase", letterSpacing: "0.05em" }}>Branch</label>
+                  <select 
+                    value={noteBranch} 
+                    onChange={e => setNoteBranch(e.target.value)} 
+                    required 
+                    style={{ background: isDark ? "rgba(255,255,255,0.05)" : "#f1f5f9", border: `1px solid ${bdr}`, color: text1, padding: "12px 16px", borderRadius: "10px", fontSize: "14px", fontWeight: 600, outline: "none", fontFamily: "'Lexend',sans-serif", cursor: "pointer" }}
+                  >
+                    <option value="">Select Branch</option>
+                    <option value="IT">IT</option>
+                    <option value="CS">CS</option>
+                    <option value="EXTC">EXTC</option>
+                    <option value="AI&DS">AI&DS</option>
+                    <option value="COMP">COMP</option>
+                    {noteBranch && !["IT","CS","EXTC","AI&DS","COMP"].includes(noteBranch) && (
+                      <option value={noteBranch}>{noteBranch}</option>
+                    )}
+                  </select>
+                </div>
+                <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
+                  <label style={{ fontSize: "11px", fontWeight: 700, color: text3, textTransform: "uppercase", letterSpacing: "0.05em" }}>Semester</label>
+                  <select 
+                    value={noteSem} 
+                    onChange={e => setNoteSem(e.target.value)} 
+                    required 
+                    style={{ background: isDark ? "rgba(255,255,255,0.05)" : "#f1f5f9", border: `1px solid ${bdr}`, color: text1, padding: "12px 16px", borderRadius: "10px", fontSize: "14px", fontWeight: 600, outline: "none", fontFamily: "'Lexend',sans-serif", cursor: "pointer" }}
+                  >
+                    <option value="">Select Sem</option>
+                    {[1,2,3,4,5,6,7,8].map(s => <option key={s} value={s}>Sem {s}</option>)}
+                  </select>
+                </div>
               </div>
             </div>
-          </div>
 
           <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginTop: "8px" }}>
             <span style={{ fontSize: "13px", color: notesMessage.includes("Error") ? "#ef4444" : "#00FF00", fontWeight: 600, flex: 1 }}>{notesMessage}</span>
-            <button type="submit" disabled={notesSaving || !noteFile} style={{ background: (notesSaving || !noteFile) ? (isDark ? "rgba(255,255,255,0.1)" : "#cbd5e1") : "#00FF00", color: (notesSaving || !noteFile) ? (isDark ? "#64748b" : "#64748b") : "#0f172a", border: "none", padding: "12px 28px", borderRadius: "10px", fontSize: "15px", fontWeight: 800, cursor: (notesSaving || !noteFile) ? "not-allowed" : "pointer", transition: "all 0.2s", display: "flex", alignItems: "center", gap: "8px", boxShadow: (notesSaving || !noteFile) ? "none" : "0 8px 24px rgba(0,255,0,0.3)" }}>
+            <button type="submit" disabled={notesSaving || !noteFile} style={{ position: "relative", overflow: "hidden", background: (notesSaving || !noteFile) ? (isDark ? "rgba(255,255,255,0.1)" : "#cbd5e1") : "#00FF00", color: (notesSaving || !noteFile) ? (isDark ? "#64748b" : "#64748b") : "#0f172a", border: "none", padding: "12px 28px", borderRadius: "10px", fontSize: "15px", fontWeight: 800, cursor: (notesSaving || !noteFile) ? "not-allowed" : "pointer", transition: "all 0.2s", display: "flex", alignItems: "center", gap: "8px", boxShadow: (notesSaving || !noteFile) ? "none" : "0 8px 24px rgba(0,255,0,0.3)", zIndex: 1 }}>
+              {notesSaving && (
+                <div style={{ position: "absolute", top: 0, left: 0, height: "100%", width: `${uploadProgress}%`, background: "rgba(0, 180, 0, 0.6)", zIndex: -1, transition: "width 0.2s linear" }} />
+              )}
               {notesSaving ? (
                 <>
                   <span className="ms" style={{ animation: "spin 1s linear infinite" }}>sync</span>
-                  Uploading...
+                  {uploadProgress > 0 ? `Uploading... ${Math.round(uploadProgress)}%` : "Uploading..."}
                 </>
               ) : (
                 <>
@@ -868,65 +946,181 @@ export default function AdminPage() {
     </div>
   );
 
-  const renderManageNotes = () => {
-    const branches = [...new Set(allNotes.map(n => n.branch).filter(Boolean))];
+  const navigateTo = (folderName) => {
+    setFileExplorerPath([...fileExplorerPath, folderName]);
+  };
+
+  const navigateUp = (index) => {
+    if (index === -1) {
+      setFileExplorerPath([]);
+    } else {
+      setFileExplorerPath(fileExplorerPath.slice(0, index + 1));
+    }
+  };
+
+  const handleRenameNode = (oldName) => {
+    setRenameModal({ isOpen: true, oldName, newName: oldName, pathArr: [...fileExplorerPath] });
+  };
+
+  const submitRenameNode = async () => {
+    const { oldName, newName, pathArr } = renameModal;
+    if (!newName || newName === oldName) {
+      setRenameModal({ isOpen: false, oldName: "", newName: "", pathArr: [] });
+      return;
+    }
     
+    const buildPath = (pArr, targetName) => {
+      let p = "notes";
+      if (pArr.length >= 1) p += `/${pArr.length === 1 ? targetName : pArr[0]}`;
+      if (pArr.length >= 2) p += `/${pArr.length === 2 ? targetName : pArr[1]}`;
+      if (pArr.length >= 3) p += `/subjects/${pArr.length === 3 ? targetName : pArr[2]}`;
+      if (pArr.length >= 4) p += `/modules/${pArr.length === 4 ? targetName : pArr[3]}`;
+      return p;
+    };
+
+    const oldDbPath = buildPath([...pathArr, oldName], oldName);
+    const newDbPath = buildPath([...pathArr, newName], newName);
+    
+    try {
+      const snap = await get(dbRef(db, oldDbPath));
+      if (snap.exists()) {
+        await set(dbRef(db, newDbPath), snap.val());
+        await remove(dbRef(db, oldDbPath));
+        fetchNotes();
+      }
+    } catch (err) {
+      alert("Failed to rename: " + err.message);
+    }
+    setRenameModal({ isOpen: false, oldName: "", newName: "", pathArr: [] });
+  };
+
+  const renderManageNotes = () => {
+    let currentDir = allNotes || {};
+    let level = fileExplorerPath.length;
+    
+    if (level > 0) currentDir = currentDir[fileExplorerPath[0]] || {};
+    if (level > 1) currentDir = currentDir[fileExplorerPath[1]]?.subjects || {};
+    if (level > 2) currentDir = currentDir[fileExplorerPath[2]]?.modules || {};
+    
+    let items = Object.keys(currentDir).sort((a,b) => a.localeCompare(b));
+
+    if (level === 0) {
+      const settingBranches = instSettings?.branches ? instSettings.branches.split(',').map(b => b.trim()).filter(Boolean) : ["IT", "CS", "EXTC", "AI&DS", "COMP"];
+      items = Array.from(new Set([...items, ...settingBranches])).sort((a,b) => a.localeCompare(b));
+    } else if (level === 1) {
+      const maxSem = parseInt(instSettings?.totalSems, 10) || 8;
+      const defaultSems = Array.from({ length: maxSem }, (_, i) => `Sem:${i + 1}`);
+      items = Array.from(new Set([...items, ...defaultSems])).sort((a,b) => a.localeCompare(b));
+    }
+    
+    const getLevelIcon = (lvl) => {
+      if (lvl === 0) return { icon: "domain", color: "#3b82f6", bg: "rgba(59,130,246,0.1)" };
+      if (lvl === 1) return { icon: "school", color: "#f59e0b", bg: "rgba(245,158,11,0.1)" };
+      if (lvl === 2) return { icon: "library_books", color: "#10b981", bg: "rgba(16,185,129,0.1)" };
+      return { icon: "description", color: "#ef4444", bg: "rgba(239,68,68,0.1)" };
+    };
+    
+    const levelMeta = getLevelIcon(level);
+
     return (
-      <div className="admin-card">
-        <h3 style={{ fontSize: "18px", fontWeight: 700, color: text1, margin: 0, marginBottom: "16px" }}>Manage Uploaded Notes</h3>
-        
-        {branches.length === 0 && <div style={{ color: text2 }}>No notes found.</div>}
-        
-        <div style={{ display: "flex", flexDirection: "column", gap: "24px" }}>
-          {branches.map(branch => {
-            const branchNotes = allNotes.filter(n => n.branch === branch);
-            const sems = [...new Set(branchNotes.map(n => n.sem).filter(Boolean))].sort((a,b) => String(a).localeCompare(String(b)));
-            
-            return (
-              <div key={branch} style={{ background: isDark ? "rgba(255,255,255,0.02)" : "#f8fafc", border: `1px solid ${bdr}`, borderRadius: "16px", padding: "16px" }}>
-                <h4 style={{ fontSize: "16px", fontWeight: 700, color: text1, margin: "0 0 16px", display: "flex", alignItems: "center", gap: "8px" }}>
-                  <span className="ms" style={{ color: "#3b82f6", fontSize: "20px" }}>folder</span>
-                  {branch}
-                </h4>
-                
-                <div style={{ display: "flex", flexDirection: "column", gap: "16px" }}>
-                  {sems.map(sem => {
-                    const semNotes = branchNotes.filter(n => String(n.sem) === String(sem));
-                    return (
-                      <div key={sem} style={{ background: isDark ? "rgba(255,255,255,0.03)" : "#ffffff", border: `1px solid ${bdr}`, borderRadius: "12px", padding: "12px" }}>
-                        <h5 style={{ fontSize: "14px", fontWeight: 700, color: text1, margin: "0 0 12px", display: "flex", alignItems: "center", gap: "6px" }}>
-                          <span className="ms" style={{ color: "#f59e0b", fontSize: "18px" }}>snippet_folder</span>
-                          Semester {sem} <span style={{ fontSize: "12px", color: text3, fontWeight: 500, marginLeft: "4px" }}>({semNotes.length} notes)</span>
-                        </h5>
-                        
-                        <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
-                          {semNotes.map(note => (
-                            <div key={note.id} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", background: isDark ? "rgba(255,255,255,0.04)" : "#f1f5f9", padding: "10px 14px", borderRadius: "8px" }}>
-                              <div style={{ display: "flex", flexDirection: "column" }}>
-                                <span style={{ fontSize: "14px", fontWeight: 600, color: text1 }}>{note.title}</span>
-                                <span style={{ fontSize: "11px", color: text2 }}>{note.fileName} • Uploaded by {note.uploadedBy || "Admin"}</span>
-                              </div>
-                              <button 
-                                onClick={() => handleDeleteNote(note.id)}
-                                style={{ background: "rgba(239,68,68,0.1)", color: "#ef4444", border: "none", padding: "6px 12px", borderRadius: "6px", fontSize: "12px", fontWeight: 700, cursor: "pointer", transition: "all 0.2s" }}
-                              >
-                                Delete
-                              </button>
-                            </div>
-                          ))}
-                        </div>
-                      </div>
-                    );
-                  })}
-                </div>
-              </div>
-            );
-          })}
+      <div className="admin-card" style={{ minHeight: "500px", display: "flex", flexDirection: "column" }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "20px" }}>
+          <h3 style={{ fontSize: "20px", fontWeight: 800, color: text1, margin: 0, letterSpacing: "-0.02em" }}>Notes Repository</h3>
         </div>
+        
+        {notesError && <div style={{ color: "#ef4444", marginBottom: "16px", padding: "12px", background: "rgba(239,68,68,0.1)", borderRadius: "8px", fontWeight: 600 }}>Error: {notesError}</div>}
+        
+        {/* Modern Path Navigator */}
+        <div style={{ display: "flex", alignItems: "center", gap: "8px", background: isDark ? "rgba(255,255,255,0.03)" : "#f8fafc", padding: "10px 16px", borderRadius: "12px", marginBottom: "24px", overflowX: "auto", border: `1px solid ${bdr}` }}>
+          <button onClick={() => navigateUp(-1)} style={{ background: "transparent", border: "none", color: level === 0 ? text1 : text3, cursor: "pointer", fontWeight: level === 0 ? 700 : 500, fontSize: "14px", display: "flex", alignItems: "center", gap: "6px", transition: "color 0.2s" }}>
+            <span className="ms" style={{ fontSize: "18px" }}>home</span> Repository
+          </button>
+          
+          {fileExplorerPath.map((pathItem, index) => (
+            <div key={index} style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+              <span className="ms" style={{ color: text3, fontSize: "18px", opacity: 0.5 }}>chevron_right</span>
+              <button 
+                onClick={() => navigateUp(index)}
+                style={{ background: "transparent", border: "none", color: index === level - 1 ? text1 : text3, cursor: "pointer", fontWeight: index === level - 1 ? 700 : 500, fontSize: "14px", transition: "color 0.2s" }}
+              >
+                {pathItem}
+              </button>
+            </div>
+          ))}
+        </div>
+
+        {/* Card Grid */}
+        {items.length === 0 && !notesError ? (
+          <div style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", flex: 1, color: text3, gap: "16px" }}>
+            <div style={{ width: "64px", height: "64px", borderRadius: "16px", background: isDark ? "rgba(255,255,255,0.05)" : "#f1f5f9", display: "flex", alignItems: "center", justifyContent: "center" }}>
+              <span className="ms" style={{ fontSize: "32px", opacity: 0.5 }}>inventory_2</span>
+            </div>
+            <p style={{ fontWeight: 500 }}>No items found in this section.</p>
+          </div>
+        ) : (
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(240px, 1fr))", gap: "16px" }}>
+            {items.map(item => {
+              const isFile = level === 3;
+              const noteData = isFile ? currentDir[item] : null;
+              
+              return (
+                <div key={item} style={{ background: isDark ? "rgba(15,23,42,0.6)" : "#ffffff", border: `1px solid ${bdr}`, borderRadius: "16px", padding: "20px", display: "flex", flexDirection: "column", gap: "16px", transition: "all 0.2s cubic-bezier(0.4, 0, 0.2, 1)", cursor: "pointer" }}
+                  onMouseEnter={e => { e.currentTarget.style.transform = "translateY(-4px)"; e.currentTarget.style.boxShadow = isDark ? "0 12px 24px rgba(0,0,0,0.4)" : "0 12px 24px rgba(0,0,0,0.05)"; e.currentTarget.style.borderColor = levelMeta.color; }}
+                  onMouseLeave={e => { e.currentTarget.style.transform = "translateY(0)"; e.currentTarget.style.boxShadow = "none"; e.currentTarget.style.borderColor = bdr; }}
+                  onClick={(e) => {
+                    // Prevent navigation if clicking on buttons
+                    if (e.target.closest('button')) return;
+                    if (!isFile) {
+                      navigateTo(item);
+                    } else {
+                      const semNum = fileExplorerPath[1].replace('Sem:', '').trim();
+                      if (noteData?.pdfChunks || noteData?.pdfMeta) {
+                        const url = `/pdfviewer?branch=${encodeURIComponent(fileExplorerPath[0])}&sem=${encodeURIComponent(semNum)}&subject=${encodeURIComponent(fileExplorerPath[2])}&module=${encodeURIComponent(item)}`;
+                        window.open(url, '_blank');
+                      } else if (noteData?.resourcesPDF) {
+                        window.open(noteData.resourcesPDF, '_blank');
+                      }
+                    }
+                  }}
+                >
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
+                    <div style={{ width: "40px", height: "40px", borderRadius: "10px", background: levelMeta.bg, color: levelMeta.color, display: "flex", alignItems: "center", justifyContent: "center" }}>
+                      <span className="ms" style={{ fontSize: "20px" }}>{levelMeta.icon}</span>
+                    </div>
+                    
+                    {/* Action Menu (Inline) */}
+                    <div style={{ display: "flex", gap: "4px" }}>
+                      {level >= 2 && (
+                        <button onClick={() => handleRenameNode(item)} title="Rename" style={{ width: "32px", height: "32px", borderRadius: "8px", background: "transparent", border: "none", color: text3, display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer", transition: "background 0.2s" }} onMouseEnter={e => e.currentTarget.style.background = isDark ? "rgba(255,255,255,0.1)" : "#f1f5f9"} onMouseLeave={e => e.currentTarget.style.background = "transparent"}>
+                          <span className="ms" style={{ fontSize: "16px" }}>edit</span>
+                        </button>
+                      )}
+                      {isFile && (
+                        <button onClick={() => handleDeleteNote(fileExplorerPath[0], fileExplorerPath[1].replace('Sem:', ''), fileExplorerPath[2], item, noteData?.resourcesPDF)} title="Delete" style={{ width: "32px", height: "32px", borderRadius: "8px", background: "transparent", border: "none", color: "#ef4444", display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer", transition: "background 0.2s" }} onMouseEnter={e => e.currentTarget.style.background = "rgba(239,68,68,0.1)"} onMouseLeave={e => e.currentTarget.style.background = "transparent"}>
+                          <span className="ms" style={{ fontSize: "16px" }}>delete</span>
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                  
+                  <div style={{ display: "flex", flexDirection: "column", gap: "4px" }}>
+                    <span style={{ fontSize: "16px", fontWeight: 700, color: text1, lineHeight: 1.3, wordBreak: "break-word" }}>
+                      {item}
+                    </span>
+                    {isFile && noteData && (
+                      <span style={{ fontSize: "12px", color: text2, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }} title={noteData.fileName}>
+                        {noteData.fileName || "No document attached"}
+                      </span>
+                    )}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
       </div>
     );
   };
-
   const renderSettings = () => (
     <div className="admin-card">
       <h3 style={{ fontSize: "18px", fontWeight: 700, color: text1, margin: 0, marginBottom: "16px" }}>Institution Settings</h3>
@@ -948,6 +1142,16 @@ export default function AdminPage() {
             value={instSettings.totalSems} 
             onChange={e => setInstSettings({...instSettings, totalSems: e.target.value})} 
             min="1" 
+            style={{ background: isDark ? "rgba(255,255,255,0.05)" : "#f1f5f9", border: `1px solid ${bdr}`, color: text1, padding: "10px 14px", borderRadius: "8px", fontSize: "14px", outline: "none", fontFamily: "'Lexend',sans-serif" }} 
+          />
+        </div>
+        <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
+          <label style={{ fontSize: "12px", fontWeight: 600, color: text3, textTransform: "uppercase" }}>Branches (comma-separated)</label>
+          <input 
+            type="text" 
+            value={instSettings.branches} 
+            onChange={e => setInstSettings({...instSettings, branches: e.target.value})} 
+            placeholder="e.g. IT,CS,EXTC" 
             style={{ background: isDark ? "rgba(255,255,255,0.05)" : "#f1f5f9", border: `1px solid ${bdr}`, color: text1, padding: "10px 14px", borderRadius: "8px", fontSize: "14px", outline: "none", fontFamily: "'Lexend',sans-serif" }} 
           />
         </div>
@@ -1125,6 +1329,69 @@ export default function AdminPage() {
       </div>
 
       
+      {/* Rename Modal */}
+      {renameModal.isOpen && (
+        <div style={{ position: "fixed", top: 0, left: 0, width: "100%", height: "100%", background: "rgba(0,0,0,0.5)", backdropFilter: "blur(4px)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 100 }}>
+          <div style={{ background: card, padding: "32px", borderRadius: "24px", width: "400px", maxWidth: "90%", boxShadow: "0 25px 50px -12px rgba(0,0,0,0.25)", border: `1px solid ${bdr}` }}>
+            <h3 style={{ fontSize: "20px", fontWeight: 700, color: text1, marginBottom: "20px" }}>Rename Note</h3>
+            
+            <div style={{ display: "flex", flexDirection: "column", gap: "6px", marginBottom: "32px" }}>
+              <label style={{ fontSize: "12px", fontWeight: 600, color: text3, textTransform: "uppercase" }}>New Name</label>
+              <input 
+                type="text" 
+                value={renameModal.newName} 
+                onChange={e => setRenameModal({...renameModal, newName: e.target.value})} 
+                style={{ background: isDark ? "rgba(255,255,255,0.05)" : "#f1f5f9", border: `1px solid ${bdr}`, color: text1, padding: "10px 14px", borderRadius: "8px", fontSize: "14px", outline: "none", fontFamily: "'Lexend',sans-serif" }} 
+              />
+            </div>
+
+            <div style={{ display: "flex", gap: "12px", justifyContent: "flex-end" }}>
+              <button 
+                onClick={() => setRenameModal({ isOpen: false, oldName: "", newName: "", pathArr: [] })} 
+                style={{ padding: "10px 20px", borderRadius: "12px", border: "none", background: isDark ? "rgba(255,255,255,0.05)" : "#f1f5f9", color: text1, fontWeight: 600, cursor: "pointer", transition: "background 0.2s" }}
+              >
+                Cancel
+              </button>
+              <button 
+                onClick={submitRenameNode} 
+                style={{ padding: "10px 20px", borderRadius: "12px", border: "none", background: "#00FF00", color: "#0f172a", fontWeight: 700, cursor: "pointer", transition: "opacity 0.2s" }}
+              >
+                Rename
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Delete Modal */}
+      {deleteModal.isOpen && (
+        <div style={{ position: "fixed", top: 0, left: 0, width: "100%", height: "100%", background: "rgba(0,0,0,0.5)", backdropFilter: "blur(4px)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 100 }}>
+          <div style={{ background: card, padding: "32px", borderRadius: "24px", width: "400px", maxWidth: "90%", boxShadow: "0 25px 50px -12px rgba(0,0,0,0.25)", border: `1px solid ${bdr}` }}>
+            <div style={{ display: "flex", alignItems: "center", gap: "12px", marginBottom: "16px" }}>
+              <div style={{ width: "40px", height: "40px", borderRadius: "12px", background: "rgba(239,68,68,0.1)", display: "flex", alignItems: "center", justifyContent: "center" }}>
+                <span className="ms" style={{ color: "#ef4444", fontSize: "24px" }}>delete</span>
+              </div>
+              <h3 style={{ fontSize: "20px", fontWeight: 700, color: text1, margin: 0 }}>Delete Note</h3>
+            </div>
+            <p style={{ color: text2, marginBottom: "32px", lineHeight: 1.5, fontSize: "14px" }}>Are you sure you want to delete <strong style={{ color: text1 }}>{deleteModal.moduleKey}</strong>? This action cannot be undone.</p>
+            <div style={{ display: "flex", gap: "12px", justifyContent: "flex-end" }}>
+              <button 
+                onClick={() => setDeleteModal({ isOpen: false, branch: "", sem: "", subject: "", moduleKey: "", fileUrl: "" })} 
+                style={{ padding: "10px 20px", borderRadius: "12px", border: "none", background: isDark ? "rgba(255,255,255,0.05)" : "#f1f5f9", color: text1, fontWeight: 600, cursor: "pointer", transition: "background 0.2s" }}
+              >
+                Cancel
+              </button>
+              <button 
+                onClick={submitDeleteNote} 
+                style={{ padding: "10px 20px", borderRadius: "12px", border: "none", background: "#ef4444", color: "#ffffff", fontWeight: 600, cursor: "pointer", transition: "background 0.2s" }}
+              >
+                Delete
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Edit Student Modal */}
       {editingStudent && (
         <div style={{ position: "fixed", top: 0, left: 0, width: "100%", height: "100%", background: "rgba(0,0,0,0.5)", backdropFilter: "blur(4px)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 100 }}>
