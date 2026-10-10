@@ -90,6 +90,9 @@ export default function AdminPage() {
   const [noteFile, setNoteFile] = useState(null);
   const [notesMessage, setNotesMessage] = useState("");
   const [notesSaving, setNotesSaving] = useState(false);
+  const [newTeacherEmail, setNewTeacherEmail] = useState("");
+  const [teacherMessage, setTeacherMessage] = useState("");
+  const [teacherSaving, setTeacherSaving] = useState(false);
   const [allNotes, setAllNotes] = useState([]);
 
   
@@ -553,9 +556,7 @@ export default function AdminPage() {
   );
 
   
-  const [newTeacherEmail, setNewTeacherEmail] = useState("");
-  const [teacherMessage, setTeacherMessage] = useState("");
-  const [teacherSaving, setTeacherSaving] = useState(false);
+
 
   const handleAddTeacher = async (e) => {
     e.preventDefault();
