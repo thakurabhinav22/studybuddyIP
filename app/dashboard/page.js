@@ -1089,7 +1089,12 @@ export default function Dashboard() {
                             const noteSubject = note.subject;
                             const noteModule = note.key || note.module || note.moduleKey;
                             if (noteBranch && noteSem && noteSubject && noteModule) {
-                              router.push(`/pdfviewer?branch=${encodeURIComponent(noteBranch)}&sem=${encodeURIComponent(noteSem)}&subject=${encodeURIComponent(noteSubject)}&module=${encodeURIComponent(noteModule)}`);
+                              const contentType = note.contentType || "application/pdf";
+                              if (contentType === "application/pdf") {
+                                router.push(`/pdfviewer?branch=${encodeURIComponent(noteBranch)}&sem=${encodeURIComponent(noteSem)}&subject=${encodeURIComponent(noteSubject)}&module=${encodeURIComponent(noteModule)}`);
+                              } else {
+                                window.open(`/api/notes/pdf?type=file&branch=${encodeURIComponent(noteBranch)}&sem=${encodeURIComponent(noteSem)}&subject=${encodeURIComponent(noteSubject)}&module=${encodeURIComponent(noteModule)}`, "_blank");
+                              }
                               return;
                             }
                             router.push("/notes");

@@ -272,24 +272,32 @@ export default function AdminPage() {
     try {
       const semKey = `Sem:${noteSem}`;
       let fileUrl = "";
+      let pdfMeta = null;
+      let pdfChunks = null;
+
       if (noteFile) {
-        const sRef = storageRef(storage, `notes/${noteBranch}/${semKey}/${noteSubject}/${noteModule}/${noteFile.name}`);
-        const uploadTask = uploadBytesResumable(sRef, noteFile);
-        
-        await new Promise((resolve, reject) => {
-          uploadTask.on(
-            "state_changed",
-            (snapshot) => {
-              const progress = (snapshot.bytesTransferred / snapshot.totalBytes) * 100;
-              setUploadProgress(progress);
-            },
-            (error) => reject(error),
-            async () => {
-              fileUrl = await getDownloadURL(uploadTask.snapshot.ref);
-              resolve();
-            }
-          );
+        const base64Data = await new Promise((resolve, reject) => {
+          const reader = new FileReader();
+          reader.readAsDataURL(noteFile);
+          reader.onload = () => resolve(reader.result);
+          reader.onerror = error => reject(error);
         });
+
+        const base64String = base64Data.split(',')[1];
+        const CHUNK_SIZE = 500 * 1024;
+        const totalChunks = Math.ceil(base64String.length / CHUNK_SIZE);
+
+        pdfChunks = {};
+        for (let i = 0; i < totalChunks; i++) {
+          pdfChunks[`chunk_${i}`] = base64String.slice(i * CHUNK_SIZE, (i + 1) * CHUNK_SIZE);
+        }
+
+        pdfMeta = {
+          totalChunks,
+          fileSize: noteFile.size,
+          fileName: noteFile.name,
+          contentType: noteFile.type || "application/octet-stream"
+        };
       }
       
       const newNote = {
@@ -300,21 +308,36 @@ export default function AdminPage() {
         fileName: noteFile ? noteFile.name : "No file",
       };
       
+      if (pdfMeta) newNote.pdfMeta = pdfMeta;
+
       await set(dbRef(db, `notes/${noteBranch}/${semKey}/subjects/${noteSubject}/Subject`), noteSubject);
       await set(dbRef(db, `notes/${noteBranch}/${semKey}/subjects/${noteSubject}/modules/${noteModule}`), newNote);
       
+      if (pdfChunks) {
+        const totalChunks = Object.keys(pdfChunks).length;
+        let uploadedChunks = 0;
+        for (const [chunkKey, chunkData] of Object.entries(pdfChunks)) {
+          await set(dbRef(db, `notes/${noteBranch}/${semKey}/subjects/${noteSubject}/modules/${noteModule}/pdfChunks/${chunkKey}`), chunkData);
+          uploadedChunks++;
+          setUploadProgress((uploadedChunks / totalChunks) * 100);
+        }
+      } else {
+        setUploadProgress(100);
+      }
+
       setNotesMessage("Note saved successfully!");
       setNoteTitle("");
       setNoteModule("");
       setNoteFile(null);
-      setUploadProgress(0);
     } catch (err) {
       console.error(err);
-      setNotesMessage("Error saving note.");
-      setUploadProgress(0);
+      setNotesMessage("Error saving note: " + (err.message || err));
     }
     setNotesSaving(false);
-    setTimeout(() => setNotesMessage(""), 3000);
+    setTimeout(() => {
+      setNotesMessage("");
+      setUploadProgress(0);
+    }, 3000);
   };
 
 
@@ -1075,8 +1098,14 @@ export default function AdminPage() {
                     } else {
                       const semNum = fileExplorerPath[1].replace('Sem:', '').trim();
                       if (noteData?.pdfChunks || noteData?.pdfMeta) {
-                        const url = `/pdfviewer?branch=${encodeURIComponent(fileExplorerPath[0])}&sem=${encodeURIComponent(semNum)}&subject=${encodeURIComponent(fileExplorerPath[2])}&module=${encodeURIComponent(item)}`;
-                        window.open(url, '_blank');
+                        const contentType = noteData?.pdfMeta?.contentType || "application/pdf";
+                        if (contentType === "application/pdf") {
+                          const url = `/pdfviewer?branch=${encodeURIComponent(fileExplorerPath[0])}&sem=${encodeURIComponent(semNum)}&subject=${encodeURIComponent(fileExplorerPath[2])}&module=${encodeURIComponent(item)}`;
+                          window.open(url, '_blank');
+                        } else {
+                          const url = `/api/notes/pdf?branch=${encodeURIComponent(fileExplorerPath[0])}&sem=${encodeURIComponent(semNum)}&subject=${encodeURIComponent(fileExplorerPath[2])}&module=${encodeURIComponent(item)}&type=file`;
+                          window.open(url, '_blank');
+                        }
                       } else if (noteData?.resourcesPDF) {
                         window.open(noteData.resourcesPDF, '_blank');
                       }

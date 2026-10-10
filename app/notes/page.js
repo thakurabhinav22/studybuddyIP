@@ -487,7 +487,7 @@ export default function NotesPage() {
       key: mod.key, module: mod.key, subject: activeSubject || "General",
       branch: userData?.branch || "", sem: semKey,
       title: mod.Title || mod.key, desc: mod.description || mod.desc || "Recently opened module",
-      icon: "description", updatedAt: Date.now(),
+      icon: "description", contentType: mod.pdfMeta?.contentType || "application/pdf", updatedAt: Date.now(),
     };
     if (authUser?.uid) {
       const safeKey = `${activeSubject || "GEN"}_${mod.key}`.replace(/[.#$\[\]/]/g, "_");
@@ -495,7 +495,12 @@ export default function NotesPage() {
       patchDashboardRecentNote(authUser.uid, recentNotePayload);
     }
     if (isChunked) {
-      router.push(`/pdfviewer?branch=${encodeURIComponent(userData?.branch||"")}&sem=${encodeURIComponent(semKey)}&subject=${encodeURIComponent(activeSubject)}&module=${encodeURIComponent(mod.key)}`);
+      const contentType = mod.pdfMeta?.contentType || "application/pdf";
+      if (contentType === "application/pdf") {
+        router.push(`/pdfviewer?branch=${encodeURIComponent(userData?.branch||"")}&sem=${encodeURIComponent(semKey)}&subject=${encodeURIComponent(activeSubject)}&module=${encodeURIComponent(mod.key)}`);
+      } else {
+        window.open(`/api/notes/pdf?type=file&branch=${encodeURIComponent(userData?.branch||"")}&sem=${encodeURIComponent(semKey)}&subject=${encodeURIComponent(activeSubject)}&module=${encodeURIComponent(mod.key)}`, "_blank");
+      }
     } else if (mod.resourcesPDF) {
       window.open(mod.resourcesPDF, "_blank");
     }
@@ -511,7 +516,12 @@ export default function NotesPage() {
 
     if (isChunked) {
       const semKey = normaliseSem(userData?.sem || "");
-      router.push(`/pdfviewer?branch=${encodeURIComponent(userData?.branch||"")}&sem=${encodeURIComponent(semKey)}&subject=${encodeURIComponent(activeSubject)}&module=${encodeURIComponent(mod.key)}`);
+      const contentType = mod.pdfMeta?.contentType || "application/pdf";
+      if (contentType === "application/pdf") {
+        router.push(`/pdfviewer?branch=${encodeURIComponent(userData?.branch||"")}&sem=${encodeURIComponent(semKey)}&subject=${encodeURIComponent(activeSubject)}&module=${encodeURIComponent(mod.key)}`);
+      } else {
+        window.open(`/api/notes/pdf?type=file&branch=${encodeURIComponent(userData?.branch||"")}&sem=${encodeURIComponent(semKey)}&subject=${encodeURIComponent(activeSubject)}&module=${encodeURIComponent(mod.key)}`, "_blank");
+      }
       return;
     }
 

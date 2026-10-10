@@ -222,7 +222,7 @@ async function getPdfRange(basePath, baseChunksKey, metaKey, start, end) {
 
   const relativeStart = safeStart - (startChunk * PDF_CHUNK_BYTE_SIZE);
   const slice = merged.slice(relativeStart, relativeStart + (safeEnd - safeStart + 1));
-  return { data: slice, totalBytes, source };
+  return { data: slice, totalBytes, source, contentType: meta.contentType || "application/pdf" };
 }
 
 async function getPdfFullFile(basePath, baseChunksKey, metaKey) {
@@ -245,19 +245,20 @@ async function getPdfFullFile(basePath, baseChunksKey, metaKey) {
     data: merged,
     totalBytes: Number(meta.fileSize) || merged.length,
     source,
+    contentType: meta.contentType || "application/pdf",
   };
 }
 
 async function buildPdfFileResponse(basePath, baseChunksKey, metaKey, request) {
   const rangeHeader = request.headers.get("range") || request.headers.get("Range");
   if (!rangeHeader) {
-    const { data, totalBytes, source } = await getPdfFullFile(basePath, baseChunksKey, metaKey);
+    const { data, totalBytes, source, contentType } = await getPdfFullFile(basePath, baseChunksKey, metaKey);
     if (!data) return Response.json({ error: "PDF data not found" }, { status: 404 });
 
     return new Response(data, {
       status: 200,
       headers: {
-        "Content-Type": "application/pdf",
+        "Content-Type": contentType,
         "Content-Length": String(data.length),
         "Accept-Ranges": "bytes",
         "Cache-Control": "no-store",
@@ -273,14 +274,14 @@ async function buildPdfFileResponse(basePath, baseChunksKey, metaKey, request) {
   const start = Number(match[1]);
   const end = match[2] ? Number(match[2]) : null;
 
-  const { data, totalBytes, source } = await getPdfRange(basePath, baseChunksKey, metaKey, start, end);
+  const { data, totalBytes, source, contentType } = await getPdfRange(basePath, baseChunksKey, metaKey, start, end);
   if (!data) return Response.json({ error: "PDF data not found" }, { status: 404 });
 
   const actualEnd = start + data.length - 1;
   return new Response(data, {
     status: 206,
     headers: {
-      "Content-Type": "application/pdf",
+      "Content-Type": contentType,
       "Content-Length": String(data.length),
       "Content-Range": `bytes ${start}-${actualEnd}/${totalBytes}`,
       "Accept-Ranges": "bytes",
