@@ -63,6 +63,7 @@ export default function AdminPage() {
   const [loading, setLoading] = useState(true);
   
   const [activeTab, setActiveTab] = useState("dashboard");
+  const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [showLogoutModal, setShowLogoutModal] = useState(false);
   const [showProfileMenu, setShowProfileMenu] = useState(false);
   
@@ -89,6 +90,8 @@ export default function AdminPage() {
   const [noteFile, setNoteFile] = useState(null);
   const [notesMessage, setNotesMessage] = useState("");
   const [notesSaving, setNotesSaving] = useState(false);
+  const [allNotes, setAllNotes] = useState([]);
+
   
   useEffect(() => {
     const unsub = onAuthStateChanged(auth, async (u) => {
@@ -105,6 +108,7 @@ export default function AdminPage() {
         setUserData(data);
         fetchUsers();
         fetchSettings();
+        fetchNotes();
       } else {
         router.replace("/");
       }
@@ -132,6 +136,19 @@ export default function AdminPage() {
       setInstSettings(snap.val());
     }
   };
+
+  const fetchNotes = () => {
+    onValue(dbRef(db, "notes"), (snap) => {
+      if (snap.exists()) {
+        const notesObj = snap.val();
+        const notesList = Object.keys(notesObj).map(id => ({ ...notesObj[id], id }));
+        setAllNotes(notesList);
+      } else {
+        setAllNotes([]);
+      }
+    });
+  };
+
 
   const handlePromote = async (uid, currentSem) => {
     if (!currentSem || currentSem === "Alumni") return;
@@ -184,6 +201,15 @@ export default function AdminPage() {
     }
     setAdminSaving(false);
     setTimeout(() => setAdminMessage(""), 3000);
+  };
+
+  const handleDeleteNote = async (id) => {
+    if (!confirm("Are you sure you want to delete this note?")) return;
+    try {
+      await remove(dbRef(db, `notes/${id}`));
+    } catch (error) {
+      console.error("Error deleting note:", error);
+    }
   };
 
   const handleSaveSettings = async (e) => {
@@ -308,11 +334,12 @@ export default function AdminPage() {
 
   if (authLoading) return null;
 
-  const studentsOnly = users.filter(u => u.role !== "admin");
+  const studentsOnly = users.filter(u => u.role !== "admin" && u.role !== "teacher");
+  const teachersOnly = users.filter(u => u.role === "teacher");
   const adminsOnly = users.filter(u => u.role === "admin");
   
   const branches = ["All", ...new Set(studentsOnly.map(s => s.branch).filter(Boolean))];
-  const sems = ["All", ...new Set(studentsOnly.map(s => s.sem).filter(Boolean).sort((a,b) => a - b))];
+  const sems = ["All", ...new Set(studentsOnly.map(s => s.sem).filter(Boolean).sort((a,b) => { if(a==="Alumni") return 1; if(b==="Alumni") return -1; return a - b; }))];
   
   let processedStudents = studentsOnly;
   if (selectedBranch !== "All") processedStudents = processedStudents.filter(s => s.branch === selectedBranch);
@@ -525,6 +552,113 @@ export default function AdminPage() {
     </>
   );
 
+  
+  const [newTeacherEmail, setNewTeacherEmail] = useState("");
+  const [teacherMessage, setTeacherMessage] = useState("");
+  const [teacherSaving, setTeacherSaving] = useState(false);
+
+  const handleAddTeacher = async (e) => {
+    e.preventDefault();
+    setTeacherMessage("");
+    if (!newTeacherEmail) return;
+    setTeacherSaving(true);
+    const userToPromote = users.find(u => u.email.toLowerCase() === newTeacherEmail.toLowerCase());
+    if (userToPromote) {
+      try {
+        await set(dbRef(db, `users/${userToPromote.uid}/role`), "teacher");
+        setTeacherMessage("User promoted to teacher successfully!");
+        setNewTeacherEmail("");
+      } catch (err) {
+        setTeacherMessage("Error promoting user.");
+      }
+    } else {
+      setTeacherMessage("No user found with this email. They must sign in first.");
+    }
+    setTeacherSaving(false);
+    setTimeout(() => setTeacherMessage(""), 3000);
+  };
+
+  const handleRemoveTeacher = async (uid) => {
+    if (!confirm("Are you sure you want to remove teacher privileges for this user?")) return;
+    try {
+      await set(dbRef(db, `users/${uid}/role`), "student");
+    } catch (error) {
+      console.error("Error removing teacher:", error);
+    }
+  };
+
+  const renderTeachers = () => (
+    <div className="admin-card">
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "16px", flexWrap: "wrap", gap: "16px" }}>
+        <h3 style={{ fontSize: "18px", fontWeight: 700, color: text1, margin: 0 }}>Manage Teachers</h3>
+        <form onSubmit={handleAddTeacher} style={{ display: "flex", gap: "8px", alignItems: "center" }}>
+          <input 
+            type="email" 
+            placeholder="User's email to promote" 
+            value={newTeacherEmail}
+            onChange={e => setNewTeacherEmail(e.target.value)}
+            style={{ background: isDark ? "rgba(255,255,255,0.05)" : "#f1f5f9", border: `1px solid ${bdr}`, color: text1, padding: "8px 12px", borderRadius: "8px", fontSize: "13px", fontWeight: 500, outline: "none", width: "220px", fontFamily: "'Lexend',sans-serif" }}
+            required
+          />
+          <button type="submit" disabled={teacherSaving} style={{ background: "rgba(0,255,0,0.1)", color: "#00DD00", border: "1px solid rgba(0,255,0,0.2)", padding: "8px 16px", borderRadius: "8px", fontSize: "13px", fontWeight: 700, cursor: "pointer", transition: "all 0.2s" }}>
+            {teacherSaving ? "Promoting..." : "Promote to Teacher"}
+          </button>
+        </form>
+      </div>
+      {teacherMessage && <div style={{ fontSize: "13px", color: teacherMessage.includes("Error") || teacherMessage.includes("No user") ? "#ef4444" : "#00FF00", marginBottom: "16px", fontWeight: 600 }}>{teacherMessage}</div>}
+      <div style={{ display: "flex", flexDirection: "column" }}>
+        {teachersOnly.map((teacher) => (
+          <div key={teacher.uid} className="student-row">
+            <div style={{ display: "flex", alignItems: "center", gap: "16px" }}>
+              <div style={{ width: "40px", height: "40px", borderRadius: "50%", background: "#e2e8f0", overflow: "hidden" }}>
+                {teacher.photoURL ? (
+                  <img src={teacher.photoURL} alt={teacher.fullName} style={{ width: "100%", height: "100%", objectFit: "cover" }} referrerPolicy="no-referrer" />
+                ) : (
+                  <div style={{ width: "100%", height: "100%", display: "flex", alignItems: "center", justifyContent: "center", background: "#00FF00", color: "#0f172a", fontWeight: "bold" }}>
+                    {teacher.fullName ? teacher.fullName.charAt(0) : "T"}
+                  </div>
+                )}
+              </div>
+              <div>
+                <div style={{ fontSize: "14px", fontWeight: 600, color: text1, display: "flex", alignItems: "center", gap: "6px" }}>
+                  {teacher.fullName || "Unknown Teacher"}
+                  <span className="ms" style={{ fontSize: "16px", color: "#3b82f6" }} title="Teacher">local_library</span>
+                  {teacher.blocked && (
+                    <span style={{ fontSize: "10px", background: "rgba(239,68,68,0.1)", color: "#ef4444", padding: "2px 6px", borderRadius: "4px", fontWeight: 700, textTransform: "uppercase" }}>Blocked</span>
+                  )}
+                </div>
+                <div style={{ fontSize: "12px", color: text2 }}>{teacher.email}</div>
+              </div>
+            </div>
+            <div style={{ display: "flex", gap: "8px" }}>
+              <button 
+                onClick={() => { setEditingStudent(teacher); setEditForm({ fullName: teacher.fullName || "", branch: teacher.branch || "", sem: teacher.sem || "" }); }}
+                style={{ background: isDark ? "rgba(255,255,255,0.05)" : "#f1f5f9", color: text1, border: `1px solid ${bdr}`, padding: "6px 12px", borderRadius: "8px", fontSize: "12px", fontWeight: 700, cursor: "pointer", transition: "all 0.2s", display: "flex", alignItems: "center", gap: "6px" }}
+              >
+                <span className="ms" style={{ fontSize: "16px" }}>edit</span>
+                Edit
+              </button>
+              <button 
+                onClick={() => handleToggleBlock(teacher.uid, teacher.blocked)}
+                style={{ background: teacher.blocked ? "rgba(239,68,68,0.1)" : "rgba(245,158,11,0.1)", color: teacher.blocked ? "#ef4444" : "#f59e0b", border: `1px solid ${teacher.blocked ? "rgba(239,68,68,0.2)" : "rgba(245,158,11,0.2)"}`, padding: "6px 12px", borderRadius: "8px", fontSize: "12px", fontWeight: 700, cursor: "pointer", transition: "all 0.2s", display: "flex", alignItems: "center", gap: "6px" }}
+              >
+                <span className="ms" style={{ fontSize: "16px" }}>{teacher.blocked ? "lock_open" : "block"}</span>
+                {teacher.blocked ? "Unblock" : "Block"}
+              </button>
+              <button 
+                className="btn-delete" 
+                onClick={() => handleRemoveTeacher(teacher.uid)}
+              >
+                <span className="ms" style={{ fontSize: "16px" }}>delete</span>
+                Remove Teacher
+              </button>
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+
   const renderAdmins = () => (
     <div className="admin-card">
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "16px", flexWrap: "wrap", gap: "16px" }}>
@@ -600,34 +734,197 @@ export default function AdminPage() {
   );
 
   const renderNotes = () => (
-    <div className="admin-card">
-      <h3 style={{ fontSize: "18px", fontWeight: 700, color: text1, margin: 0, marginBottom: "16px" }}>Upload Notes</h3>
-      <form onSubmit={handleUploadNote} style={{ display: "flex", flexDirection: "column", gap: "16px", maxWidth: "500px" }}>
-        <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
-          <label style={{ fontSize: "12px", fontWeight: 600, color: text3, textTransform: "uppercase" }}>Note Title</label>
-          <input type="text" value={noteTitle} onChange={e => setNoteTitle(e.target.value)} required placeholder="e.g. Data Structures Ch 1" style={{ background: isDark ? "rgba(255,255,255,0.05)" : "#f1f5f9", border: `1px solid ${bdr}`, color: text1, padding: "10px 14px", borderRadius: "8px", fontSize: "14px", outline: "none", fontFamily: "'Lexend',sans-serif" }} />
-        </div>
-        <div style={{ display: "flex", gap: "16px" }}>
-          <div style={{ display: "flex", flexDirection: "column", gap: "6px", flex: 1 }}>
-            <label style={{ fontSize: "12px", fontWeight: 600, color: text3, textTransform: "uppercase" }}>Branch</label>
-            <input type="text" value={noteBranch} onChange={e => setNoteBranch(e.target.value)} required placeholder="e.g. IT, CS" style={{ background: isDark ? "rgba(255,255,255,0.05)" : "#f1f5f9", border: `1px solid ${bdr}`, color: text1, padding: "10px 14px", borderRadius: "8px", fontSize: "14px", outline: "none", fontFamily: "'Lexend',sans-serif" }} />
+    <div style={{ display: "flex", gap: "32px", alignItems: "flex-start", flexWrap: "wrap" }}>
+      <div className="admin-card" style={{ flex: "1 1 500px" }}>
+        <h3 style={{ fontSize: "20px", fontWeight: 700, color: text1, margin: 0, marginBottom: "24px", display: "flex", alignItems: "center", gap: "8px" }}>
+          <span className="ms" style={{ color: "#00FF00", fontSize: "24px" }}>cloud_upload</span>
+          Upload New Material
+        </h3>
+        <form onSubmit={handleUploadNote} style={{ display: "flex", flexDirection: "column", gap: "24px" }}>
+          
+          {/* File Upload Area */}
+          <div style={{ position: "relative", width: "100%", height: "180px", borderRadius: "16px", border: `2px dashed ${noteFile ? "#00FF00" : (isDark ? "rgba(255,255,255,0.2)" : "rgba(0,0,0,0.15)")}`, background: noteFile ? "rgba(0,255,0,0.05)" : (isDark ? "rgba(255,255,255,0.02)" : "#f8fafc"), display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", transition: "all 0.2s", cursor: "pointer", overflow: "hidden" }}
+               onMouseEnter={e => { if(!noteFile) { e.currentTarget.style.borderColor = "rgba(0,255,0,0.5)"; e.currentTarget.style.background = isDark ? "rgba(255,255,255,0.04)" : "#f1f5f9"; } }}
+               onMouseLeave={e => { if(!noteFile) { e.currentTarget.style.borderColor = isDark ? "rgba(255,255,255,0.2)" : "rgba(0,0,0,0.15)"; e.currentTarget.style.background = isDark ? "rgba(255,255,255,0.02)" : "#f8fafc"; } }}>
+            <input 
+              type="file" 
+              required
+              onChange={e => setNoteFile(e.target.files[0])} 
+              style={{ position: "absolute", inset: 0, opacity: 0, cursor: "pointer", width: "100%", height: "100%" }} 
+            />
+            {noteFile ? (
+              <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: "8px", pointerEvents: "none" }}>
+                <span className="ms" style={{ fontSize: "40px", color: "#00FF00" }}>task</span>
+                <span style={{ fontSize: "15px", fontWeight: 700, color: text1, textAlign: "center", maxWidth: "80%", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{noteFile.name}</span>
+                <span style={{ fontSize: "12px", color: text3, fontWeight: 600 }}>{(noteFile.size / 1024 / 1024).toFixed(2)} MB • Click to replace</span>
+              </div>
+            ) : (
+              <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: "12px", pointerEvents: "none" }}>
+                <div style={{ width: "56px", height: "56px", borderRadius: "16px", background: isDark ? "rgba(255,255,255,0.08)" : "#e2e8f0", display: "flex", alignItems: "center", justifyContent: "center" }}>
+                  <span className="ms" style={{ fontSize: "28px", color: text2 }}>upload_file</span>
+                </div>
+                <div style={{ textAlign: "center" }}>
+                  <span style={{ fontSize: "15px", fontWeight: 700, color: text1, display: "block", marginBottom: "4px" }}>Drag & Drop or <span style={{ color: "#00DD00" }}>Browse</span></span>
+                  <span style={{ fontSize: "12px", color: text3, fontWeight: 500 }}>Supports PDF, PPT, DOCX</span>
+                </div>
+              </div>
+            )}
           </div>
-          <div style={{ display: "flex", flexDirection: "column", gap: "6px", flex: 1 }}>
-            <label style={{ fontSize: "12px", fontWeight: 600, color: text3, textTransform: "uppercase" }}>Semester</label>
-            <input type="number" value={noteSem} onChange={e => setNoteSem(e.target.value)} required min="1" style={{ background: isDark ? "rgba(255,255,255,0.05)" : "#f1f5f9", border: `1px solid ${bdr}`, color: text1, padding: "10px 14px", borderRadius: "8px", fontSize: "14px", outline: "none", fontFamily: "'Lexend',sans-serif" }} />
+
+          <div style={{ height: "1px", background: bdr, width: "100%" }} />
+
+          {/* Metadata Grid */}
+          <div style={{ display: "grid", gridTemplateColumns: "1fr", gap: "16px" }}>
+            <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
+              <label style={{ fontSize: "11px", fontWeight: 700, color: text3, textTransform: "uppercase", letterSpacing: "0.05em" }}>Document Title</label>
+              <input type="text" value={noteTitle} onChange={e => setNoteTitle(e.target.value)} required placeholder="e.g. Chapter 4: Neural Networks" style={{ background: isDark ? "rgba(255,255,255,0.05)" : "#f1f5f9", border: `1px solid ${bdr}`, color: text1, padding: "12px 16px", borderRadius: "10px", fontSize: "14px", fontWeight: 500, outline: "none", fontFamily: "'Lexend',sans-serif", transition: "border 0.2s" }} onFocus={e=>e.currentTarget.style.borderColor="#00FF00"} onBlur={e=>e.currentTarget.style.borderColor=bdr} />
+            </div>
+
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "16px" }}>
+              <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
+                <label style={{ fontSize: "11px", fontWeight: 700, color: text3, textTransform: "uppercase", letterSpacing: "0.05em" }}>Branch</label>
+                <select 
+                  value={noteBranch} 
+                  onChange={e => setNoteBranch(e.target.value)} 
+                  required 
+                  style={{ background: isDark ? "rgba(255,255,255,0.05)" : "#f1f5f9", border: `1px solid ${bdr}`, color: text1, padding: "12px 16px", borderRadius: "10px", fontSize: "14px", fontWeight: 600, outline: "none", fontFamily: "'Lexend',sans-serif", cursor: "pointer" }}
+                >
+                  <option value="">Select Branch</option>
+                  <option value="IT">IT</option>
+                  <option value="CS">CS</option>
+                  <option value="EXTC">EXTC</option>
+                  <option value="AI&DS">AI&DS</option>
+                  <option value="COMP">COMP</option>
+                  {noteBranch && !["IT","CS","EXTC","AI&DS","COMP"].includes(noteBranch) && (
+                    <option value={noteBranch}>{noteBranch}</option>
+                  )}
+                </select>
+              </div>
+              <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
+                <label style={{ fontSize: "11px", fontWeight: 700, color: text3, textTransform: "uppercase", letterSpacing: "0.05em" }}>Semester</label>
+                <select 
+                  value={noteSem} 
+                  onChange={e => setNoteSem(e.target.value)} 
+                  required 
+                  style={{ background: isDark ? "rgba(255,255,255,0.05)" : "#f1f5f9", border: `1px solid ${bdr}`, color: text1, padding: "12px 16px", borderRadius: "10px", fontSize: "14px", fontWeight: 600, outline: "none", fontFamily: "'Lexend',sans-serif", cursor: "pointer" }}
+                >
+                  <option value="">Select Sem</option>
+                  {[1,2,3,4,5,6,7,8].map(s => <option key={s} value={s}>Sem {s}</option>)}
+                </select>
+              </div>
+            </div>
           </div>
-        </div>
-        <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
-          <label style={{ fontSize: "12px", fontWeight: 600, color: text3, textTransform: "uppercase" }}>File (Optional stub)</label>
-          <input type="file" onChange={e => setNoteFile(e.target.files[0])} style={{ color: text1, fontSize: "14px", fontFamily: "'Lexend',sans-serif" }} />
-        </div>
-        <button type="submit" disabled={notesSaving} style={{ background: "rgba(0,255,0,0.1)", color: "#00DD00", border: "1px solid rgba(0,255,0,0.2)", padding: "10px 16px", borderRadius: "8px", fontSize: "14px", fontWeight: 700, cursor: "pointer", transition: "all 0.2s", alignSelf: "flex-start", marginTop: "8px" }}>
-          {notesSaving ? "Saving..." : "Upload Note"}
-        </button>
-        {notesMessage && <div style={{ fontSize: "13px", color: notesMessage.includes("Error") ? "#ef4444" : "#00FF00", fontWeight: 600 }}>{notesMessage}</div>}
-      </form>
+
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginTop: "8px" }}>
+            <span style={{ fontSize: "13px", color: notesMessage.includes("Error") ? "#ef4444" : "#00FF00", fontWeight: 600, flex: 1 }}>{notesMessage}</span>
+            <button type="submit" disabled={notesSaving || !noteFile} style={{ background: (notesSaving || !noteFile) ? (isDark ? "rgba(255,255,255,0.1)" : "#cbd5e1") : "#00FF00", color: (notesSaving || !noteFile) ? (isDark ? "#64748b" : "#64748b") : "#0f172a", border: "none", padding: "12px 28px", borderRadius: "10px", fontSize: "15px", fontWeight: 800, cursor: (notesSaving || !noteFile) ? "not-allowed" : "pointer", transition: "all 0.2s", display: "flex", alignItems: "center", gap: "8px", boxShadow: (notesSaving || !noteFile) ? "none" : "0 8px 24px rgba(0,255,0,0.3)" }}>
+              {notesSaving ? (
+                <>
+                  <span className="ms" style={{ animation: "spin 1s linear infinite" }}>sync</span>
+                  Uploading...
+                </>
+              ) : (
+                <>
+                  <span className="ms">publish</span>
+                  Publish Note
+                </>
+              )}
+            </button>
+          </div>
+        </form>
+      </div>
+
+      {/* Guidelines Card */}
+      <div className="admin-card" style={{ flex: "1 1 300px", maxWidth: "400px", alignSelf: "stretch" }}>
+        <h3 style={{ fontSize: "16px", fontWeight: 700, color: text1, margin: 0, marginBottom: "20px", display: "flex", alignItems: "center", gap: "8px" }}>
+          <span className="ms" style={{ color: "#3b82f6", fontSize: "20px" }}>info</span>
+          Upload Guidelines
+        </h3>
+        <ul style={{ listStyle: "none", padding: 0, margin: 0, display: "flex", flexDirection: "column", gap: "16px" }}>
+          <li style={{ display: "flex", gap: "12px", alignItems: "flex-start" }}>
+            <span className="ms" style={{ color: "#00FF00", fontSize: "18px", marginTop: "2px" }}>check_circle</span>
+            <div>
+              <span style={{ display: "block", fontSize: "13px", fontWeight: 700, color: text1, marginBottom: "4px" }}>Organize properly</span>
+              <span style={{ display: "block", fontSize: "12px", color: text2, lineHeight: 1.5 }}>Always specify the correct branch and semester so students can find it easily.</span>
+            </div>
+          </li>
+          <li style={{ display: "flex", gap: "12px", alignItems: "flex-start" }}>
+            <span className="ms" style={{ color: "#00FF00", fontSize: "18px", marginTop: "2px" }}>check_circle</span>
+            <div>
+              <span style={{ display: "block", fontSize: "13px", fontWeight: 700, color: text1, marginBottom: "4px" }}>Clear titles</span>
+              <span style={{ display: "block", fontSize: "12px", color: text2, lineHeight: 1.5 }}>Include the module/chapter number and topic name (e.g., "Mod 1: Intro to OS").</span>
+            </div>
+          </li>
+          <li style={{ display: "flex", gap: "12px", alignItems: "flex-start" }}>
+            <span className="ms" style={{ color: "#3b82f6", fontSize: "18px", marginTop: "2px" }}>shield</span>
+            <div>
+              <span style={{ display: "block", fontSize: "13px", fontWeight: 700, color: text1, marginBottom: "4px" }}>Quality check</span>
+              <span style={{ display: "block", fontSize: "12px", color: text2, lineHeight: 1.5 }}>Ensure PDFs are properly scanned and legible before uploading.</span>
+            </div>
+          </li>
+        </ul>
+      </div>
     </div>
   );
+
+  const renderManageNotes = () => {
+    const branches = [...new Set(allNotes.map(n => n.branch).filter(Boolean))];
+    
+    return (
+      <div className="admin-card">
+        <h3 style={{ fontSize: "18px", fontWeight: 700, color: text1, margin: 0, marginBottom: "16px" }}>Manage Uploaded Notes</h3>
+        
+        {branches.length === 0 && <div style={{ color: text2 }}>No notes found.</div>}
+        
+        <div style={{ display: "flex", flexDirection: "column", gap: "24px" }}>
+          {branches.map(branch => {
+            const branchNotes = allNotes.filter(n => n.branch === branch);
+            const sems = [...new Set(branchNotes.map(n => n.sem).filter(Boolean))].sort((a,b) => String(a).localeCompare(String(b)));
+            
+            return (
+              <div key={branch} style={{ background: isDark ? "rgba(255,255,255,0.02)" : "#f8fafc", border: `1px solid ${bdr}`, borderRadius: "16px", padding: "16px" }}>
+                <h4 style={{ fontSize: "16px", fontWeight: 700, color: text1, margin: "0 0 16px", display: "flex", alignItems: "center", gap: "8px" }}>
+                  <span className="ms" style={{ color: "#3b82f6", fontSize: "20px" }}>folder</span>
+                  {branch}
+                </h4>
+                
+                <div style={{ display: "flex", flexDirection: "column", gap: "16px" }}>
+                  {sems.map(sem => {
+                    const semNotes = branchNotes.filter(n => String(n.sem) === String(sem));
+                    return (
+                      <div key={sem} style={{ background: isDark ? "rgba(255,255,255,0.03)" : "#ffffff", border: `1px solid ${bdr}`, borderRadius: "12px", padding: "12px" }}>
+                        <h5 style={{ fontSize: "14px", fontWeight: 700, color: text1, margin: "0 0 12px", display: "flex", alignItems: "center", gap: "6px" }}>
+                          <span className="ms" style={{ color: "#f59e0b", fontSize: "18px" }}>snippet_folder</span>
+                          Semester {sem} <span style={{ fontSize: "12px", color: text3, fontWeight: 500, marginLeft: "4px" }}>({semNotes.length} notes)</span>
+                        </h5>
+                        
+                        <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
+                          {semNotes.map(note => (
+                            <div key={note.id} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", background: isDark ? "rgba(255,255,255,0.04)" : "#f1f5f9", padding: "10px 14px", borderRadius: "8px" }}>
+                              <div style={{ display: "flex", flexDirection: "column" }}>
+                                <span style={{ fontSize: "14px", fontWeight: 600, color: text1 }}>{note.title}</span>
+                                <span style={{ fontSize: "11px", color: text2 }}>{note.fileName} • Uploaded by {note.uploadedBy || "Admin"}</span>
+                              </div>
+                              <button 
+                                onClick={() => handleDeleteNote(note.id)}
+                                style={{ background: "rgba(239,68,68,0.1)", color: "#ef4444", border: "none", padding: "6px 12px", borderRadius: "6px", fontSize: "12px", fontWeight: 700, cursor: "pointer", transition: "all 0.2s" }}
+                              >
+                                Delete
+                              </button>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+    );
+  };
 
   const renderSettings = () => (
     <div className="admin-card">
@@ -692,12 +989,19 @@ export default function AdminPage() {
         .btn-delete{background:rgba(239,68,68,0.1);color:#ef4444;border:1px solid rgba(239,68,68,0.2);padding:6px 12px;border-radius:8px;font-size:12px;font-weight:700;cursor:pointer;transition:all 0.2s;display:flex;align-items:center;gap:6px;}
         .btn-delete:hover{background:rgba(239,68,68,0.2);}
         .btn-delete:disabled{opacity:0.5;cursor:not-allowed;}
-        @media(max-width:768px){.sb-sidebar{display:none;}.sb-scroll{padding:20px 16px 80px;}}
+        @media(max-width:768px){.sb-sidebar{position:fixed;left:0;top:0;transform:translateX(-100%);transition:transform 0.3s;}
+        .sb-sidebar.open{transform:translateX(0);}.sb-scroll{padding:20px 16px 80px;}}
       `}</style>
 
       <div className="sb-root">
+        {mobileMenuOpen && (
+          <div 
+            style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.5)", zIndex: 10 }}
+            onClick={() => setMobileMenuOpen(false)}
+          />
+        )}
         {/* Sidebar */}
-        <aside className="sb-sidebar">
+        <aside className={`sb-sidebar ${mobileMenuOpen ? "open" : ""}`}>
           <div style={{ display: "flex", alignItems: "center", gap: "12px", marginBottom: "40px", padding: "0 10px" }}>
             <div style={{ width: "40px", height: "40px", background: "#00FF00", borderRadius: "10px", display: "flex", alignItems: "center", justifyContent: "center", boxShadow: "0 0 16px rgba(0,255,0,0.35)" }}>
               <span className="ms" style={{ color: "#0f172a", fontSize: "22px" }}>school</span>
@@ -709,19 +1013,27 @@ export default function AdminPage() {
           </div>
           
           <nav style={{ display: "flex", flexDirection: "column", gap: "8px", flex: 1 }}>
-            <button className={`nav-link ${activeTab === 'dashboard' ? 'active' : ''}`} onClick={() => setActiveTab('dashboard')}>
+            <button className={`nav-link ${activeTab === 'dashboard' ? 'active' : ''}`} onClick={() => { setActiveTab('dashboard'); setMobileMenuOpen(false); }}>
               <span className="ms" style={{ fontSize: "20px" }}>dashboard</span>
               Dashboard
             </button>
-            <button className={`nav-link ${activeTab === 'notes' ? 'active' : ''}`} onClick={() => setActiveTab('notes')}>
+            <button className={`nav-link ${activeTab === 'notes' ? 'active' : ''}`} onClick={() => { setActiveTab('notes'); setMobileMenuOpen(false); }}>
               <span className="ms" style={{ fontSize: "20px" }}>cloud_upload</span>
               Upload Notes
             </button>
-            <button className={`nav-link ${activeTab === 'admins' ? 'active' : ''}`} onClick={() => setActiveTab('admins')}>
+            <button className={`nav-link ${activeTab === 'manage_notes' ? 'active' : ''}`} onClick={() => { setActiveTab('manage_notes'); setMobileMenuOpen(false); }}>
+              <span className="ms" style={{ fontSize: "20px" }}>folder_open</span>
+              Manage Notes
+            </button>
+            <button className={`nav-link ${activeTab === 'admins' ? 'active' : ''}`} onClick={() => { setActiveTab('admins'); setMobileMenuOpen(false); }}>
               <span className="ms" style={{ fontSize: "20px" }}>manage_accounts</span>
               Manage Admins
             </button>
-            <button className={`nav-link ${activeTab === 'settings' ? 'active' : ''}`} onClick={() => setActiveTab('settings')}>
+            <button className={`nav-link ${activeTab === 'teachers' ? 'active' : ''}`} onClick={() => { setActiveTab('teachers'); setMobileMenuOpen(false); }}>
+              <span className="ms" style={{ fontSize: "20px" }}>school</span>
+              Manage Teachers
+            </button>
+            <button className={`nav-link ${activeTab === 'settings' ? 'active' : ''}`} onClick={() => { setActiveTab('settings'); setMobileMenuOpen(false); }}>
               <span className="ms" style={{ fontSize: "20px" }}>settings</span>
               Institution Config
             </button>
@@ -731,11 +1043,21 @@ export default function AdminPage() {
         {/* Main Content */}
         <main className="sb-main">
           <header className="sb-header">
-            <div>
+            <div style={{ display: "flex", alignItems: "center", gap: "12px" }}>
+              <button 
+                className="mobile-menu-btn"
+                onClick={() => setMobileMenuOpen(!mobileMenuOpen)}
+                style={{ background: "transparent", border: "none", color: text1, cursor: "pointer", display: "none" }}
+              >
+                <span className="ms" style={{ fontSize: "24px" }}>menu</span>
+              </button>
+              <style>{`@media(max-width:768px){.mobile-menu-btn{display:block!important;}}`}</style>
               <h1 style={{ fontSize: "1.2rem", fontWeight: 700, color: text1, margin: 0 }}>
                 {activeTab === 'dashboard' && 'Student Dashboard'}
                 {activeTab === 'notes' && 'Upload Notes'}
+                {activeTab === 'manage_notes' && 'Manage Notes'}
                 {activeTab === 'admins' && 'Manage Admins'}
+                {activeTab === 'teachers' && 'Manage Teachers'}
                 {activeTab === 'settings' && 'Settings'}
               </h1>
             </div>
@@ -793,7 +1115,9 @@ export default function AdminPage() {
           <div className="sb-scroll">
             {activeTab === 'dashboard' && renderDashboard()}
             {activeTab === 'notes' && renderNotes()}
+            {activeTab === 'manage_notes' && renderManageNotes()}
             {activeTab === 'admins' && renderAdmins()}
+            {activeTab === 'teachers' && renderTeachers()}
             {activeTab === 'settings' && renderSettings()}
           </div>
         </main>

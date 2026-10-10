@@ -521,6 +521,7 @@ export default function Dashboard() {
   const [aiInsightsLoading, setAiInsightsLoading] = useState(false);
   const [aiInsightsError, setAiInsightsError] = useState("");
   const [mobileSearch, setMobileSearch] = useState(false);
+  const [showLogoutModal, setShowLogoutModal] = useState(false);
   const [cacheHydrated, setCacheHydrated] = useState(false);
   const [lastSyncedAt, setLastSyncedAt] = useState(null);
   const notifRef = useRef(null);
@@ -528,6 +529,10 @@ export default function Dashboard() {
   const searchRef = useRef(null);
   const inFlightFetchRef = useRef(false);
   const lastFetchAtRef = useRef(0);
+
+  const handleConfirmLogout = () => {
+    logoutAndClearCache(auth).then(() => router.replace("/"));
+  };
 
   const applyUserData = useCallback((uid, data, source = "live") => {
     if (!data) return;
@@ -622,7 +627,7 @@ export default function Dashboard() {
         <span style={{ fontFamily: "'Material Symbols Outlined'", fontSize: "64px", color: "#ef4444", marginBottom: "16px" }}>block</span>
         <h1 style={{ fontSize: "24px", fontWeight: 700, margin: 0 }}>Access Denied</h1>
         <p style={{ color: resolved === "dark" ? "#94a3b8" : "#475569", marginTop: "8px", marginBottom: "24px" }}>Your account has been blocked by an administrator.</p>
-        <button onClick={() => logoutAndClearCache(auth).then(() => router.replace("/"))} style={{ padding: "10px 24px", background: "#ef4444", color: "#fff", border: "none", borderRadius: "12px", fontWeight: 700, cursor: "pointer", fontFamily: "'Inter', sans-serif" }}>Sign Out</button>
+        <button onClick={() => setShowLogoutModal(true)} style={{ padding: "10px 24px", background: "#ef4444", color: "#fff", border: "none", borderRadius: "12px", fontWeight: 700, cursor: "pointer", fontFamily: "'Inter', sans-serif" }}>Sign Out</button>
       </div>
     );
   }
@@ -1304,7 +1309,7 @@ export default function Dashboard() {
                 <span className="sl">{label}</span>
               </button>
             ))}
-            <button className="nav-link danger" onClick={() => logoutAndClearCache(auth).then(() => router.replace("/"))}>
+            <button className="nav-link danger" onClick={() => setShowLogoutModal(true)}>
               <span className="ms" style={{ fontSize: "20px", flexShrink: 0 }}>logout</span>
               <span className="sl">Sign Out</span>
             </button>
