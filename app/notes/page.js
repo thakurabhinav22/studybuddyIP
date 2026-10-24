@@ -506,6 +506,12 @@ export default function NotesPage() {
     }
   };
 
+  const handleAskAIWithModule = (mod) => {
+    const semKey = normaliseSem(userData?.sem || "");
+    const title = mod.Title || mod.key;
+    router.push(`/ai?subject=${encodeURIComponent(activeSubject||"")}&module=${encodeURIComponent(mod.key)}&title=${encodeURIComponent(title)}&branch=${encodeURIComponent(userData?.branch||"")}&sem=${encodeURIComponent(semKey)}`);
+  };
+
   const handleDownloadPDF = async (mod, idx) => {
     // Ensure availability is resolved before downloading
     if (chunkedModules[mod.key] === undefined) {
@@ -1015,6 +1021,14 @@ export default function NotesPage() {
                           </div>
 
                           <div className="module-actions">
+                            <button
+                              className="btn-ai"
+                              onClick={() => handleAskAIWithModule(mod)}
+                              title="Ask Neural AI about this module"
+                            >
+                              <span className="ms" style={{ fontSize:"15px" }}>psychology</span>
+                              Ask AI
+                            </button>
                             <button className="btn-open" disabled={!hasPDF} onClick={() => handleOpenPDF(mod)}>
                               <span className="ms" style={{ fontSize:"15px" }}>{isChunked?"open_in_full":"open_in_new"}</span>
                               Open

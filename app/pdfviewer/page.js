@@ -3411,6 +3411,11 @@ function PDFViewerInner() {
               </div>
               <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
                 <span style={{ fontSize: "10px", fontWeight: 700, color: text3, background: isDark ? "rgba(255,255,255,0.05)" : "rgba(0,0,0,0.04)", padding: "3px 8px", borderRadius: "9999px" }}>p.{currentPage}/{totalPages}</span>
+                <button title="Continue this chat on /ai page" onClick={() => router.push(`/ai?subject=${encodeURIComponent(subject)}&module=${encodeURIComponent(moduleKey)}&title=${encodeURIComponent(moduleTitle||moduleKey)}&branch=${encodeURIComponent(branch)}&sem=${encodeURIComponent(sem)}`)}
+                  style={{ background: "none", border: "none", cursor: "pointer", color: text3, width: "30px", height: "30px", display: "flex", alignItems: "center", justifyContent: "center", borderRadius: "8px", transition: "color 0.18s" }}
+                  onMouseEnter={e => e.currentTarget.style.color = "#00CC00"} onMouseLeave={e => e.currentTarget.style.color = text3}>
+                  <span className="ms" style={{ fontSize: "18px" }}>open_in_new</span>
+                </button>
                 <button title={chatFullscreen ? "Restore size" : "Expand chat"} onClick={() => setChatFullscreen(f => !f)}
                   style={{ background: "none", border: "none", cursor: "pointer", color: text3, width: "30px", height: "30px", display: "flex", alignItems: "center", justifyContent: "center", borderRadius: "8px", transition: "color 0.18s" }}
                   onMouseEnter={e => e.currentTarget.style.color = text1} onMouseLeave={e => e.currentTarget.style.color = text3}>
@@ -3717,9 +3722,15 @@ function PDFViewerInner() {
                     <p style={{ fontSize: "9px", color: "#00AA00", fontWeight: 700, margin: 0 }}>p.{currentPage}/{totalPages} · sees page</p>
                   </div>
                 </div>
-                <button onClick={() => setChatOpen(false)} style={{ background: "none", border: "none", cursor: "pointer", color: text3, width: "36px", height: "36px", display: "flex", alignItems: "center", justifyContent: "center" }}>
-                  <span className="ms" style={{ fontSize: "20px" }}>keyboard_arrow_down</span>
-                </button>
+                <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
+                  <button title="Continue this chat on /ai page" onClick={() => router.push(`/ai?subject=${encodeURIComponent(subject)}&module=${encodeURIComponent(moduleKey)}&title=${encodeURIComponent(moduleTitle||moduleKey)}&branch=${encodeURIComponent(branch)}&sem=${encodeURIComponent(sem)}`)}
+                    style={{ background: "none", border: "none", cursor: "pointer", color: text3, width: "36px", height: "36px", display: "flex", alignItems: "center", justifyContent: "center" }}>
+                    <span className="ms" style={{ fontSize: "20px" }}>open_in_new</span>
+                  </button>
+                  <button onClick={() => setChatOpen(false)} style={{ background: "none", border: "none", cursor: "pointer", color: text3, width: "36px", height: "36px", display: "flex", alignItems: "center", justifyContent: "center" }}>
+                    <span className="ms" style={{ fontSize: "20px" }}>keyboard_arrow_down</span>
+                  </button>
+                </div>
               </div>
             </div>
 

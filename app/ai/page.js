@@ -1,7 +1,7 @@
 "use client";
 
-import { useState, useEffect, useRef, useCallback } from "react";
-import { useRouter } from "next/navigation";
+import { useState, useEffect, useRef, useCallback, Suspense } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
 import { auth, db } from "@/firebase";
 import { onAuthStateChanged } from "firebase/auth";
 import { ref, onValue, set, remove, get } from "firebase/database";
@@ -454,8 +454,9 @@ function MarkdownText({ text, isDark }) {
 /* ═══════════════════════════════════════════
    MAIN PAGE
 ═══════════════════════════════════════════ */
-export default function AiPage() {
+export function AiPageInner() {
   const router = useRouter();
+  const searchParams = useSearchParams();
   const { theme, setTheme, resolved } = useTheme();
   const isDark = resolved === "dark";
 
@@ -480,6 +481,7 @@ export default function AiPage() {
   const bottomRef = useRef(null);
   const sessionStartRef = useRef(null);
   const aiQuestionsRef = useRef(0);
+  const queryModuleCheckedRef = useRef(false);
 
   /* ── Import sheet ── */
   const [importOpen,       setImportOpen]       = useState(false);
@@ -519,6 +521,41 @@ export default function AiPage() {
     if (!authUser?.uid) return;
     const uid = authUser.uid;
     const localKey = `studybuddy:chat_sessions:${uid}`;
+
+    // Read URL search params to see if user was redirected to ask about a module
+    const qSub = searchParams.get("subject");
+    const qMod = searchParams.get("module");
+    const qTitle = searchParams.get("title");
+
+    if (!queryModuleCheckedRef.current && (qSub || qMod)) {
+      queryModuleCheckedRef.current = true;
+      const modInfo = {
+        subject: qSub || "Subject",
+        modKey: qMod || "Module",
+        title: qTitle || qMod || "Module",
+      };
+      setImportedMod(modInfo);
+
+      // Create or set an active session for this module conversation
+      const moduleSessionId = `chat_mod_${Date.now()}`;
+      const introMsg = {
+        role: "ai",
+        text: `Hello! I've loaded the context for **${modInfo.title}** (${modInfo.subject}).\n\nAsk me anything about this module — key formulas, summaries, exam questions, or practice problems!`,
+        ts: Date.now(),
+      };
+      const initialSess = {
+        id: moduleSessionId,
+        title: `${modInfo.subject}: ${modInfo.title}`,
+        updatedAt: Date.now(),
+        messages: [introMsg],
+      };
+
+      setActiveSessionId(moduleSessionId);
+      setMessages([introMsg]);
+      setSessions(prev => [initialSess, ...prev.filter(s => s.id !== moduleSessionId)]);
+      persistSession(initialSess, [initialSess, ...sessions]);
+      return;
+    }
 
     // Read local cache first for snappy startup
     try {
@@ -1554,5 +1591,21 @@ ${toolPrefix}Give focused, structured, exam-oriented answers. Format clearly wit
         </>
       )}
     </>
+  );
+}
+
+export default function AiPage() {
+  return (
+    <Suspense fallback={
+      <div style={{ height: "100vh", display: "flex", alignItems: "center", justifyContent: "center", background: "#080f1a", fontFamily: "'Lexend',sans-serif" }}>
+        <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: "16px" }}>
+          <div style={{ width: "36px", height: "36px", border: "3px solid rgba(0,255,0,0.2)", borderTopColor: "#00FF00", borderRadius: "9999px", animation: "spin 0.8s linear infinite" }} />
+          <p style={{ color: "#94a3b8", fontSize: "13px", fontWeight: 500 }}>Loading Neural AI…</p>
+        </div>
+        <style>{`@keyframes spin{to{transform:rotate(360deg);}}`}</style>
+      </div>
+    }>
+      <AiPageInner />
+    </Suspense>
   );
 }
