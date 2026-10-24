@@ -4,7 +4,7 @@ import { useState, useEffect, useRef, useCallback, Suspense, useMemo } from "rea
 import { useRouter, useSearchParams } from "next/navigation";
 import { auth, db } from "@/firebase";
 import { onAuthStateChanged } from "firebase/auth";
-import { ref as dbRef, get, update } from "firebase/database";
+import { ref as dbRef, get, update, set } from "firebase/database";
 import { flushPendingUsageStats, flushUsageStats } from "@/lib/usageStats";
 
 function patchDashboardRecentNote(uid, note) {
@@ -419,8 +419,8 @@ async function loadPDF(branch, sem, subject, moduleKey, onProgress) {
    Key lives in GROQ_API_KEY (server-only,
    no NEXT_PUBLIC_ prefix needed).
 ───────────────────────────────────────── */
-const GROQ_VISION_MODEL = "meta-llama/llama-4-scout-17b-16e-instruct";
-const GROQ_TEXT_MODEL = "llama-3.3-70b-versatile";
+const GROQ_VISION_MODEL = "qwen/qwen3.8-27b";
+const GROQ_TEXT_MODEL = "openai/gpt-oss-120b";
 
 async function callGroq({ messages, model, max_tokens = 1200 }) {
   const res = await fetch("/api/groq", {
@@ -561,81 +561,835 @@ Module: "${moduleTitle || moduleKey}" · Subject: ${subject} · Semester: ${sem}
 }
 
 /* ─────────────────────────────────────────
-   MARKDOWN RENDERER
+   MARKDOWN RENDERER (Professional AI Output)
 ───────────────────────────────────────── */
-function MarkdownText({ text, color }) {
+function CopyButton({ code }) {
+  const [copied, setCopied] = useState(false);
+  const handleCopy = () => {
+    navigator.clipboard?.writeText(code);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
+  };
+  return (
+    <button
+      onClick={handleCopy}
+      style={{
+        display: "inline-flex",
+        alignItems: "center",
+        gap: "4px",
+        background: "rgba(255,255,255,0.06)",
+        border: "1px solid rgba(255,255,255,0.12)",
+        borderRadius: "6px",
+        padding: "3px 8px",
+        fontSize: "10px",
+        color: copied ? "#00FF00" : "#94a3b8",
+        cursor: "pointer",
+        transition: "all 0.2s",
+        fontFamily: "'Lexend',sans-serif",
+      }}
+    >
+      <span className="ms" style={{ fontSize: "12px" }}>{copied ? "check" : "content_copy"}</span>
+      {copied ? "Copied" : "Copy"}
+    </button>
+  );
+}
+
+/* ─────────────────────────────────────────
+   PDF ANNOTATIONS DB & CACHE
+───────────────────────────────────────── */
+const ANNOTATIONS_CACHE_PREFIX = "studybuddy_annot_v1:";
+
+function getAnnotationStorageKey(branch, sem, subject, moduleKey, page) {
+  return `${ANNOTATIONS_CACHE_PREFIX}${branch}_${sem}_${subject}_${moduleKey}_p${page}`;
+}
+
+function getFirebaseAnnotationPath(uid, branch, sem, subject, moduleKey, page) {
+  const safeMod = (moduleKey || "").replace(/[.#$\[\]/]/g, "_");
+  const safeSub = (subject || "").replace(/[.#$\[\]/]/g, "_");
+  return `users/${uid}/annotations/${branch}_${sem}_${safeSub}_${safeMod}/p${page}`;
+}
+
+async function loadPageAnnotations(uid, branch, sem, subject, moduleKey, page) {
+  const localKey = getAnnotationStorageKey(branch, sem, subject, moduleKey, page);
+  let localData = null;
+  if (typeof window !== "undefined") {
+    try {
+      const raw = localStorage.getItem(localKey);
+      if (raw) localData = JSON.parse(raw);
+    } catch { }
+  }
+
+  // Also check Firebase if user is logged in
+  if (uid) {
+    try {
+      const fbRef = dbRef(db, getFirebaseAnnotationPath(uid, branch, sem, subject, moduleKey, page));
+      const snap = await get(fbRef);
+      if (snap.exists()) {
+        const remoteData = snap.val();
+        if (remoteData?.updatedAt && (!localData?.updatedAt || remoteData.updatedAt > localData.updatedAt)) {
+          if (typeof window !== "undefined") {
+            try { localStorage.setItem(localKey, JSON.stringify(remoteData)); } catch { }
+          }
+          return remoteData;
+        }
+      }
+    } catch (e) {
+      console.warn("Failed fetching annotations from Firebase:", e);
+    }
+  }
+  return localData || { lines: [], updatedAt: 0 };
+}
+
+async function savePageAnnotations(uid, branch, sem, subject, moduleKey, page, payload) {
+  const localKey = getAnnotationStorageKey(branch, sem, subject, moduleKey, page);
+  const dataToSave = {
+    lines: payload.lines || [],
+    updatedAt: Date.now(),
+    page,
+  };
+
+  // 1. Save local
+  if (typeof window !== "undefined") {
+    try {
+      localStorage.setItem(localKey, JSON.stringify(dataToSave));
+    } catch { }
+  }
+
+  // 2. Sync to Firebase
+  if (uid) {
+    try {
+      const fbRef = dbRef(db, getFirebaseAnnotationPath(uid, branch, sem, subject, moduleKey, page));
+      await set(fbRef, dataToSave);
+    } catch (e) {
+      console.warn("Failed persisting annotations to Firebase:", e);
+    }
+  }
+}
+
+/* ─────────────────────────────────────────
+   DIAGRAM VIEWER MODAL
+───────────────────────────────────────── */
+function DiagramViewerModal({ diagramText, title = "Diagram Viewer", isDark, onClose }) {
+  const [zoom, setZoom] = useState(1);
+  const [pan, setPan] = useState({ x: 0, y: 0 });
+  const [isPanning, setIsPanning] = useState(false);
+  const [exporting, setExporting] = useState(false);
+  const panStartRef = useRef({ x: 0, y: 0, panX: 0, panY: 0 });
+
+  const panelBg = isDark ? "#090f1d" : "#ffffff";
+  const boardBg = isDark ? "#050a14" : "#f1f5f9";
+  const textColor = isDark ? "#6ee7b7" : "#065f46";
+  const borderCol = isDark ? "rgba(255,255,255,0.1)" : "rgba(0,0,0,0.1)";
+
+  const handlePointerDown = (e) => {
+    setIsPanning(true);
+    panStartRef.current = {
+      x: e.clientX,
+      y: e.clientY,
+      panX: pan.x,
+      panY: pan.y,
+    };
+  };
+
+  const handlePointerMove = (e) => {
+    if (!isPanning) return;
+    setPan({
+      x: panStartRef.current.panX + (e.clientX - panStartRef.current.x),
+      y: panStartRef.current.panY + (e.clientY - panStartRef.current.y),
+    });
+  };
+
+  const handlePointerUp = () => setIsPanning(false);
+
+  // Export diagram as PNG image
+  const exportAsImage = () => {
+    setExporting(true);
+    try {
+      const lines = diagramText.split("\n");
+      const font = "14px 'Fira Code', 'Courier New', monospace";
+      const dummyCanvas = document.createElement("canvas");
+      const dummyCtx = dummyCanvas.getContext("2d");
+      dummyCtx.font = font;
+
+      let maxLineWidth = 0;
+      for (const line of lines) {
+        const w = dummyCtx.measureText(line).width;
+        if (w > maxLineWidth) maxLineWidth = w;
+      }
+
+      const padding = 36;
+      const lineHeight = 22;
+      const canvasWidth = Math.max(600, Math.ceil(maxLineWidth + padding * 2));
+      const canvasHeight = Math.ceil(lines.length * lineHeight + padding * 2 + 50);
+
+      const expCanvas = document.createElement("canvas");
+      expCanvas.width = canvasWidth;
+      expCanvas.height = canvasHeight;
+      const ctx = expCanvas.getContext("2d");
+
+      // Draw background
+      ctx.fillStyle = isDark ? "#090d16" : "#ffffff";
+      ctx.fillRect(0, 0, canvasWidth, canvasHeight);
+
+      // Title header
+      ctx.fillStyle = "#00CC00";
+      ctx.font = "bold 15px 'Lexend', sans-serif";
+      ctx.fillText(title.toUpperCase(), padding, 32);
+
+      // Subtitle
+      ctx.fillStyle = isDark ? "#64748b" : "#94a3b8";
+      ctx.font = "11px 'Lexend', sans-serif";
+      ctx.fillText("Generated by StudyBuddy Neural AI", padding, 48);
+
+      // Divider line
+      ctx.strokeStyle = isDark ? "rgba(255,255,255,0.1)" : "rgba(0,0,0,0.1)";
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.moveTo(padding, 58);
+      ctx.lineTo(canvasWidth - padding, 58);
+      ctx.stroke();
+
+      // Draw code lines
+      ctx.font = font;
+      ctx.fillStyle = isDark ? "#a7f3d0" : "#047857";
+      lines.forEach((line, idx) => {
+        ctx.fillText(line, padding, 84 + idx * lineHeight);
+      });
+
+      // Watermark
+      ctx.fillStyle = isDark ? "rgba(255,255,255,0.25)" : "rgba(0,0,0,0.25)";
+      ctx.font = "10px sans-serif";
+      ctx.textAlign = "right";
+      ctx.fillText("StudyBuddy", canvasWidth - padding, canvasHeight - 14);
+
+      const link = document.createElement("a");
+      link.download = `${title.toLowerCase().replace(/\s+/g, "_") || "diagram"}.png`;
+      link.href = expCanvas.toDataURL("image/png");
+      link.click();
+    } catch (e) {
+      console.error("Export diagram failed:", e);
+    } finally {
+      setExporting(false);
+    }
+  };
+
+  return (
+    <ModalOverlay onClose={onClose}>
+      <div
+        style={{
+          width: "900px",
+          maxWidth: "calc(100vw - 32px)",
+          height: "85vh",
+          background: panelBg,
+          border: `1px solid ${borderCol}`,
+          borderRadius: "20px",
+          boxShadow: "0 24px 80px rgba(0,0,0,0.5)",
+          display: "flex",
+          flexDirection: "column",
+          overflow: "hidden",
+        }}
+      >
+        {/* Modal Toolbar */}
+        <div
+          style={{
+            height: "56px",
+            borderBottom: `1px solid ${borderCol}`,
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "space-between",
+            padding: "0 18px",
+            flexShrink: 0,
+            background: isDark ? "rgba(255,255,255,0.02)" : "#f8fafc",
+          }}
+        >
+          <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
+            <div
+              style={{
+                width: "34px",
+                height: "34px",
+                borderRadius: "10px",
+                background: "rgba(0,255,0,0.12)",
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+              }}
+            >
+              <span className="ms" style={{ fontSize: "20px", color: "#00CC00" }}>draw</span>
+            </div>
+            <div>
+              <p style={{ margin: 0, fontSize: "14px", fontWeight: 700, color: isDark ? "#ffffff" : "#0f172a" }}>
+                {title}
+              </p>
+              <p style={{ margin: 0, fontSize: "10px", color: isDark ? "#94a3b8" : "#64748b" }}>
+                Interactive Diagram Viewer · Pan & Zoom enabled
+              </p>
+            </div>
+          </div>
+
+          {/* Controls */}
+          <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+            <button
+              onClick={() => setZoom(z => Math.max(0.5, +(z - 0.2).toFixed(1)))}
+              title="Zoom Out"
+              style={{
+                width: "32px",
+                height: "32px",
+                borderRadius: "8px",
+                border: `1px solid ${borderCol}`,
+                background: "transparent",
+                color: isDark ? "#e2e8f0" : "#334155",
+                cursor: "pointer",
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+              }}
+            >
+              <span className="ms" style={{ fontSize: "18px" }}>remove</span>
+            </button>
+            <span style={{ fontSize: "11px", fontWeight: 700, color: isDark ? "#cbd5e1" : "#475569", minWidth: "40px", textAlign: "center" }}>
+              {Math.round(zoom * 100)}%
+            </span>
+            <button
+              onClick={() => setZoom(z => Math.min(3, +(z + 0.2).toFixed(1)))}
+              title="Zoom In"
+              style={{
+                width: "32px",
+                height: "32px",
+                borderRadius: "8px",
+                border: `1px solid ${borderCol}`,
+                background: "transparent",
+                color: isDark ? "#e2e8f0" : "#334155",
+                cursor: "pointer",
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+              }}
+            >
+              <span className="ms" style={{ fontSize: "18px" }}>add</span>
+            </button>
+            <button
+              onClick={() => { setZoom(1); setPan({ x: 0, y: 0 }); }}
+              title="Reset View"
+              style={{
+                padding: "6px 10px",
+                borderRadius: "8px",
+                border: `1px solid ${borderCol}`,
+                background: "transparent",
+                color: isDark ? "#94a3b8" : "#64748b",
+                cursor: "pointer",
+                fontSize: "11px",
+                fontWeight: 600,
+              }}
+            >
+              Reset
+            </button>
+
+            <div style={{ width: "1px", height: "20px", background: borderCol, margin: "0 4px" }} />
+
+            <button
+              onClick={exportAsImage}
+              disabled={exporting}
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: "6px",
+                padding: "7px 14px",
+                borderRadius: "9px",
+                background: "#00FF00",
+                color: "#0f172a",
+                border: "none",
+                fontWeight: 700,
+                fontSize: "12px",
+                cursor: "pointer",
+                fontFamily: "'Lexend',sans-serif",
+                boxShadow: "0 2px 10px rgba(0,255,0,0.3)",
+              }}
+            >
+              <span className="ms" style={{ fontSize: "16px" }}>download</span>
+              {exporting ? "Exporting…" : "Export PNG"}
+            </button>
+
+            <button
+              onClick={onClose}
+              style={{
+                width: "32px",
+                height: "32px",
+                borderRadius: "8px",
+                border: "none",
+                background: "transparent",
+                color: isDark ? "#94a3b8" : "#64748b",
+                cursor: "pointer",
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                marginLeft: "4px",
+              }}
+            >
+              <span className="ms" style={{ fontSize: "20px" }}>close</span>
+            </button>
+          </div>
+        </div>
+
+        {/* Pan/Zoom Canvas Area */}
+        <div
+          style={{
+            flex: 1,
+            background: boardBg,
+            overflow: "hidden",
+            position: "relative",
+            cursor: isPanning ? "grabbing" : "grab",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            userSelect: "none",
+          }}
+          onPointerDown={handlePointerDown}
+          onPointerMove={handlePointerMove}
+          onPointerUp={handlePointerUp}
+        >
+          {/* Subtle grid pattern background */}
+          <div
+            style={{
+              position: "absolute",
+              inset: 0,
+              backgroundImage: isDark
+                ? "radial-gradient(rgba(255,255,255,0.06) 1px, transparent 1px)"
+                : "radial-gradient(rgba(0,0,0,0.06) 1px, transparent 1px)",
+              backgroundSize: "24px 24px",
+              pointerEvents: "none",
+            }}
+          />
+
+          <div
+            style={{
+              transform: `translate(${pan.x}px, ${pan.y}px) scale(${zoom})`,
+              transformOrigin: "center center",
+              transition: isPanning ? "none" : "transform 0.15s ease-out",
+              padding: "40px",
+              background: isDark ? "#080e1b" : "#ffffff",
+              borderRadius: "16px",
+              border: `1px solid ${borderCol}`,
+              boxShadow: "0 12px 48px rgba(0,0,0,0.25)",
+            }}
+          >
+            <pre
+              style={{
+                fontFamily: "'Fira Code', 'Courier New', monospace",
+                fontSize: "13px",
+                lineHeight: 1.6,
+                color: textColor,
+                margin: 0,
+                whiteSpace: "pre",
+              }}
+            >
+              {diagramText}
+            </pre>
+          </div>
+
+          {/* Hint overlay */}
+          <div
+            style={{
+              position: "absolute",
+              bottom: "14px",
+              left: "14px",
+              padding: "5px 12px",
+              borderRadius: "9999px",
+              background: isDark ? "rgba(0,0,0,0.6)" : "rgba(255,255,255,0.8)",
+              border: `1px solid ${borderCol}`,
+              fontSize: "10px",
+              color: isDark ? "#94a3b8" : "#64748b",
+              pointerEvents: "none",
+            }}
+          >
+            Drag to pan · Use toolbar buttons to zoom
+          </div>
+        </div>
+      </div>
+    </ModalOverlay>
+  );
+}
+
+function MarkdownText({ text, isDark, onOpenDiagram }) {
+  if (!text) return null;
   const lines = text.split("\n");
   const elements = [];
   let i = 0;
+
+  const textColor = isDark ? "#e2e8f0" : "#1e293b";
+  const mutedColor = isDark ? "#94a3b8" : "#64748b";
+  const headingColor = isDark ? "#ffffff" : "#0f172a";
+  const codeBg = isDark ? "rgba(10,18,32,0.85)" : "#f8fafc";
+  const codeBorder = isDark ? "rgba(255,255,255,0.08)" : "rgba(0,0,0,0.08)";
+  const calloutBorder = isDark ? "rgba(0,255,0,0.3)" : "rgba(0,200,0,0.35)";
+
   while (i < lines.length) {
-    const line = lines[i];
-    if (line.trimStart().startsWith("```")) {
-      const lang = line.trim().slice(3).trim();
+    const rawLine = lines[i];
+    const trimmed = rawLine.trim();
+
+    // ── Fenced Code Blocks ──
+    if (rawLine.trimStart().startsWith("```")) {
+      const lang = rawLine.trim().slice(3).trim() || "code";
       const codeLines = [];
       i++;
-      while (i < lines.length && !lines[i].trimStart().startsWith("```")) { codeLines.push(lines[i]); i++; }
+      while (i < lines.length && !lines[i].trimStart().startsWith("```")) {
+        codeLines.push(lines[i]);
+        i++;
+      }
+      const fullCode = codeLines.join("\n");
       elements.push(
-        <pre key={i} style={{ background: "rgba(0,0,0,0.25)", borderRadius: "8px", padding: "10px 12px", fontSize: "11px", lineHeight: 1.6, overflowX: "auto", margin: "6px 0", fontFamily: "monospace", color: "#00FF00", border: "1px solid rgba(0,255,0,0.15)" }}>
-          {lang && <span style={{ fontSize: "9px", color: "#00AA00", display: "block", marginBottom: "4px", textTransform: "uppercase", letterSpacing: "0.08em" }}>{lang}</span>}
-          {codeLines.join("\n")}
-        </pre>
+        <div
+          key={`code-block-${i}`}
+          style={{
+            margin: "12px 0",
+            borderRadius: "10px",
+            overflow: "hidden",
+            border: `1px solid ${codeBorder}`,
+            background: codeBg,
+          }}
+        >
+          <div
+            style={{
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "space-between",
+              padding: "6px 12px",
+              background: isDark ? "rgba(255,255,255,0.03)" : "#f1f5f9",
+              borderBottom: `1px solid ${codeBorder}`,
+            }}
+          >
+            <span
+              style={{
+                fontSize: "10px",
+                fontWeight: 700,
+                color: "#00CC00",
+                textTransform: "uppercase",
+                letterSpacing: "0.08em",
+                fontFamily: "monospace",
+              }}
+            >
+              {lang}
+            </span>
+            <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
+              {(lang.toLowerCase().includes("ascii") || lang.toLowerCase().includes("diagram") || lang.toLowerCase().includes("draw") || fullCode.includes("┌") || fullCode.includes("-->") || fullCode.includes("->") || fullCode.includes("|") || fullCode.includes("+--")) && (
+                <button
+                  onClick={() => onOpenDiagram?.({ text: fullCode, title: `${lang.toUpperCase()} Diagram` })}
+                  style={{
+                    display: "inline-flex",
+                    alignItems: "center",
+                    gap: "4px",
+                    background: "rgba(0,255,0,0.1)",
+                    border: "1px solid rgba(0,255,0,0.25)",
+                    borderRadius: "6px",
+                    padding: "3px 8px",
+                    fontSize: "10px",
+                    fontWeight: 700,
+                    color: "#00CC00",
+                    cursor: "pointer",
+                    fontFamily: "'Lexend',sans-serif",
+                    transition: "all 0.2s",
+                  }}
+                  title="View in interactive diagram viewer app"
+                >
+                  <span className="ms" style={{ fontSize: "12px" }}>open_in_full</span>
+                  View Diagram
+                </button>
+              )}
+              <CopyButton code={fullCode} />
+            </div>
+          </div>
+          <pre
+            style={{
+              padding: "12px 14px",
+              fontSize: "12px",
+              lineHeight: 1.65,
+              overflowX: "auto",
+              margin: 0,
+              fontFamily: "'Fira Code', 'Courier New', monospace",
+              color: isDark ? "#a7f3d0" : "#065f46",
+            }}
+          >
+            {fullCode}
+          </pre>
+        </div>
       );
-      i++; continue;
+      i++;
+      continue;
     }
-    const hMatch = line.match(/^(#{1,3})\s+(.+)/);
+
+    // ── Blockquotes / Exam Callouts ──
+    if (trimmed.startsWith(">")) {
+      const quoteLines = [];
+      while (i < lines.length && lines[i].trim().startsWith(">")) {
+        quoteLines.push(lines[i].trim().replace(/^>\s*/, ""));
+        i++;
+      }
+      elements.push(
+        <div
+          key={`quote-${i}`}
+          style={{
+            margin: "10px 0",
+            padding: "10px 14px",
+            borderLeft: `3px solid ${calloutBorder}`,
+            background: isDark ? "rgba(0,255,0,0.04)" : "rgba(0,200,0,0.04)",
+            borderRadius: "0 10px 10px 0",
+            fontSize: "12px",
+            lineHeight: 1.65,
+            color: mutedColor,
+          }}
+        >
+          {quoteLines.map((ql, qk) => (
+            <p key={qk} style={{ margin: "2px 0" }}>{inlineFormat(ql, isDark)}</p>
+          ))}
+        </div>
+      );
+      continue;
+    }
+
+    // ── Table Rows ──
+    if (trimmed.startsWith("|") && trimmed.endsWith("|")) {
+      const tableLines = [];
+      while (i < lines.length && lines[i].trim().startsWith("|") && lines[i].trim().endsWith("|")) {
+        tableLines.push(lines[i].trim());
+        i++;
+      }
+      if (tableLines.length >= 2) {
+        const parseRow = row => row.slice(1, -1).split("|").map(c => c.trim());
+        const headerCells = parseRow(tableLines[0]);
+        const isDivider = line => /^\|?[\s-:]+\|?$/.test(line);
+        const startRow = isDivider(tableLines[1]) ? 2 : 1;
+        const bodyRows = tableLines.slice(startRow).map(parseRow);
+
+        elements.push(
+          <div key={`table-${i}`} style={{ overflowX: "auto", margin: "12px 0", borderRadius: "10px", border: `1px solid ${codeBorder}` }}>
+            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "11px", textAlign: "left" }}>
+              <thead>
+                <tr style={{ background: isDark ? "rgba(255,255,255,0.04)" : "#f1f5f9" }}>
+                  {headerCells.map((hc, hk) => (
+                    <th key={hk} style={{ padding: "8px 10px", fontWeight: 700, color: headingColor, borderBottom: `1px solid ${codeBorder}` }}>
+                      {inlineFormat(hc, isDark)}
+                    </th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {bodyRows.map((br, bk) => (
+                  <tr key={bk} style={{ borderBottom: bk === bodyRows.length - 1 ? "none" : `1px solid ${codeBorder}` }}>
+                    {br.map((bc, bck) => (
+                      <td key={bck} style={{ padding: "7px 10px", color: textColor }}>
+                        {inlineFormat(bc, isDark)}
+                      </td>
+                    ))}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        );
+        continue;
+      }
+    }
+
+    // ── Headings ──
+    const hMatch = rawLine.match(/^(#{1,4})\s+(.+)/);
     if (hMatch) {
       const lvl = hMatch[1].length;
-      const sizes = { 1: "15px", 2: "13px", 3: "12px" };
-      elements.push(<p key={i} style={{ fontSize: sizes[lvl], fontWeight: 700, margin: "10px 0 4px", color, lineHeight: 1.4 }}>{inlineFormat(hMatch[2], color)}</p>);
-      i++; continue;
-    }
-    if (/^[-*•]\s/.test(line.trimStart())) {
-      const items = [];
-      while (i < lines.length && /^[-*•]\s/.test(lines[i].trimStart())) { items.push(lines[i].replace(/^[\s\-*•]+/, "")); i++; }
+      const headingConfig = {
+        1: { size: "15px", weight: 800, mt: "14px", mb: "6px", borderBottom: true },
+        2: { size: "13.5px", weight: 700, mt: "12px", mb: "5px", borderBottom: false },
+        3: { size: "12.5px", weight: 700, mt: "10px", mb: "4px", borderBottom: false },
+        4: { size: "12px", weight: 700, mt: "8px", mb: "3px", borderBottom: false },
+      };
+      const cfg = headingConfig[lvl] || headingConfig[3];
       elements.push(
-        <ul key={i} style={{ margin: "4px 0 6px", paddingLeft: "0", listStyle: "none" }}>
+        <div key={`heading-${i}`} style={{ marginTop: cfg.mt, marginBottom: cfg.mb, paddingBottom: cfg.borderBottom ? "4px" : "0", borderBottom: cfg.borderBottom ? `1px solid ${codeBorder}` : "none" }}>
+          <h4
+            style={{
+              fontSize: cfg.size,
+              fontWeight: cfg.weight,
+              margin: 0,
+              color: headingColor,
+              lineHeight: 1.4,
+              letterSpacing: "-0.01em",
+            }}
+          >
+            {inlineFormat(hMatch[2], isDark)}
+          </h4>
+        </div>
+      );
+      i++;
+      continue;
+    }
+
+    // ── Unordered Lists ──
+    if (/^[-*•]\s/.test(rawLine.trimStart())) {
+      const items = [];
+      while (i < lines.length && /^[-*•]\s/.test(lines[i].trimStart())) {
+        items.push(lines[i].replace(/^[\s\-*•]+/, ""));
+        i++;
+      }
+      elements.push(
+        <ul key={`ul-${i}`} style={{ margin: "6px 0 8px", paddingLeft: "4px", listStyle: "none" }}>
           {items.map((item, k) => (
-            <li key={k} style={{ display: "flex", gap: "8px", alignItems: "flex-start", fontSize: "12px", lineHeight: 1.65, margin: "2px 0", color }}>
-              <span style={{ color: "#00CC00", fontWeight: 700, flexShrink: 0, marginTop: "1px" }}>›</span>
-              <span>{inlineFormat(item, color)}</span>
+            <li
+              key={k}
+              style={{
+                display: "flex",
+                gap: "8px",
+                alignItems: "flex-start",
+                fontSize: "12px",
+                lineHeight: 1.65,
+                margin: "4px 0",
+                color: textColor,
+              }}
+            >
+              <span
+                style={{
+                  width: "5px",
+                  height: "5px",
+                  borderRadius: "50%",
+                  background: "#00CC00",
+                  flexShrink: 0,
+                  marginTop: "8px",
+                }}
+              />
+              <span style={{ flex: 1 }}>{inlineFormat(item, isDark)}</span>
             </li>
           ))}
         </ul>
       );
       continue;
     }
-    if (/^\d+\.\s/.test(line.trimStart())) {
+
+    // ── Ordered Lists ──
+    if (/^\d+\.\s/.test(rawLine.trimStart())) {
       const items = [];
       let num = 1;
-      while (i < lines.length && /^\d+\.\s/.test(lines[i].trimStart())) { items.push({ n: num++, text: lines[i].replace(/^\d+\.\s*/, "") }); i++; }
+      while (i < lines.length && /^\d+\.\s/.test(lines[i].trimStart())) {
+        items.push({ n: num++, text: lines[i].replace(/^\d+\.\s*/, "") });
+        i++;
+      }
       elements.push(
-        <ol key={i} style={{ margin: "4px 0 6px", paddingLeft: "0", listStyle: "none" }}>
-          {items.map(({ n, text }, k) => (
-            <li key={k} style={{ display: "flex", gap: "8px", alignItems: "flex-start", fontSize: "12px", lineHeight: 1.65, margin: "3px 0", color }}>
-              <span style={{ color: "#00CC00", fontWeight: 700, flexShrink: 0, minWidth: "18px" }}>{n}.</span>
-              <span>{inlineFormat(text, color)}</span>
+        <ol key={`ol-${i}`} style={{ margin: "6px 0 8px", paddingLeft: "4px", listStyle: "none" }}>
+          {items.map(({ n, text: itmText }, k) => (
+            <li
+              key={k}
+              style={{
+                display: "flex",
+                gap: "8px",
+                alignItems: "flex-start",
+                fontSize: "12px",
+                lineHeight: 1.65,
+                margin: "4px 0",
+                color: textColor,
+              }}
+            >
+              <span
+                style={{
+                  minWidth: "18px",
+                  height: "18px",
+                  borderRadius: "5px",
+                  background: isDark ? "rgba(0,255,0,0.12)" : "rgba(0,200,0,0.1)",
+                  color: "#00CC00",
+                  fontWeight: 700,
+                  fontSize: "10px",
+                  display: "inline-flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  flexShrink: 0,
+                  marginTop: "2px",
+                }}
+              >
+                {n}
+              </span>
+              <span style={{ flex: 1 }}>{inlineFormat(itmText, isDark)}</span>
             </li>
           ))}
         </ol>
       );
       continue;
     }
-    if (line.trim() === "") { elements.push(<div key={i} style={{ height: "6px" }} />); i++; continue; }
-    elements.push(<p key={i} style={{ fontSize: "12px", lineHeight: 1.65, margin: "2px 0", color }}>{inlineFormat(line, color)}</p>);
+
+    // ── Horizontal Rule ──
+    if (/^---+$|^\*\*\*+$/.test(trimmed)) {
+      elements.push(
+        <div key={`hr-${i}`} style={{ height: "1px", background: codeBorder, margin: "12px 0" }} />
+      );
+      i++;
+      continue;
+    }
+
+    // ── Empty Space ──
+    if (trimmed === "") {
+      elements.push(<div key={`sp-${i}`} style={{ height: "6px" }} />);
+      i++;
+      continue;
+    }
+
+    // ── Regular Paragraph ──
+    elements.push(
+      <p
+        key={`p-${i}`}
+        style={{
+          fontSize: "12px",
+          lineHeight: 1.7,
+          margin: "4px 0",
+          color: textColor,
+          wordBreak: "break-word",
+        }}
+      >
+        {inlineFormat(rawLine, isDark)}
+      </p>
+    );
     i++;
   }
   return <>{elements}</>;
 }
 
-function inlineFormat(text, color) {
+function inlineFormat(text, isDark) {
+  if (typeof text !== "string") return text;
   const parts = [];
   const regex = /(\*\*(.+?)\*\*|\*(.+?)\*|`(.+?)`)/g;
   let last = 0, m;
+  const strongColor = isDark ? "#ffffff" : "#0f172a";
+  const emColor = isDark ? "#cbd5e1" : "#334155";
+  const codeColor = isDark ? "#4ade80" : "#15803d";
+  const codeBg = isDark ? "rgba(0,255,0,0.1)" : "rgba(0,200,0,0.08)";
+  const codeBorder = isDark ? "rgba(0,255,0,0.2)" : "rgba(0,200,0,0.15)";
+
   while ((m = regex.exec(text)) !== null) {
-    if (m.index > last) parts.push(<span key={`text-${last}-${m.index}`}>{text.slice(last, m.index)}</span>);
-    if (m[0].startsWith("**")) parts.push(<strong key={`strong-${m.index}`} style={{ fontWeight: 700, color }}>{m[2]}</strong>);
-    else if (m[0].startsWith("*")) parts.push(<em key={`em-${m.index}`} style={{ fontStyle: "italic", color }}>{m[3]}</em>);
-    else if (m[0].startsWith("`") ) parts.push(<code key={`code-${m.index}`} style={{ fontFamily: "monospace", background: "rgba(0,255,0,0.12)", padding: "1px 5px", borderRadius: "4px", fontSize: "11px", color: "#00EE00" }}>{m[4]}</code>);
+    if (m.index > last) {
+      parts.push(<span key={`text-${last}-${m.index}`}>{text.slice(last, m.index)}</span>);
+    }
+    if (m[0].startsWith("**")) {
+      parts.push(
+        <strong key={`strong-${m.index}`} style={{ fontWeight: 700, color: strongColor }}>
+          {m[2]}
+        </strong>
+      );
+    } else if (m[0].startsWith("*")) {
+      parts.push(
+        <em key={`em-${m.index}`} style={{ fontStyle: "italic", color: emColor }}>
+          {m[3]}
+        </em>
+      );
+    } else if (m[0].startsWith("`")) {
+      parts.push(
+        <code
+          key={`code-${m.index}`}
+          style={{
+            fontFamily: "'Fira Code', 'Courier New', monospace",
+            background: codeBg,
+            border: `1px solid ${codeBorder}`,
+            padding: "1px 5px",
+            borderRadius: "4px",
+            fontSize: "11px",
+            color: codeColor,
+          }}
+        >
+          {m[4]}
+        </code>
+      );
+    }
     last = m.index + m[0].length;
   }
   if (last < text.length) parts.push(<span key={`text-${last}-${text.length}`}>{text.slice(last)}</span>);
@@ -1507,6 +2261,35 @@ function PDFViewerInner() {
 
   const [quizOpen, setQuizOpen] = useState(false);
   const [analyzeOpen, setAnalyzeOpen] = useState(false);
+  const [activeDiagram, setActiveDiagram] = useState(null); // { text, title }
+
+  // Resizable AI sidebar width
+  const [sidebarWidth, setSidebarWidth] = useState(() => {
+    if (typeof window !== "undefined") {
+      try {
+        const saved = localStorage.getItem("studybuddy_sidebar_w");
+        if (saved) return Math.max(280, Math.min(700, Number(saved)));
+      } catch { }
+    }
+    return 380;
+  });
+  const [isResizingSidebar, setIsResizingSidebar] = useState(false);
+  const sidebarResizeStartXRef = useRef(0);
+  const sidebarResizeStartWRef = useRef(380);
+
+  // PDF Page Fitting & Auto-fit
+  const [autoFitWidth, setAutoFitWidth] = useState(true);
+
+  // Annotations Layer State
+  const [annotTool, setAnnotTool] = useState("view"); // 'view' | 'pen' | 'highlight' | 'eraser'
+  const [annotColor, setAnnotColor] = useState("#ef4444");
+  const [annotWidth, setAnnotWidth] = useState(3);
+  const [annotLines, setAnnotLines] = useState([]); // Array of { id, tool, color, width, opacity, points: [{x, y}] }
+  const [annotSaveStatus, setAnnotSaveStatus] = useState("idle"); // 'idle' | 'saving' | 'saved'
+  const [cursorPos, setCursorPos] = useState(null); // { x, y } for pen/brush visual indicator
+  const isDrawingRef = useRef(false);
+  const currentLineRef = useRef(null);
+  const annotCanvasRef = useRef(null);
 
   const [sheetHeight, setSheetHeight] = useState(55);
   const [isDraggingSheet, setIsDraggingSheet] = useState(false);
@@ -1736,6 +2519,243 @@ function PDFViewerInner() {
     return buffer;
   }, [branch, sem, subject, moduleKey]);
 
+  /* ── Sidebar Resizing (Desktop) ── */
+  const onSidebarResizeStart = useCallback((e) => {
+    e.preventDefault();
+    setIsResizingSidebar(true);
+    sidebarResizeStartXRef.current = e.clientX;
+    sidebarResizeStartWRef.current = sidebarWidth;
+
+    const onPointerMove = (ev) => {
+      const deltaX = sidebarResizeStartXRef.current - ev.clientX; // drag left expands sidebar
+      const nextW = Math.max(280, Math.min(720, sidebarResizeStartWRef.current + deltaX));
+      setSidebarWidth(nextW);
+    };
+
+    const onPointerUp = (ev) => {
+      window.removeEventListener("pointermove", onPointerMove);
+      window.removeEventListener("pointerup", onPointerUp);
+      setIsResizingSidebar(false);
+      const deltaX = sidebarResizeStartXRef.current - ev.clientX;
+      const finalW = Math.max(280, Math.min(720, sidebarResizeStartWRef.current + deltaX));
+      try { localStorage.setItem("studybuddy_sidebar_w", String(finalW)); } catch { }
+    };
+
+    window.addEventListener("pointermove", onPointerMove);
+    window.addEventListener("pointerup", onPointerUp);
+  }, [sidebarWidth]);
+
+  /* ── Load Page Annotations ── */
+  useEffect(() => {
+    if (!branch || !sem || !subject || !moduleKey || !currentPage) return;
+    let cancelled = false;
+    loadPageAnnotations(authUser?.uid, branch, sem, subject, moduleKey, currentPage).then(data => {
+      if (!cancelled) {
+        setAnnotLines(data?.lines || []);
+      }
+    });
+    return () => { cancelled = true; };
+  }, [authUser?.uid, branch, sem, subject, moduleKey, currentPage]);
+
+  /* ── Redraw Annotations Layer on Canvas ── */
+  const redrawAnnotations = useCallback(() => {
+    const cv = annotCanvasRef.current;
+    if (!cv) return;
+    const ctx = cv.getContext("2d");
+    ctx.clearRect(0, 0, cv.width, cv.height);
+
+    annotLines.forEach(line => {
+      if (!line.points || line.points.length < 2) return;
+      ctx.save();
+      ctx.beginPath();
+      ctx.strokeStyle = line.color || "#ef4444";
+      ctx.lineWidth = line.width || 3;
+      ctx.lineCap = "round";
+      ctx.lineJoin = "round";
+      ctx.globalAlpha = line.opacity || 1;
+
+      // Coordinate scaling based on current canvas dimension vs original
+      const scaleX = cv.width;
+      const scaleY = cv.height;
+
+      const p0 = line.points[0];
+      ctx.moveTo(p0.x * scaleX, p0.y * scaleY);
+
+      for (let i = 1; i < line.points.length; i++) {
+        const pt = line.points[i];
+        ctx.lineTo(pt.x * scaleX, pt.y * scaleY);
+      }
+      ctx.stroke();
+      ctx.restore();
+    });
+  }, [annotLines]);
+
+  useEffect(() => {
+    redrawAnnotations();
+  }, [redrawAnnotations, annotLines, scale]);
+
+  /* ── Auto-Fit to Width Handler ── */
+  const fitWidth = useCallback(async () => {
+    if (!containerRef.current || !pdfDoc) return;
+    try {
+      const page = await pdfDoc.getPage(currentPage);
+      const vp1 = page.getViewport({ scale: 1 });
+      // Width available inside container minus padding
+      const containerW = containerRef.current.clientWidth - (isMobile ? 24 : 80);
+      const targetScale = Math.max(0.5, Math.min(2.8, +(containerW / vp1.width).toFixed(2)));
+      setScale(targetScale);
+    } catch { }
+  }, [currentPage, pdfDoc, isMobile]);
+
+  // Handle auto-fit on resize or load
+  useEffect(() => {
+    if (!autoFitWidth || !pdfDoc || loadStatus !== "ready") return;
+    const handleResize = () => {
+      fitWidth();
+    };
+    handleResize();
+    window.addEventListener("resize", handleResize);
+    return () => window.removeEventListener("resize", handleResize);
+  }, [autoFitWidth, pdfDoc, loadStatus, fitWidth]);
+
+  /* ── Annotation Pointer Handlers ── */
+  const handleAnnotPointerDown = (e) => {
+    if (annotTool === "view") return;
+    const cv = annotCanvasRef.current;
+    if (!cv) return;
+    const rect = cv.getBoundingClientRect();
+    const x = (e.clientX - rect.left) / rect.width;
+    const y = (e.clientY - rect.top) / rect.height;
+
+    if (annotTool === "eraser") {
+      // Find and remove lines near pointer
+      const threshold = 0.03;
+      setAnnotLines(lines => {
+        const remaining = lines.filter(line => {
+          return !line.points.some(p => Math.hypot(p.x - x, p.y - y) < threshold);
+        });
+        savePageAnnotations(authUser?.uid, branch, sem, subject, moduleKey, currentPage, { lines: remaining });
+        return remaining;
+      });
+      return;
+    }
+
+    isDrawingRef.current = true;
+    const newLine = {
+      id: Date.now() + "_" + Math.random().toString(36).substring(2, 7),
+      tool: annotTool,
+      color: annotTool === "highlight" ? (annotColor === "#ef4444" ? "#fef08a" : annotColor) : annotColor,
+      width: annotTool === "highlight" ? Math.max(16, annotWidth * 4) : annotWidth,
+      opacity: annotTool === "highlight" ? 0.38 : 1,
+      points: [{ x, y }],
+    };
+    currentLineRef.current = newLine;
+  };
+
+  const handleAnnotPointerMove = (e) => {
+    const cv = annotCanvasRef.current;
+    if (!cv) return;
+    const rect = cv.getBoundingClientRect();
+    const pixelX = e.clientX - rect.left;
+    const pixelY = e.clientY - rect.top;
+
+    // Track cursor position on canvas for pen/brush preview
+    if (annotTool !== "view") {
+      setCursorPos({ x: pixelX, y: pixelY });
+    }
+
+    if (!isDrawingRef.current || !currentLineRef.current) return;
+    const x = pixelX / rect.width;
+    const y = pixelY / rect.height;
+
+    currentLineRef.current.points.push({ x, y });
+
+    // Draw active stroke incrementally
+    const ctx = cv.getContext("2d");
+    const pts = currentLineRef.current.points;
+    if (pts.length >= 2) {
+      ctx.save();
+      ctx.beginPath();
+      ctx.strokeStyle = currentLineRef.current.color;
+      ctx.lineWidth = currentLineRef.current.width;
+      ctx.lineCap = "round";
+      ctx.lineJoin = "round";
+      ctx.globalAlpha = currentLineRef.current.opacity;
+      const pPrev = pts[pts.length - 2];
+      ctx.moveTo(pPrev.x * cv.width, pPrev.y * cv.height);
+      ctx.lineTo(x * cv.width, y * cv.height);
+      ctx.stroke();
+      ctx.restore();
+    }
+  };
+
+  const handleAnnotPointerUp = () => {
+    if (!isDrawingRef.current || !currentLineRef.current) return;
+    isDrawingRef.current = false;
+    const finishedLine = currentLineRef.current;
+    currentLineRef.current = null;
+
+    if (finishedLine.points.length > 1) {
+      setAnnotLines(prev => {
+        const next = [...prev, finishedLine];
+        setAnnotSaveStatus("saving");
+        savePageAnnotations(authUser?.uid, branch, sem, subject, moduleKey, currentPage, { lines: next })
+          .then(() => {
+            setAnnotSaveStatus("saved");
+            setTimeout(() => setAnnotSaveStatus("idle"), 2000);
+          });
+        return next;
+      });
+    }
+  };
+
+  const clearCurrentPageAnnotations = () => {
+    if (confirm("Clear all annotations on this page?")) {
+      setAnnotLines([]);
+      savePageAnnotations(authUser?.uid, branch, sem, subject, moduleKey, currentPage, { lines: [] });
+    }
+  };
+
+  // Drag-to-scroll (pan) state for View mode
+  const isPanningPdfRef = useRef(false);
+  const panScrollStartRef = useRef({ x: 0, y: 0, scrollLeft: 0, scrollTop: 0 });
+
+  const onPdfAreaPointerDown = (e) => {
+    if (annotTool !== "view") return;
+    if (!containerRef.current) return;
+    if (e.target.closest("button") || e.target.closest("input") || e.target.closest(".ctrl-bar")) return;
+
+    isPanningPdfRef.current = true;
+    panScrollStartRef.current = {
+      x: e.clientX,
+      y: e.clientY,
+      scrollLeft: containerRef.current.scrollLeft,
+      scrollTop: containerRef.current.scrollTop,
+    };
+  };
+
+  const onPdfAreaPointerMove = (e) => {
+    if (!isPanningPdfRef.current || !containerRef.current || annotTool !== "view") return;
+    const dx = e.clientX - panScrollStartRef.current.x;
+    const dy = e.clientY - panScrollStartRef.current.y;
+    containerRef.current.scrollLeft = panScrollStartRef.current.scrollLeft - dx;
+    containerRef.current.scrollTop = panScrollStartRef.current.scrollTop - dy;
+  };
+
+  const onPdfAreaPointerUp = () => {
+    isPanningPdfRef.current = false;
+  };
+
+  /* ── Random Page Jump ── */
+  const goToRandomPage = () => {
+    if (totalPages <= 1) return;
+    let nextP = Math.floor(Math.random() * totalPages) + 1;
+    if (nextP === currentPage) {
+      nextP = (nextP % totalPages) + 1;
+    }
+    setCurrentPage(nextP);
+  };
+
   /* ── Render page ── */
   const renderPage = useCallback(async (doc, pageNum, sc) => {
     if (!doc || !canvasRef.current) return;
@@ -1745,10 +2765,18 @@ function PDFViewerInner() {
       const vp = page.getViewport({ scale: sc });
       const cv = canvasRef.current;
       cv.width = vp.width; cv.height = vp.height;
+
+      // Match annotation overlay canvas size exactly
+      if (annotCanvasRef.current) {
+        annotCanvasRef.current.width = vp.width;
+        annotCanvasRef.current.height = vp.height;
+      }
+
       await page.render({ canvasContext: cv.getContext("2d"), viewport: vp }).promise;
+      redrawAnnotations();
     } catch { }
     setRendering(false);
-  }, []);
+  }, [redrawAnnotations]);
 
   useEffect(() => {
     if (pdfDoc && loadStatus === "ready") renderPage(pdfDoc, currentPage, scale);
@@ -1901,27 +2929,40 @@ function PDFViewerInner() {
   const MessagesList = useMemo(() => messages.map((msg, i) => {
     const isAI = msg.role === "ai";
     const isTemp = !!msg.temp;
-    const msgColor = isAI ? (isDark ? "#e2e8f0" : "#0f172a") : "#0f172a";
+    const msgColor = isAI ? (isDark ? "#f1f5f9" : "#0f172a") : "#0f172a";
     return (
       <div key={i} style={{
-        background: isAI ? (isDark ? "rgba(0,255,0,0.07)" : "rgba(0,200,0,0.06)") : "#00FF00",
-        border: isAI ? `1px solid ${bdr}` : "none",
+        background: isAI
+          ? (isDark ? "rgba(15,23,42,0.75)" : "#ffffff")
+          : "#00FF00",
+        border: isAI
+          ? `1px solid ${isDark ? "rgba(255,255,255,0.08)" : "rgba(0,0,0,0.07)"}`
+          : "none",
         borderRadius: "16px",
         borderTopLeftRadius: isAI ? "4px" : "16px",
         borderBottomRightRadius: isAI ? "16px" : "4px",
-        padding: "12px 14px",
+        padding: "14px 16px",
         color: msgColor,
         lineHeight: 1.65,
         alignSelf: isAI ? "stretch" : "flex-end",
-        maxWidth: isAI ? "100%" : "88%",
-        animation: "msgPop 0.25s ease both",
-        opacity: isTemp ? 0.55 : 1,
+        maxWidth: isAI ? "100%" : "85%",
+        animation: "msgPop 0.25s cubic-bezier(0.16,1,0.3,1) both",
+        boxShadow: isAI
+          ? (isDark ? "0 4px 20px rgba(0,0,0,0.25)" : "0 2px 10px rgba(0,0,0,0.04)")
+          : "0 4px 16px rgba(0,255,0,0.25)",
+        opacity: isTemp ? 0.6 : 1,
       }}>
         {isAI && (
-          <div style={{ display: "flex", alignItems: "center", gap: "6px", marginBottom: "8px" }}>
-            <span className="ms" style={{ fontSize: "13px", color: "#00CC00" }}>auto_awesome</span>
-            <span style={{ fontSize: "10px", fontWeight: 700, color: "#00AA00", textTransform: "uppercase", letterSpacing: "0.08em" }}>Neural AI</span>
-            <span style={{ fontSize: "9px", fontWeight: 700, padding: "1px 6px", background: "rgba(0,200,0,0.1)", border: "1px solid rgba(0,200,0,0.2)", borderRadius: "9999px", color: "#00AA00" }}>GROQ</span>
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "10px", paddingBottom: "6px", borderBottom: `1px solid ${isDark ? "rgba(255,255,255,0.06)" : "rgba(0,0,0,0.05)"}` }}>
+            <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
+              <div style={{ width: "20px", height: "20px", borderRadius: "6px", background: "rgba(0,255,0,0.15)", display: "flex", alignItems: "center", justifyContent: "center" }}>
+                <span className="ms" style={{ fontSize: "13px", color: "#00CC00" }}>auto_awesome</span>
+              </div>
+              <span style={{ fontSize: "11px", fontWeight: 700, color: isDark ? "#ffffff" : "#0f172a", letterSpacing: "0.02em" }}>Neural AI</span>
+            </div>
+            <div style={{ display: "flex", alignItems: "center", gap: "4px" }}>
+              <span style={{ fontSize: "9px", fontWeight: 700, padding: "2px 6px", background: "rgba(0,200,0,0.1)", border: "1px solid rgba(0,200,0,0.25)", borderRadius: "9999px", color: "#00AA00" }}>GROQ</span>
+            </div>
           </div>
         )}
         {!isAI && msg.command && (() => {
@@ -1939,15 +2980,15 @@ function PDFViewerInner() {
           const sc = SLASH_COMMANDS.find(c => c.cmd === "/" + msg.command);
           if (!sc) return null;
           return (
-            <div style={{ display: "inline-flex", alignItems: "center", gap: "5px", padding: "2px 9px", background: `${sc.color}18`, border: `1px solid ${sc.color}44`, borderRadius: "9999px", fontSize: "10px", fontWeight: 700, color: sc.color, marginBottom: "7px" }}>
-              <span className="ms" style={{ fontSize: "11px" }}>{sc.icon}</span>
+            <div style={{ display: "inline-flex", alignItems: "center", gap: "5px", padding: "3px 10px", background: `${sc.color}18`, border: `1px solid ${sc.color}44`, borderRadius: "9999px", fontSize: "10px", fontWeight: 700, color: sc.color, marginBottom: "8px" }}>
+              <span className="ms" style={{ fontSize: "12px" }}>{sc.icon}</span>
               {sc.cmd}
             </div>
           );
         })()}
         {isAI
-          ? <MarkdownText text={msg.text} color={msgColor} />
-          : <p style={{ margin: 0, fontSize: "12px", fontWeight: 600, lineHeight: 1.65, whiteSpace: "pre-wrap" }}>
+          ? <MarkdownText text={msg.text} isDark={isDark} onOpenDiagram={setActiveDiagram} />
+          : <p style={{ margin: 0, fontSize: "13px", fontWeight: 600, lineHeight: 1.6, whiteSpace: "pre-wrap" }}>
             {msg.command && msg.text.startsWith("/" + msg.command) ? msg.text.slice(msg.command.length + 1).trim() : msg.text}
           </p>
         }
@@ -1975,7 +3016,7 @@ function PDFViewerInner() {
   if (authLoading) return null;
 
   const isChatOpenDesktop = chatOpen && !isMobile;
-  const sidebarW = chatFullscreen ? "calc(100% - 300px)" : "360px";
+  const sidebarW = chatFullscreen ? "calc(100% - 300px)" : `${sidebarWidth}px`;
 
   return (
     <>
@@ -2013,17 +3054,17 @@ function PDFViewerInner() {
         .ctrl-btn:disabled{opacity:0.3;cursor:not-allowed;}
         .ctrl-div{width:1px;height:20px;background:rgba(255,255,255,0.15);}
 
-        .ai-sidebar{height:100%;background:${panel};backdrop-filter:blur(12px);border-left:1px solid ${bdr};display:flex;flex-direction:column;z-index:20;transition:width 0.3s,min-width 0.3s;}
+        .ai-sidebar{height:100%;background:${isDark ? "rgba(10,16,28,0.98)" : "rgba(255,255,255,0.98)"};backdrop-filter:blur(16px);border-left:1px solid ${isDark ? "rgba(255,255,255,0.08)" : bdr};display:flex;flex-direction:column;z-index:20;transition:width 0.3s cubic-bezier(0.16,1,0.3,1),min-width 0.3s cubic-bezier(0.16,1,0.3,1);}
         .ai-sidebar.closed{width:0!important;min-width:0!important;overflow:hidden;}
-        .chat-scroll{flex:1;overflow-y:auto;padding:16px;display:flex;flex-direction:column;gap:10px;}
-        .chat-scroll::-webkit-scrollbar{width:3px;}
-        .chat-scroll::-webkit-scrollbar-thumb{background:rgba(0,200,0,0.2);border-radius:2px;}
-        .quick-btn{display:flex;align-items:center;gap:8px;padding:8px 12px;background:${isDark ? "rgba(255,255,255,0.04)" : "rgba(0,200,0,0.05)"};border:1px solid ${bdr};border-radius:10px;cursor:pointer;font-size:11px;font-weight:700;color:${text2};font-family:'Lexend',sans-serif;transition:all 0.18s;text-align:left;}
-        .quick-btn:hover{background:rgba(0,200,0,0.1);color:${text1};border-color:rgba(0,200,0,0.3);}
-        .quick-btn.special-btn{border-color:rgba(0,200,0,0.3);color:#00AA00;}
+        .chat-scroll{flex:1;overflow-y:auto;padding:16px 14px;display:flex;flex-direction:column;gap:12px;}
+        .chat-scroll::-webkit-scrollbar{width:4px;}
+        .chat-scroll::-webkit-scrollbar-thumb{background:${isDark ? "rgba(255,255,255,0.15)" : "rgba(0,0,0,0.15)"};border-radius:2px;}
+        .quick-btn{display:flex;align-items:center;gap:8px;padding:8px 12px;background:${isDark ? "rgba(255,255,255,0.04)" : "#ffffff"};border:1px solid ${isDark ? "rgba(255,255,255,0.08)" : "rgba(0,0,0,0.08)"};border-radius:10px;cursor:pointer;font-size:11px;font-weight:700;color:${text2};font-family:'Lexend',sans-serif;transition:all 0.18s;text-align:left;box-shadow:${isDark ? "none" : "0 1px 3px rgba(0,0,0,0.04)"};}
+        .quick-btn:hover{background:${isDark ? "rgba(255,255,255,0.08)" : "#f8fafc"};color:${text1};border-color:${isDark ? "rgba(0,255,0,0.3)" : "rgba(0,200,0,0.3)"};}
+        .quick-btn.special-btn{border-color:rgba(0,200,0,0.3);color:#00AA00;background:${isDark ? "rgba(0,255,0,0.06)" : "rgba(0,200,0,0.05)"};}
         .quick-btn.special-btn:hover{background:#00FF00;color:#0f172a;border-color:#00FF00;}
-        .chat-input{width:100%;background:${isDark ? "rgba(255,255,255,0.05)" : "rgba(0,200,0,0.04)"};border:1px solid ${bdr};border-radius:12px;padding:10px 44px 10px 14px;font-size:12px;font-family:'Lexend',sans-serif;color:${text1};outline:none;resize:none;min-height:44px;max-height:120px;transition:border-color 0.2s;}
-        .chat-input:focus{border-color:rgba(0,255,0,0.4);}
+        .chat-input{width:100%;background:${isDark ? "rgba(255,255,255,0.05)" : "#f8fafc"};border:1px solid ${isDark ? "rgba(255,255,255,0.1)" : "rgba(0,0,0,0.1)"};border-radius:14px;padding:12px 46px 12px 14px;font-size:12.5px;font-family:'Lexend',sans-serif;color:${text1};outline:none;resize:none;min-height:48px;max-height:140px;line-height:1.5;transition:border-color 0.2s,box-shadow 0.2s;}
+        .chat-input:focus{border-color:rgba(0,255,0,0.5)!important;box-shadow:0 0 0 3px rgba(0,255,0,0.12)!important;}
         .chat-input::placeholder{color:${text3};}
         .progress-track{width:100%;height:6px;background:rgba(255,255,255,0.1);border-radius:9999px;overflow:hidden;}
         .progress-fill{height:100%;background:linear-gradient(90deg,#00AA00,#00FF00,#00AA00);background-size:200% 100%;animation:shimmer 1.5s linear infinite;border-radius:9999px;transition:width 0.3s;}
@@ -2110,7 +3151,13 @@ function PDFViewerInner() {
         <div className="viewer-body">
 
           {/* PDF Area */}
-          <div className="pdf-area" ref={containerRef}>
+          <div
+            className="pdf-area"
+            ref={containerRef}
+            onPointerDown={onPdfAreaPointerDown}
+            onPointerMove={onPdfAreaPointerMove}
+            onPointerUp={onPdfAreaPointerUp}
+          >
             {loadStatus === "loading" && (
               <div style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", flex: 1, gap: "20px", minHeight: "60vh", animation: "fadeUp 0.3s ease both" }}>
                 <div style={{ width: "72px", height: "72px", borderRadius: "18px", background: "rgba(0,255,0,0.1)", display: "flex", alignItems: "center", justifyContent: "center" }}>
@@ -2138,8 +3185,75 @@ function PDFViewerInner() {
               </div>
             )}
             {loadStatus === "ready" && (
-              <div className="canvas-wrap" style={{ opacity: rendering ? 0.7 : 1, transition: "opacity 0.2s" }}>
+              <div
+                className="canvas-wrap"
+                style={{
+                  position: "relative",
+                  opacity: rendering ? 0.7 : 1,
+                  transition: "opacity 0.2s",
+                  cursor: annotTool === "view" ? "grab" : annotTool === "eraser" ? "cell" : "crosshair",
+                  userSelect: "none",
+                }}
+              >
                 <canvas ref={canvasRef} />
+                <canvas
+                  ref={annotCanvasRef}
+                  style={{
+                    position: "absolute",
+                    top: 0,
+                    left: 0,
+                    width: "100%",
+                    height: "100%",
+                    pointerEvents: annotTool === "view" ? "none" : "auto",
+                    touchAction: annotTool === "view" ? "auto" : "none",
+                  }}
+                  onPointerDown={handleAnnotPointerDown}
+                  onPointerMove={handleAnnotPointerMove}
+                  onPointerUp={handleAnnotPointerUp}
+                  onPointerLeave={() => {
+                    handleAnnotPointerUp();
+                    setCursorPos(null);
+                  }}
+                />
+
+                {/* Floating Pen / Highlighter visual preview cursor */}
+                {cursorPos && annotTool !== "view" && (
+                  <div
+                    style={{
+                      position: "absolute",
+                      left: cursorPos.x,
+                      top: cursorPos.y,
+                      pointerEvents: "none",
+                      transform: "translate(-2px, -24px)",
+                      zIndex: 10,
+                      display: "flex",
+                      alignItems: "center",
+                      gap: "4px",
+                      filter: "drop-shadow(0 2px 4px rgba(0,0,0,0.4))",
+                    }}
+                  >
+                    <span
+                      className="ms"
+                      style={{
+                        fontSize: "22px",
+                        color: annotTool === "eraser" ? "#ffffff" : (annotColor || "#ef4444"),
+                        transform: "rotate(-45deg)",
+                      }}
+                    >
+                      {annotTool === "highlight" ? "ink_highlighter" : annotTool === "eraser" ? "ink_eraser" : "edit"}
+                    </span>
+                    <div
+                      style={{
+                        width: annotTool === "highlight" ? "12px" : "6px",
+                        height: annotTool === "highlight" ? "12px" : "6px",
+                        borderRadius: annotTool === "highlight" ? "2px" : "50%",
+                        background: annotTool === "eraser" ? "#ef4444" : annotColor,
+                        border: "1px solid #ffffff",
+                        opacity: annotTool === "highlight" ? 0.6 : 0.9,
+                      }}
+                    />
+                  </div>
+                )}
               </div>
             )}
 
@@ -2154,7 +3268,49 @@ function PDFViewerInner() {
           </div>
 
           {/* ── DESKTOP AI SIDEBAR ── */}
-          <aside className={`ai-sidebar${isChatOpenDesktop ? "" : " closed"}`} style={{ width: isChatOpenDesktop ? sidebarW : "0", minWidth: isChatOpenDesktop ? sidebarW : "0" }}>
+          <aside
+            className={`ai-sidebar${isChatOpenDesktop ? "" : " closed"}`}
+            style={{
+              width: isChatOpenDesktop ? sidebarW : "0",
+              minWidth: isChatOpenDesktop ? sidebarW : "0",
+              position: "relative",
+              userSelect: isResizingSidebar ? "none" : "auto",
+            }}
+          >
+            {/* Drag Handle to Resize Sidebar */}
+            {isChatOpenDesktop && !chatFullscreen && (
+              <div
+                title="Drag to resize AI sidebar · Double click to reset"
+                onPointerDown={onSidebarResizeStart}
+                onDoubleClick={() => {
+                  setSidebarWidth(380);
+                  try { localStorage.setItem("studybuddy_sidebar_w", "380"); } catch { }
+                }}
+                style={{
+                  position: "absolute",
+                  left: -4,
+                  top: 0,
+                  bottom: 0,
+                  width: "8px",
+                  cursor: "col-resize",
+                  zIndex: 30,
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  touchAction: "none",
+                }}
+              >
+                <div
+                  style={{
+                    width: "2px",
+                    height: "36px",
+                    borderRadius: "9999px",
+                    background: isResizingSidebar ? "#00FF00" : (isDark ? "rgba(255,255,255,0.2)" : "rgba(0,0,0,0.2)"),
+                    transition: "background 0.2s",
+                  }}
+                />
+              </div>
+            )}
             {/* Sidebar header */}
             <div style={{ padding: "14px 16px", borderBottom: `1px solid ${bdr}`, display: "flex", alignItems: "center", justifyContent: "space-between", flexShrink: 0 }}>
               <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
@@ -2245,18 +3401,191 @@ function PDFViewerInner() {
         {/* ── DESKTOP CONTROLS ── */}
         {loadStatus === "ready" && (
           <div className={`ctrl-bar${isChatOpenDesktop ? "" : " no-sidebar"}`}>
-            <button className="ctrl-btn" disabled={currentPage <= 1} onClick={() => setCurrentPage(p => p - 1)}><span className="ms" style={{ fontSize: "22px" }}>chevron_left</span></button>
-            <span style={{ fontSize: "12px", fontWeight: 600, color: "rgba(255,255,255,0.8)", whiteSpace: "nowrap" }}>{currentPage} / {totalPages}</span>
-            <button className="ctrl-btn" disabled={currentPage >= totalPages} onClick={() => setCurrentPage(p => p + 1)}><span className="ms" style={{ fontSize: "22px" }}>chevron_right</span></button>
+            {/* Page navigation */}
+            <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
+              <button className="ctrl-btn" disabled={currentPage <= 1} onClick={() => setCurrentPage(p => p - 1)} title="Previous Page">
+                <span className="ms" style={{ fontSize: "20px" }}>chevron_left</span>
+              </button>
+              <div style={{ display: "flex", alignItems: "center", gap: "4px" }}>
+                <input
+                  type="number"
+                  min={1}
+                  max={totalPages || 1}
+                  value={currentPage}
+                  onChange={(e) => {
+                    const val = Number(e.target.value);
+                    if (val >= 1 && val <= totalPages) setCurrentPage(val);
+                  }}
+                  style={{
+                    width: "38px",
+                    background: "rgba(255,255,255,0.12)",
+                    border: "1px solid rgba(255,255,255,0.2)",
+                    borderRadius: "6px",
+                    color: "#ffffff",
+                    textAlign: "center",
+                    fontSize: "12px",
+                    fontWeight: 700,
+                    padding: "3px 0",
+                    outline: "none",
+                  }}
+                />
+                <span style={{ fontSize: "12px", fontWeight: 600, color: "rgba(255,255,255,0.7)" }}>/ {totalPages}</span>
+              </div>
+              <button className="ctrl-btn" disabled={currentPage >= totalPages} onClick={() => setCurrentPage(p => p + 1)} title="Next Page">
+                <span className="ms" style={{ fontSize: "20px" }}>chevron_right</span>
+              </button>
+              <button className="ctrl-btn" onClick={goToRandomPage} title="Random Page Jump">
+                <span className="ms" style={{ fontSize: "18px" }}>shuffle</span>
+              </button>
+            </div>
+
             <div className="ctrl-div" />
-            <button className="ctrl-btn" onClick={() => setScale(s => Math.max(0.5, +(s - 0.2).toFixed(1)))}><span className="ms" style={{ fontSize: "22px" }}>remove</span></button>
-            <span style={{ fontSize: "12px", fontWeight: 600, color: "rgba(255,255,255,0.8)", whiteSpace: "nowrap" }}>{Math.round(scale * 100)}%</span>
-            <button className="ctrl-btn" onClick={() => setScale(s => Math.min(3, +(s + 0.2).toFixed(1)))}><span className="ms" style={{ fontSize: "22px" }}>add</span></button>
+
+            {/* Zoom Controls */}
+            <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
+              <button className="ctrl-btn" onClick={() => { setAutoFitWidth(false); setScale(s => Math.max(0.5, +(s - 0.2).toFixed(1))); }} title="Zoom Out">
+                <span className="ms" style={{ fontSize: "20px" }}>remove</span>
+              </button>
+              <span style={{ fontSize: "12px", fontWeight: 600, color: "rgba(255,255,255,0.9)", minWidth: "40px", textAlign: "center" }}>
+                {Math.round(scale * 100)}%
+              </span>
+              <button className="ctrl-btn" onClick={() => { setAutoFitWidth(false); setScale(s => Math.min(3, +(s + 0.2).toFixed(1))); }} title="Zoom In">
+                <span className="ms" style={{ fontSize: "20px" }}>add</span>
+              </button>
+              <button
+                className="ctrl-btn"
+                title={autoFitWidth ? "Auto-Fit Width is Active (click to recalculate)" : "Fit to Container Width"}
+                onClick={() => {
+                  setAutoFitWidth(true);
+                  fitWidth();
+                }}
+                style={{
+                  color: autoFitWidth ? "#00FF00" : "rgba(255,255,255,0.7)",
+                  background: autoFitWidth ? "rgba(0,255,0,0.15)" : "transparent",
+                }}
+              >
+                <span className="ms" style={{ fontSize: "19px" }}>fit_width</span>
+              </button>
+            </div>
+
             <div className="ctrl-div" />
-            <button className="ctrl-btn" title="Fit width" onClick={() => { if (containerRef.current && pdfDoc) { const w = containerRef.current.clientWidth - 64; pdfDoc.getPage(currentPage).then(p => { const vp = p.getViewport({ scale: 1 }); setScale(+(w / vp.width).toFixed(2)); }); } }}>
-              <span className="ms" style={{ fontSize: "22px" }}>fit_width</span>
-            </button>
-            {rendering && <div style={{ width: "16px", height: "16px", border: "2px solid rgba(0,255,0,0.3)", borderTopColor: "#00FF00", borderRadius: "9999px", animation: "spin 0.7s linear infinite" }} />}
+
+            {/* Annotation Tools */}
+            <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
+              <button
+                className="ctrl-btn"
+                title="View / Scroll Mode"
+                onClick={() => setAnnotTool("view")}
+                style={{
+                  color: annotTool === "view" ? "#00FF00" : "rgba(255,255,255,0.7)",
+                  background: annotTool === "view" ? "rgba(0,255,0,0.18)" : "transparent",
+                }}
+              >
+                <span className="ms" style={{ fontSize: "19px" }}>pan_tool</span>
+              </button>
+              <button
+                className="ctrl-btn"
+                title="Pen Note (Draw / Write)"
+                onClick={() => {
+                  setAnnotTool("pen");
+                  if (annotColor === "#fef08a") setAnnotColor("#ef4444");
+                }}
+                style={{
+                  color: annotTool === "pen" ? "#00FF00" : "rgba(255,255,255,0.7)",
+                  background: annotTool === "pen" ? "rgba(0,255,0,0.18)" : "transparent",
+                }}
+              >
+                <span className="ms" style={{ fontSize: "19px" }}>edit</span>
+              </button>
+              <button
+                className="ctrl-btn"
+                title="Highlighter"
+                onClick={() => {
+                  setAnnotTool("highlight");
+                  setAnnotColor("#fef08a");
+                }}
+                style={{
+                  color: annotTool === "highlight" ? "#00FF00" : "rgba(255,255,255,0.7)",
+                  background: annotTool === "highlight" ? "rgba(0,255,0,0.18)" : "transparent",
+                }}
+              >
+                <span className="ms" style={{ fontSize: "19px" }}>ink_highlighter</span>
+              </button>
+              <button
+                className="ctrl-btn"
+                title="Eraser"
+                onClick={() => setAnnotTool("eraser")}
+                style={{
+                  color: annotTool === "eraser" ? "#00FF00" : "rgba(255,255,255,0.7)",
+                  background: annotTool === "eraser" ? "rgba(0,255,0,0.18)" : "transparent",
+                }}
+              >
+                <span className="ms" style={{ fontSize: "19px" }}>ink_eraser</span>
+              </button>
+
+              {/* Color picker for pen */}
+              {annotTool !== "view" && annotTool !== "eraser" && (
+                <div style={{ display: "flex", alignItems: "center", gap: "4px", marginLeft: "4px" }}>
+                  {["#ef4444", "#3b82f6", "#10b981", "#f59e0b", "#fef08a"].map((c) => (
+                    <div
+                      key={c}
+                      onClick={() => setAnnotColor(c)}
+                      style={{
+                        width: "14px",
+                        height: "14px",
+                        borderRadius: "50%",
+                        background: c,
+                        cursor: "pointer",
+                        border: annotColor === c ? "2px solid #ffffff" : "1px solid rgba(255,255,255,0.3)",
+                        boxShadow: annotColor === c ? "0 0 8px rgba(255,255,255,0.5)" : "none",
+                      }}
+                    />
+                  ))}
+                </div>
+              )}
+
+              {/* Clear button if page has annotations */}
+              {annotLines.length > 0 && (
+                <button
+                  className="ctrl-btn"
+                  onClick={clearCurrentPageAnnotations}
+                  title="Clear Page Annotations"
+                  style={{ color: "#f87171" }}
+                >
+                  <span className="ms" style={{ fontSize: "19px" }}>delete_sweep</span>
+                </button>
+              )}
+
+              {/* Save status badge */}
+              {annotSaveStatus !== "idle" && (
+                <span
+                  style={{
+                    fontSize: "9px",
+                    fontWeight: 700,
+                    padding: "2px 6px",
+                    borderRadius: "9999px",
+                    background: annotSaveStatus === "saving" ? "rgba(234,179,8,0.2)" : "rgba(0,255,0,0.2)",
+                    color: annotSaveStatus === "saving" ? "#facc15" : "#4ade80",
+                    marginLeft: "2px",
+                  }}
+                >
+                  {annotSaveStatus === "saving" ? "Saving…" : "Saved"}
+                </span>
+              )}
+            </div>
+
+            {rendering && (
+              <div
+                style={{
+                  width: "16px",
+                  height: "16px",
+                  border: "2px solid rgba(0,255,0,0.3)",
+                  borderTopColor: "#00FF00",
+                  borderRadius: "9999px",
+                  animation: "spin 0.7s linear infinite",
+                }}
+              />
+            )}
           </div>
         )}
 
@@ -2440,6 +3769,16 @@ function PDFViewerInner() {
             subject={subject}
             sem={sem}
             text1={text1} text2={text2} text3={text3} bdr={bdr} panel={panel}
+          />
+        )}
+
+        {/* ── DIAGRAM VIEWER MODAL ── */}
+        {activeDiagram && (
+          <DiagramViewerModal
+            diagramText={activeDiagram.text}
+            title={activeDiagram.title || "Diagram Viewer"}
+            isDark={isDark}
+            onClose={() => setActiveDiagram(null)}
           />
         )}
       </div>

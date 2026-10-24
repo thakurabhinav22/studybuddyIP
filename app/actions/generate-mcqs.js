@@ -180,7 +180,7 @@ export async function generateMCQs(subjectId, moduleId, department, semester) {
       console.log(`🔄 Attempt ${attempt}/3 - Generating MCQs for ${moduleId}`);
 
       const { text: rawText } = await generateText({
-        model: groq('llama-3.1-8b-instant'),
+        model: groq('openai/gpt-oss-120b'),
         prompt: `You are a strict JSON generator. Output **ONLY** valid JSON, nothing else.
 
 Subject: ${subjectId}
@@ -248,7 +248,7 @@ export async function generateTargetedMCQs({
   for (let attempt = 1; attempt <= 3; attempt++) {
     try {
       const { text: rawText } = await generateText({
-        model: groq('llama-3.3-70b-versatile'),
+        model: groq('openai/gpt-oss-120b'),
         prompt: `You are a strict JSON generator for engineering exam MCQs.
 Return ONLY valid JSON, no markdown and no extra text.
 

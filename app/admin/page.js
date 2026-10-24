@@ -416,11 +416,16 @@ export default function AdminPage() {
   const bg = isDark ? "#080f1a" : "#f5f8f5";
   const sidebarBg = isDark ? "rgba(8,15,26,0.96)" : "rgba(255,255,255,0.85)";
   const headerBg = isDark ? "rgba(8,15,26,0.92)" : "rgba(255,255,255,0.85)";
-  const card = isDark ? "rgba(15,23,42,0.9)" : "#ffffff";
+  const card = isDark ? "rgba(15,23,42,0.85)" : "#ffffff";
+  const cardHover = isDark ? "rgba(24,35,62,0.95)" : "#ffffff";
+  const inputBg = isDark ? "rgba(255,255,255,0.06)" : "#f1f5f9";
+  const inputBorder = isDark ? "rgba(255,255,255,0.12)" : "rgba(0,200,0,0.14)";
+  const avatarBg = isDark ? "rgba(255,255,255,0.12)" : "#e2e8f0";
   const text1 = isDark ? "#f1f5f9" : "#0f172a";
   const text2 = isDark ? "#94a3b8" : "#475569";
-  const text3 = isDark ? "#475569" : "#94a3b8";
-  const bdr = isDark ? "rgba(0,255,0,0.1)" : "rgba(0,200,0,0.12)";
+  const text3 = isDark ? "#64748b" : "#94a3b8";
+  const bdr = isDark ? "rgba(0,255,0,0.12)" : "rgba(0,200,0,0.12)";
+  const bdrSubtle = isDark ? "rgba(255,255,255,0.08)" : "rgba(0,0,0,0.06)";
 
   if (authLoading) return null;
 
@@ -453,10 +458,10 @@ export default function AdminPage() {
 
   const renderDashboard = () => (
     <>
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))", gap: "20px" }}>
-        <div style={{ background: card, border: `1px solid ${bdr}`, borderRadius: "20px", padding: "24px", display: "flex", flexDirection: "column", gap: "12px", boxShadow: "0 4px 20px rgba(0,0,0,0.05)" }}>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: "20px" }}>
+        <div style={{ background: card, border: `1px solid ${bdr}`, borderRadius: "20px", padding: "24px", display: "flex", flexDirection: "column", gap: "12px", boxShadow: isDark ? "0 4px 20px rgba(0,0,0,0.25)" : "0 4px 20px rgba(0,0,0,0.05)" }}>
           <div style={{ display: "flex", alignItems: "center", gap: "12px" }}>
-            <div style={{ width: "36px", height: "36px", borderRadius: "10px", background: "rgba(0,255,0,0.1)", display: "flex", alignItems: "center", justifyContent: "center" }}>
+            <div style={{ width: "36px", height: "36px", borderRadius: "10px", background: "rgba(0,255,0,0.12)", display: "flex", alignItems: "center", justifyContent: "center" }}>
               <span className="ms" style={{ color: "#00FF00", fontSize: "20px" }}>groups</span>
             </div>
             <span style={{ fontSize: "14px", fontWeight: 700, color: text2 }}>Total Students</span>
@@ -464,9 +469,9 @@ export default function AdminPage() {
           <div style={{ fontSize: "32px", fontWeight: 900, color: text1 }}>{studentsOnly.length}</div>
         </div>
         
-        <div style={{ background: card, border: `1px solid ${bdr}`, borderRadius: "20px", padding: "24px", display: "flex", flexDirection: "column", gap: "12px", boxShadow: "0 4px 20px rgba(0,0,0,0.05)" }}>
+        <div style={{ background: card, border: `1px solid ${bdr}`, borderRadius: "20px", padding: "24px", display: "flex", flexDirection: "column", gap: "12px", boxShadow: isDark ? "0 4px 20px rgba(0,0,0,0.25)" : "0 4px 20px rgba(0,0,0,0.05)" }}>
           <div style={{ display: "flex", alignItems: "center", gap: "12px" }}>
-            <div style={{ width: "36px", height: "36px", borderRadius: "10px", background: "rgba(59,130,246,0.1)", display: "flex", alignItems: "center", justifyContent: "center" }}>
+            <div style={{ width: "36px", height: "36px", borderRadius: "10px", background: "rgba(59,130,246,0.12)", display: "flex", alignItems: "center", justifyContent: "center" }}>
               <span className="ms" style={{ color: "#3b82f6", fontSize: "20px" }}>account_tree</span>
             </div>
             <span style={{ fontSize: "14px", fontWeight: 700, color: text2 }}>Active Branches</span>
@@ -474,9 +479,9 @@ export default function AdminPage() {
           <div style={{ fontSize: "32px", fontWeight: 900, color: text1 }}>{new Set(studentsOnly.map(s => s.branch).filter(Boolean)).size}</div>
         </div>
         
-        <div style={{ background: card, border: `1px solid ${bdr}`, borderRadius: "20px", padding: "24px", display: "flex", flexDirection: "column", gap: "12px", boxShadow: "0 4px 20px rgba(0,0,0,0.05)" }}>
+        <div style={{ background: card, border: `1px solid ${bdr}`, borderRadius: "20px", padding: "24px", display: "flex", flexDirection: "column", gap: "12px", boxShadow: isDark ? "0 4px 20px rgba(0,0,0,0.25)" : "0 4px 20px rgba(0,0,0,0.05)" }}>
           <div style={{ display: "flex", alignItems: "center", gap: "12px" }}>
-            <div style={{ width: "36px", height: "36px", borderRadius: "10px", background: "rgba(245,158,11,0.1)", display: "flex", alignItems: "center", justifyContent: "center" }}>
+            <div style={{ width: "36px", height: "36px", borderRadius: "10px", background: "rgba(245,158,11,0.12)", display: "flex", alignItems: "center", justifyContent: "center" }}>
               <span className="ms" style={{ color: "#f59e0b", fontSize: "20px" }}>admin_panel_settings</span>
             </div>
             <span style={{ fontSize: "14px", fontWeight: 700, color: text2 }}>Total Admins</span>
@@ -495,7 +500,7 @@ export default function AdminPage() {
             {(selectedBranch !== "All" || selectedSem !== "All") && processedStudents.length > 0 && (
               <button 
                 onClick={handlePromoteAll}
-                style={{ background: "rgba(0,255,0,0.1)", color: "#00DD00", border: "1px solid rgba(0,255,0,0.2)", padding: "6px 12px", borderRadius: "8px", fontSize: "12px", fontWeight: 700, cursor: "pointer", transition: "all 0.2s", display: "flex", alignItems: "center", gap: "6px" }}
+                style={{ background: "rgba(0,255,0,0.12)", color: "#00DD00", border: "1px solid rgba(0,255,0,0.25)", padding: "7px 14px", borderRadius: "8px", fontSize: "12px", fontWeight: 700, cursor: "pointer", transition: "all 0.2s", display: "flex", alignItems: "center", gap: "6px" }}
               >
                 <span className="ms" style={{ fontSize: "16px" }}>upgrade</span>
                 Promote All
@@ -504,8 +509,8 @@ export default function AdminPage() {
           </div>
           
           <div style={{ display: "flex", flexWrap: "wrap", gap: "12px", alignItems: "center" }}>
-            <div style={{ display: "flex", alignItems: "center", background: isDark ? "rgba(255,255,255,0.05)" : "#f1f5f9", border: `1px solid ${bdr}`, borderRadius: "8px", padding: "6px 12px", flex: 1, minWidth: "200px" }}>
-              <span className="ms" style={{ fontSize: "16px", color: text3, marginRight: "8px" }}>search</span>
+            <div style={{ display: "flex", alignItems: "center", background: inputBg, border: `1px solid ${inputBorder}`, borderRadius: "10px", padding: "8px 14px", flex: 1, minWidth: "220px", transition: "border 0.2s" }}>
+              <span className="ms" style={{ fontSize: "18px", color: text3, marginRight: "8px" }}>search</span>
               <input 
                 type="text" 
                 placeholder="Search by name or email..." 
@@ -520,7 +525,7 @@ export default function AdminPage() {
               <select 
                 value={selectedBranch} 
                 onChange={(e) => setSelectedBranch(e.target.value)}
-                style={{ background: isDark ? "rgba(255,255,255,0.05)" : "#f1f5f9", border: `1px solid ${bdr}`, color: text1, padding: "6px 12px", borderRadius: "8px", fontSize: "13px", fontWeight: 600, outline: "none", cursor: "pointer", fontFamily: "'Lexend',sans-serif" }}
+                style={{ background: inputBg, border: `1px solid ${inputBorder}`, color: text1, padding: "8px 14px", borderRadius: "10px", fontSize: "13px", fontWeight: 600, outline: "none", cursor: "pointer", fontFamily: "'Lexend',sans-serif" }}
               >
                 {branches.map(b => <option key={b} value={b}>{b}</option>)}
               </select>
@@ -531,7 +536,7 @@ export default function AdminPage() {
               <select 
                 value={selectedSem} 
                 onChange={(e) => setSelectedSem(e.target.value)}
-                style={{ background: isDark ? "rgba(255,255,255,0.05)" : "#f1f5f9", border: `1px solid ${bdr}`, color: text1, padding: "6px 12px", borderRadius: "8px", fontSize: "13px", fontWeight: 600, outline: "none", cursor: "pointer", fontFamily: "'Lexend',sans-serif" }}
+                style={{ background: inputBg, border: `1px solid ${inputBorder}`, color: text1, padding: "8px 14px", borderRadius: "10px", fontSize: "13px", fontWeight: 600, outline: "none", cursor: "pointer", fontFamily: "'Lexend',sans-serif" }}
               >
                 {sems.map(s => <option key={s} value={s}>{s === "All" ? "All" : `Sem ${s}`}</option>)}
               </select>
@@ -542,7 +547,7 @@ export default function AdminPage() {
               <select 
                 value={sortBy} 
                 onChange={(e) => setSortBy(e.target.value)}
-                style={{ background: isDark ? "rgba(255,255,255,0.05)" : "#f1f5f9", border: `1px solid ${bdr}`, color: text1, padding: "6px 12px", borderRadius: "8px", fontSize: "13px", fontWeight: 600, outline: "none", cursor: "pointer", fontFamily: "'Lexend',sans-serif" }}
+                style={{ background: inputBg, border: `1px solid ${inputBorder}`, color: text1, padding: "8px 14px", borderRadius: "10px", fontSize: "13px", fontWeight: 600, outline: "none", cursor: "pointer", fontFamily: "'Lexend',sans-serif" }}
               >
                 <option value="name">Name (A-Z)</option>
                 <option value="branch">Branch (A-Z)</option>
@@ -560,7 +565,7 @@ export default function AdminPage() {
             {processedStudents.map((student) => (
               <div key={student.uid} className="student-row">
                 <div style={{ display: "flex", alignItems: "center", gap: "16px" }}>
-                  <div style={{ width: "40px", height: "40px", borderRadius: "50%", background: "#e2e8f0", overflow: "hidden" }}>
+                  <div style={{ width: "42px", height: "42px", borderRadius: "50%", background: avatarBg, border: `1px solid ${bdrSubtle}`, overflow: "hidden", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
                     {student.photoURL ? (
                       <img src={student.photoURL} alt={student.fullName} style={{ width: "100%", height: "100%", objectFit: "cover" }} referrerPolicy="no-referrer" />
                     ) : (
@@ -573,7 +578,7 @@ export default function AdminPage() {
                     <div style={{ fontSize: "14px", fontWeight: 600, color: text1, display: "flex", alignItems: "center", gap: "6px" }}>
                       {student.fullName || "Unknown"}
                       {student.blocked && (
-                        <span style={{ fontSize: "10px", background: "rgba(239,68,68,0.1)", color: "#ef4444", padding: "2px 6px", borderRadius: "4px", fontWeight: 700, textTransform: "uppercase" }}>Blocked</span>
+                        <span style={{ fontSize: "10px", background: "rgba(239,68,68,0.15)", color: "#ef4444", padding: "2px 8px", borderRadius: "4px", fontWeight: 700, textTransform: "uppercase" }}>Blocked</span>
                       )}
                     </div>
                     <div style={{ fontSize: "12px", color: text2 }}>{student.email}</div>
@@ -592,14 +597,14 @@ export default function AdminPage() {
                   <div style={{ display: "flex", gap: "8px", minWidth: "200px", justifyContent: "flex-end" }}>
                     <button 
                       onClick={() => { setEditingStudent(student); setEditForm({ fullName: student.fullName || "", branch: student.branch || "", sem: student.sem || "" }); }}
-                      style={{ background: isDark ? "rgba(255,255,255,0.05)" : "#f1f5f9", color: text1, border: `1px solid ${bdr}`, padding: "6px 12px", borderRadius: "8px", fontSize: "12px", fontWeight: 700, cursor: "pointer", transition: "all 0.2s", display: "flex", alignItems: "center", gap: "6px" }}
+                      style={{ background: inputBg, color: text1, border: `1px solid ${inputBorder}`, padding: "6px 12px", borderRadius: "8px", fontSize: "12px", fontWeight: 700, cursor: "pointer", transition: "all 0.2s", display: "flex", alignItems: "center", gap: "6px" }}
                     >
                       <span className="ms" style={{ fontSize: "16px" }}>edit</span>
                       Edit
                     </button>
                     <button 
                       onClick={() => handleToggleBlock(student.uid, student.blocked)}
-                      style={{ background: student.blocked ? "rgba(239,68,68,0.1)" : "rgba(245,158,11,0.1)", color: student.blocked ? "#ef4444" : "#f59e0b", border: `1px solid ${student.blocked ? "rgba(239,68,68,0.2)" : "rgba(245,158,11,0.2)"}`, padding: "6px 12px", borderRadius: "8px", fontSize: "12px", fontWeight: 700, cursor: "pointer", transition: "all 0.2s", display: "flex", alignItems: "center", gap: "6px" }}
+                      style={{ background: student.blocked ? "rgba(239,68,68,0.15)" : "rgba(245,158,11,0.15)", color: student.blocked ? "#ef4444" : "#f59e0b", border: `1px solid ${student.blocked ? "rgba(239,68,68,0.25)" : "rgba(245,158,11,0.25)"}`, padding: "6px 12px", borderRadius: "8px", fontSize: "12px", fontWeight: 700, cursor: "pointer", transition: "all 0.2s", display: "flex", alignItems: "center", gap: "6px" }}
                     >
                       <span className="ms" style={{ fontSize: "16px" }}>{student.blocked ? "lock_open" : "block"}</span>
                       {student.blocked ? "Unblock" : "Block"}
@@ -631,9 +636,9 @@ export default function AdminPage() {
       </div>
 
       {undoAction && (
-        <div style={{ position: "fixed", bottom: "32px", left: "50%", transform: "translateX(-50%)", background: isDark ? "#1e293b" : "#ffffff", border: `1px solid ${bdr}`, padding: "16px 24px", borderRadius: "16px", display: "flex", alignItems: "center", gap: "16px", boxShadow: "0 10px 30px rgba(0,0,0,0.2)", zIndex: 100 }}>
+        <div style={{ position: "fixed", bottom: "32px", left: "50%", transform: "translateX(-50%)", background: isDark ? "#0f172a" : "#ffffff", border: `1px solid ${isDark ? "rgba(255,255,255,0.15)" : bdr}`, padding: "16px 24px", borderRadius: "16px", display: "flex", alignItems: "center", gap: "16px", boxShadow: "0 10px 30px rgba(0,0,0,0.4)", zIndex: 100 }}>
           <span style={{ color: text1, fontSize: "14px", fontWeight: 600 }}>{undoAction.message}</span>
-          <button onClick={handleUndo} style={{ background: "rgba(245,158,11,0.1)", color: "#f59e0b", border: "none", padding: "6px 16px", borderRadius: "8px", fontSize: "13px", fontWeight: 700, cursor: "pointer" }}>
+          <button onClick={handleUndo} style={{ background: "rgba(245,158,11,0.15)", color: "#f59e0b", border: "1px solid rgba(245,158,11,0.3)", padding: "6px 16px", borderRadius: "8px", fontSize: "13px", fontWeight: 700, cursor: "pointer" }}>
             Undo (10s)
           </button>
         </div>
@@ -685,10 +690,10 @@ export default function AdminPage() {
             placeholder="User's email to promote" 
             value={newTeacherEmail}
             onChange={e => setNewTeacherEmail(e.target.value)}
-            style={{ background: isDark ? "rgba(255,255,255,0.05)" : "#f1f5f9", border: `1px solid ${bdr}`, color: text1, padding: "8px 12px", borderRadius: "8px", fontSize: "13px", fontWeight: 500, outline: "none", width: "220px", fontFamily: "'Lexend',sans-serif" }}
+            style={{ background: inputBg, border: `1px solid ${inputBorder}`, color: text1, padding: "8px 12px", borderRadius: "8px", fontSize: "13px", fontWeight: 500, outline: "none", width: "220px", fontFamily: "'Lexend',sans-serif" }}
             required
           />
-          <button type="submit" disabled={teacherSaving} style={{ background: "rgba(0,255,0,0.1)", color: "#00DD00", border: "1px solid rgba(0,255,0,0.2)", padding: "8px 16px", borderRadius: "8px", fontSize: "13px", fontWeight: 700, cursor: "pointer", transition: "all 0.2s" }}>
+          <button type="submit" disabled={teacherSaving} style={{ background: "rgba(0,255,0,0.12)", color: "#00DD00", border: "1px solid rgba(0,255,0,0.25)", padding: "8px 16px", borderRadius: "8px", fontSize: "13px", fontWeight: 700, cursor: "pointer", transition: "all 0.2s" }}>
             {teacherSaving ? "Promoting..." : "Promote to Teacher"}
           </button>
         </form>
@@ -698,7 +703,7 @@ export default function AdminPage() {
         {teachersOnly.map((teacher) => (
           <div key={teacher.uid} className="student-row">
             <div style={{ display: "flex", alignItems: "center", gap: "16px" }}>
-              <div style={{ width: "40px", height: "40px", borderRadius: "50%", background: "#e2e8f0", overflow: "hidden" }}>
+              <div style={{ width: "42px", height: "42px", borderRadius: "50%", background: avatarBg, border: `1px solid ${bdrSubtle}`, overflow: "hidden", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
                 {teacher.photoURL ? (
                   <img src={teacher.photoURL} alt={teacher.fullName} style={{ width: "100%", height: "100%", objectFit: "cover" }} referrerPolicy="no-referrer" />
                 ) : (
@@ -712,7 +717,7 @@ export default function AdminPage() {
                   {teacher.fullName || "Unknown Teacher"}
                   <span className="ms" style={{ fontSize: "16px", color: "#3b82f6" }} title="Teacher">local_library</span>
                   {teacher.blocked && (
-                    <span style={{ fontSize: "10px", background: "rgba(239,68,68,0.1)", color: "#ef4444", padding: "2px 6px", borderRadius: "4px", fontWeight: 700, textTransform: "uppercase" }}>Blocked</span>
+                    <span style={{ fontSize: "10px", background: "rgba(239,68,68,0.15)", color: "#ef4444", padding: "2px 8px", borderRadius: "4px", fontWeight: 700, textTransform: "uppercase" }}>Blocked</span>
                   )}
                 </div>
                 <div style={{ fontSize: "12px", color: text2 }}>{teacher.email}</div>
@@ -721,14 +726,14 @@ export default function AdminPage() {
             <div style={{ display: "flex", gap: "8px" }}>
               <button 
                 onClick={() => { setEditingStudent(teacher); setEditForm({ fullName: teacher.fullName || "", branch: teacher.branch || "", sem: teacher.sem || "" }); }}
-                style={{ background: isDark ? "rgba(255,255,255,0.05)" : "#f1f5f9", color: text1, border: `1px solid ${bdr}`, padding: "6px 12px", borderRadius: "8px", fontSize: "12px", fontWeight: 700, cursor: "pointer", transition: "all 0.2s", display: "flex", alignItems: "center", gap: "6px" }}
+                style={{ background: inputBg, color: text1, border: `1px solid ${inputBorder}`, padding: "6px 12px", borderRadius: "8px", fontSize: "12px", fontWeight: 700, cursor: "pointer", transition: "all 0.2s", display: "flex", alignItems: "center", gap: "6px" }}
               >
                 <span className="ms" style={{ fontSize: "16px" }}>edit</span>
                 Edit
               </button>
               <button 
                 onClick={() => handleToggleBlock(teacher.uid, teacher.blocked)}
-                style={{ background: teacher.blocked ? "rgba(239,68,68,0.1)" : "rgba(245,158,11,0.1)", color: teacher.blocked ? "#ef4444" : "#f59e0b", border: `1px solid ${teacher.blocked ? "rgba(239,68,68,0.2)" : "rgba(245,158,11,0.2)"}`, padding: "6px 12px", borderRadius: "8px", fontSize: "12px", fontWeight: 700, cursor: "pointer", transition: "all 0.2s", display: "flex", alignItems: "center", gap: "6px" }}
+                style={{ background: teacher.blocked ? "rgba(239,68,68,0.15)" : "rgba(245,158,11,0.15)", color: teacher.blocked ? "#ef4444" : "#f59e0b", border: `1px solid ${teacher.blocked ? "rgba(239,68,68,0.25)" : "rgba(245,158,11,0.25)"}`, padding: "6px 12px", borderRadius: "8px", fontSize: "12px", fontWeight: 700, cursor: "pointer", transition: "all 0.2s", display: "flex", alignItems: "center", gap: "6px" }}
               >
                 <span className="ms" style={{ fontSize: "16px" }}>{teacher.blocked ? "lock_open" : "block"}</span>
                 {teacher.blocked ? "Unblock" : "Block"}
@@ -757,10 +762,10 @@ export default function AdminPage() {
             placeholder="User's email to promote" 
             value={newAdminEmail}
             onChange={e => setNewAdminEmail(e.target.value)}
-            style={{ background: isDark ? "rgba(255,255,255,0.05)" : "#f1f5f9", border: `1px solid ${bdr}`, color: text1, padding: "8px 12px", borderRadius: "8px", fontSize: "13px", fontWeight: 500, outline: "none", width: "220px", fontFamily: "'Lexend',sans-serif" }}
+            style={{ background: inputBg, border: `1px solid ${inputBorder}`, color: text1, padding: "8px 12px", borderRadius: "8px", fontSize: "13px", fontWeight: 500, outline: "none", width: "220px", fontFamily: "'Lexend',sans-serif" }}
             required
           />
-          <button type="submit" disabled={adminSaving} style={{ background: "rgba(0,255,0,0.1)", color: "#00DD00", border: "1px solid rgba(0,255,0,0.2)", padding: "8px 16px", borderRadius: "8px", fontSize: "13px", fontWeight: 700, cursor: "pointer", transition: "all 0.2s" }}>
+          <button type="submit" disabled={adminSaving} style={{ background: "rgba(0,255,0,0.12)", color: "#00DD00", border: "1px solid rgba(0,255,0,0.25)", padding: "8px 16px", borderRadius: "8px", fontSize: "13px", fontWeight: 700, cursor: "pointer", transition: "all 0.2s" }}>
             {adminSaving ? "Promoting..." : "Promote to Admin"}
           </button>
         </form>
@@ -770,7 +775,7 @@ export default function AdminPage() {
         {adminsOnly.map((admin) => (
           <div key={admin.uid} className="student-row">
             <div style={{ display: "flex", alignItems: "center", gap: "16px" }}>
-              <div style={{ width: "40px", height: "40px", borderRadius: "50%", background: "#e2e8f0", overflow: "hidden" }}>
+              <div style={{ width: "42px", height: "42px", borderRadius: "50%", background: avatarBg, border: `1px solid ${bdrSubtle}`, overflow: "hidden", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
                 {admin.photoURL ? (
                   <img src={admin.photoURL} alt={admin.fullName} style={{ width: "100%", height: "100%", objectFit: "cover" }} referrerPolicy="no-referrer" />
                 ) : (
@@ -784,7 +789,7 @@ export default function AdminPage() {
                   {admin.fullName || "Unknown Admin"}
                   <span className="ms" style={{ fontSize: "16px", color: "#00FF00" }} title="Admin">verified</span>
                   {admin.blocked && (
-                    <span style={{ fontSize: "10px", background: "rgba(239,68,68,0.1)", color: "#ef4444", padding: "2px 6px", borderRadius: "4px", fontWeight: 700, textTransform: "uppercase" }}>Blocked</span>
+                    <span style={{ fontSize: "10px", background: "rgba(239,68,68,0.15)", color: "#ef4444", padding: "2px 8px", borderRadius: "4px", fontWeight: 700, textTransform: "uppercase" }}>Blocked</span>
                   )}
                 </div>
                 <div style={{ fontSize: "12px", color: text2 }}>{admin.email}</div>
@@ -793,14 +798,14 @@ export default function AdminPage() {
             <div style={{ display: "flex", gap: "8px" }}>
               <button 
                 onClick={() => { setEditingStudent(admin); setEditForm({ fullName: admin.fullName || "", branch: admin.branch || "", sem: admin.sem || "" }); }}
-                style={{ background: isDark ? "rgba(255,255,255,0.05)" : "#f1f5f9", color: text1, border: `1px solid ${bdr}`, padding: "6px 12px", borderRadius: "8px", fontSize: "12px", fontWeight: 700, cursor: "pointer", transition: "all 0.2s", display: "flex", alignItems: "center", gap: "6px" }}
+                style={{ background: inputBg, color: text1, border: `1px solid ${inputBorder}`, padding: "6px 12px", borderRadius: "8px", fontSize: "12px", fontWeight: 700, cursor: "pointer", transition: "all 0.2s", display: "flex", alignItems: "center", gap: "6px" }}
               >
                 <span className="ms" style={{ fontSize: "16px" }}>edit</span>
                 Edit
               </button>
               <button 
                 onClick={() => handleToggleBlock(admin.uid, admin.blocked)}
-                style={{ background: admin.blocked ? "rgba(239,68,68,0.1)" : "rgba(245,158,11,0.1)", color: admin.blocked ? "#ef4444" : "#f59e0b", border: `1px solid ${admin.blocked ? "rgba(239,68,68,0.2)" : "rgba(245,158,11,0.2)"}`, padding: "6px 12px", borderRadius: "8px", fontSize: "12px", fontWeight: 700, cursor: "pointer", transition: "all 0.2s", display: "flex", alignItems: "center", gap: "6px" }}
+                style={{ background: admin.blocked ? "rgba(239,68,68,0.15)" : "rgba(245,158,11,0.15)", color: admin.blocked ? "#ef4444" : "#f59e0b", border: `1px solid ${admin.blocked ? "rgba(239,68,68,0.25)" : "rgba(245,158,11,0.25)"}`, padding: "6px 12px", borderRadius: "8px", fontSize: "12px", fontWeight: 700, cursor: "pointer", transition: "all 0.2s", display: "flex", alignItems: "center", gap: "6px" }}
               >
                 <span className="ms" style={{ fontSize: "16px" }}>{admin.blocked ? "lock_open" : "block"}</span>
                 {admin.blocked ? "Unblock" : "Block"}
@@ -831,9 +836,9 @@ export default function AdminPage() {
         <form onSubmit={handleUploadNote} style={{ display: "flex", flexDirection: "column", gap: "24px" }}>
           
           {/* File Upload Area */}
-          <div style={{ position: "relative", width: "100%", height: "180px", borderRadius: "16px", border: `2px dashed ${noteFile ? "#00FF00" : (isDark ? "rgba(255,255,255,0.2)" : "rgba(0,0,0,0.15)")}`, background: noteFile ? "rgba(0,255,0,0.05)" : (isDark ? "rgba(255,255,255,0.02)" : "#f8fafc"), display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", transition: "all 0.2s", cursor: "pointer", overflow: "hidden" }}
-               onMouseEnter={e => { if(!noteFile) { e.currentTarget.style.borderColor = "rgba(0,255,0,0.5)"; e.currentTarget.style.background = isDark ? "rgba(255,255,255,0.04)" : "#f1f5f9"; } }}
-               onMouseLeave={e => { if(!noteFile) { e.currentTarget.style.borderColor = isDark ? "rgba(255,255,255,0.2)" : "rgba(0,0,0,0.15)"; e.currentTarget.style.background = isDark ? "rgba(255,255,255,0.02)" : "#f8fafc"; } }}>
+          <div style={{ position: "relative", width: "100%", height: "180px", borderRadius: "16px", border: `2px dashed ${noteFile ? "#00FF00" : (isDark ? "rgba(255,255,255,0.2)" : "rgba(0,0,0,0.15)")}`, background: noteFile ? "rgba(0,255,0,0.08)" : (isDark ? "rgba(255,255,255,0.03)" : "#f8fafc"), display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", transition: "all 0.2s", cursor: "pointer", overflow: "hidden" }}
+               onMouseEnter={e => { if(!noteFile) { e.currentTarget.style.borderColor = "rgba(0,255,0,0.5)"; e.currentTarget.style.background = isDark ? "rgba(255,255,255,0.06)" : "#f1f5f9"; } }}
+               onMouseLeave={e => { if(!noteFile) { e.currentTarget.style.borderColor = isDark ? "rgba(255,255,255,0.2)" : "rgba(0,0,0,0.15)"; e.currentTarget.style.background = isDark ? "rgba(255,255,255,0.03)" : "#f8fafc"; } }}>
             <input 
               type="file" 
               required
@@ -865,17 +870,17 @@ export default function AdminPage() {
             <div style={{ display: "grid", gridTemplateColumns: "1fr", gap: "16px" }}>
               <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
                 <label style={{ fontSize: "11px", fontWeight: 700, color: text3, textTransform: "uppercase", letterSpacing: "0.05em" }}>Document Title</label>
-                <input type="text" value={noteTitle} onChange={e => setNoteTitle(e.target.value)} required placeholder="e.g. Intro to ML" style={{ background: isDark ? "rgba(255,255,255,0.05)" : "#f1f5f9", border: `1px solid ${bdr}`, color: text1, padding: "12px 16px", borderRadius: "10px", fontSize: "14px", fontWeight: 500, outline: "none", fontFamily: "'Lexend',sans-serif", transition: "border 0.2s" }} onFocus={e=>e.currentTarget.style.borderColor="#00FF00"} onBlur={e=>e.currentTarget.style.borderColor=bdr} />
+                <input type="text" value={noteTitle} onChange={e => setNoteTitle(e.target.value)} required placeholder="e.g. Intro to ML" style={{ background: inputBg, border: `1px solid ${inputBorder}`, color: text1, padding: "12px 16px", borderRadius: "10px", fontSize: "14px", fontWeight: 500, outline: "none", fontFamily: "'Lexend',sans-serif", transition: "border 0.2s" }} onFocus={e=>e.currentTarget.style.borderColor="#00FF00"} onBlur={e=>e.currentTarget.style.borderColor=inputBorder} />
               </div>
 
               <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "16px" }}>
                 <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
                   <label style={{ fontSize: "11px", fontWeight: 700, color: text3, textTransform: "uppercase", letterSpacing: "0.05em" }}>Subject Code</label>
-                  <input type="text" value={noteSubject} onChange={e => setNoteSubject(e.target.value.toUpperCase())} required placeholder="e.g. OS, DBMS" style={{ background: isDark ? "rgba(255,255,255,0.05)" : "#f1f5f9", border: `1px solid ${bdr}`, color: text1, padding: "12px 16px", borderRadius: "10px", fontSize: "14px", fontWeight: 500, outline: "none", fontFamily: "'Lexend',sans-serif", transition: "border 0.2s" }} onFocus={e=>e.currentTarget.style.borderColor="#00FF00"} onBlur={e=>e.currentTarget.style.borderColor=bdr} />
+                  <input type="text" value={noteSubject} onChange={e => setNoteSubject(e.target.value.toUpperCase())} required placeholder="e.g. OS, DBMS" style={{ background: inputBg, border: `1px solid ${inputBorder}`, color: text1, padding: "12px 16px", borderRadius: "10px", fontSize: "14px", fontWeight: 500, outline: "none", fontFamily: "'Lexend',sans-serif", transition: "border 0.2s" }} onFocus={e=>e.currentTarget.style.borderColor="#00FF00"} onBlur={e=>e.currentTarget.style.borderColor=inputBorder} />
                 </div>
                 <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
                   <label style={{ fontSize: "11px", fontWeight: 700, color: text3, textTransform: "uppercase", letterSpacing: "0.05em" }}>Module Name</label>
-                  <input type="text" value={noteModule} onChange={e => setNoteModule(e.target.value)} required placeholder="e.g. Module 1" style={{ background: isDark ? "rgba(255,255,255,0.05)" : "#f1f5f9", border: `1px solid ${bdr}`, color: text1, padding: "12px 16px", borderRadius: "10px", fontSize: "14px", fontWeight: 500, outline: "none", fontFamily: "'Lexend',sans-serif", transition: "border 0.2s" }} onFocus={e=>e.currentTarget.style.borderColor="#00FF00"} onBlur={e=>e.currentTarget.style.borderColor=bdr} />
+                  <input type="text" value={noteModule} onChange={e => setNoteModule(e.target.value)} required placeholder="e.g. Module 1" style={{ background: inputBg, border: `1px solid ${inputBorder}`, color: text1, padding: "12px 16px", borderRadius: "10px", fontSize: "14px", fontWeight: 500, outline: "none", fontFamily: "'Lexend',sans-serif", transition: "border 0.2s" }} onFocus={e=>e.currentTarget.style.borderColor="#00FF00"} onBlur={e=>e.currentTarget.style.borderColor=inputBorder} />
                 </div>
               </div>
 
@@ -886,7 +891,7 @@ export default function AdminPage() {
                     value={noteBranch} 
                     onChange={e => setNoteBranch(e.target.value)} 
                     required 
-                    style={{ background: isDark ? "rgba(255,255,255,0.05)" : "#f1f5f9", border: `1px solid ${bdr}`, color: text1, padding: "12px 16px", borderRadius: "10px", fontSize: "14px", fontWeight: 600, outline: "none", fontFamily: "'Lexend',sans-serif", cursor: "pointer" }}
+                    style={{ background: inputBg, border: `1px solid ${inputBorder}`, color: text1, padding: "12px 16px", borderRadius: "10px", fontSize: "14px", fontWeight: 600, outline: "none", fontFamily: "'Lexend',sans-serif", cursor: "pointer" }}
                   >
                     <option value="">Select Branch</option>
                     <option value="IT">IT</option>
@@ -905,7 +910,7 @@ export default function AdminPage() {
                     value={noteSem} 
                     onChange={e => setNoteSem(e.target.value)} 
                     required 
-                    style={{ background: isDark ? "rgba(255,255,255,0.05)" : "#f1f5f9", border: `1px solid ${bdr}`, color: text1, padding: "12px 16px", borderRadius: "10px", fontSize: "14px", fontWeight: 600, outline: "none", fontFamily: "'Lexend',sans-serif", cursor: "pointer" }}
+                    style={{ background: inputBg, border: `1px solid ${inputBorder}`, color: text1, padding: "12px 16px", borderRadius: "10px", fontSize: "14px", fontWeight: 600, outline: "none", fontFamily: "'Lexend',sans-serif", cursor: "pointer" }}
                   >
                     <option value="">Select Sem</option>
                     {[1,2,3,4,5,6,7,8].map(s => <option key={s} value={s}>Sem {s}</option>)}
@@ -1054,7 +1059,7 @@ export default function AdminPage() {
         {notesError && <div style={{ color: "#ef4444", marginBottom: "16px", padding: "12px", background: "rgba(239,68,68,0.1)", borderRadius: "8px", fontWeight: 600 }}>Error: {notesError}</div>}
         
         {/* Modern Path Navigator */}
-        <div style={{ display: "flex", alignItems: "center", gap: "8px", background: isDark ? "rgba(255,255,255,0.03)" : "#f8fafc", padding: "10px 16px", borderRadius: "12px", marginBottom: "24px", overflowX: "auto", border: `1px solid ${bdr}` }}>
+        <div style={{ display: "flex", alignItems: "center", gap: "8px", background: inputBg, padding: "10px 16px", borderRadius: "12px", marginBottom: "24px", overflowX: "auto", border: `1px solid ${inputBorder}` }}>
           <button onClick={() => navigateUp(-1)} style={{ background: "transparent", border: "none", color: level === 0 ? text1 : text3, cursor: "pointer", fontWeight: level === 0 ? 700 : 500, fontSize: "14px", display: "flex", alignItems: "center", gap: "6px", transition: "color 0.2s" }}>
             <span className="ms" style={{ fontSize: "18px" }}>home</span> Repository
           </button>
@@ -1075,7 +1080,7 @@ export default function AdminPage() {
         {/* Card Grid */}
         {items.length === 0 && !notesError ? (
           <div style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", flex: 1, color: text3, gap: "16px" }}>
-            <div style={{ width: "64px", height: "64px", borderRadius: "16px", background: isDark ? "rgba(255,255,255,0.05)" : "#f1f5f9", display: "flex", alignItems: "center", justifyContent: "center" }}>
+            <div style={{ width: "64px", height: "64px", borderRadius: "16px", background: inputBg, border: `1px solid ${inputBorder}`, display: "flex", alignItems: "center", justifyContent: "center" }}>
               <span className="ms" style={{ fontSize: "32px", opacity: 0.5 }}>inventory_2</span>
             </div>
             <p style={{ fontWeight: 500 }}>No items found in this section.</p>
@@ -1087,9 +1092,9 @@ export default function AdminPage() {
               const noteData = isFile ? currentDir[item] : null;
               
               return (
-                <div key={item} style={{ background: isDark ? "rgba(15,23,42,0.6)" : "#ffffff", border: `1px solid ${bdr}`, borderRadius: "16px", padding: "20px", display: "flex", flexDirection: "column", gap: "16px", transition: "all 0.2s cubic-bezier(0.4, 0, 0.2, 1)", cursor: "pointer" }}
-                  onMouseEnter={e => { e.currentTarget.style.transform = "translateY(-4px)"; e.currentTarget.style.boxShadow = isDark ? "0 12px 24px rgba(0,0,0,0.4)" : "0 12px 24px rgba(0,0,0,0.05)"; e.currentTarget.style.borderColor = levelMeta.color; }}
-                  onMouseLeave={e => { e.currentTarget.style.transform = "translateY(0)"; e.currentTarget.style.boxShadow = "none"; e.currentTarget.style.borderColor = bdr; }}
+                <div key={item} style={{ background: isDark ? "rgba(20,30,50,0.6)" : "#ffffff", border: `1px solid ${isDark ? "rgba(255,255,255,0.08)" : bdr}`, borderRadius: "16px", padding: "20px", display: "flex", flexDirection: "column", gap: "16px", transition: "all 0.2s cubic-bezier(0.4, 0, 0.2, 1)", cursor: "pointer" }}
+                  onMouseEnter={e => { e.currentTarget.style.transform = "translateY(-4px)"; e.currentTarget.style.boxShadow = isDark ? "0 12px 24px rgba(0,0,0,0.4)" : "0 12px 24px rgba(0,0,0,0.05)"; e.currentTarget.style.borderColor = levelMeta.color; e.currentTarget.style.background = isDark ? cardHover : "#ffffff"; }}
+                  onMouseLeave={e => { e.currentTarget.style.transform = "translateY(0)"; e.currentTarget.style.boxShadow = "none"; e.currentTarget.style.borderColor = isDark ? "rgba(255,255,255,0.08)" : bdr; e.currentTarget.style.background = isDark ? "rgba(20,30,50,0.6)" : "#ffffff"; }}
                   onClick={(e) => {
                     // Prevent navigation if clicking on buttons
                     if (e.target.closest('button')) return;
@@ -1125,7 +1130,7 @@ export default function AdminPage() {
                         </button>
                       )}
                       {isFile && (
-                        <button onClick={() => handleDeleteNote(fileExplorerPath[0], fileExplorerPath[1].replace('Sem:', ''), fileExplorerPath[2], item, noteData?.resourcesPDF)} title="Delete" style={{ width: "32px", height: "32px", borderRadius: "8px", background: "transparent", border: "none", color: "#ef4444", display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer", transition: "background 0.2s" }} onMouseEnter={e => e.currentTarget.style.background = "rgba(239,68,68,0.1)"} onMouseLeave={e => e.currentTarget.style.background = "transparent"}>
+                        <button onClick={() => handleDeleteNote(fileExplorerPath[0], fileExplorerPath[1].replace('Sem:', ''), fileExplorerPath[2], item, noteData?.resourcesPDF)} title="Delete" style={{ width: "32px", height: "32px", borderRadius: "8px", background: "transparent", border: "none", color: "#ef4444", display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer", transition: "background 0.2s" }} onMouseEnter={e => e.currentTarget.style.background = "rgba(239,68,68,0.15)"} onMouseLeave={e => e.currentTarget.style.background = "transparent"}>
                           <span className="ms" style={{ fontSize: "16px" }}>delete</span>
                         </button>
                       )}
@@ -1161,7 +1166,7 @@ export default function AdminPage() {
             value={instSettings.collegeName} 
             onChange={e => setInstSettings({...instSettings, collegeName: e.target.value})} 
             placeholder="e.g. TCET" 
-            style={{ background: isDark ? "rgba(255,255,255,0.05)" : "#f1f5f9", border: `1px solid ${bdr}`, color: text1, padding: "10px 14px", borderRadius: "8px", fontSize: "14px", outline: "none", fontFamily: "'Lexend',sans-serif" }} 
+            style={{ background: inputBg, border: `1px solid ${inputBorder}`, color: text1, padding: "10px 14px", borderRadius: "8px", fontSize: "14px", outline: "none", fontFamily: "'Lexend',sans-serif" }} 
           />
         </div>
         <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
@@ -1171,7 +1176,7 @@ export default function AdminPage() {
             value={instSettings.totalSems} 
             onChange={e => setInstSettings({...instSettings, totalSems: e.target.value})} 
             min="1" 
-            style={{ background: isDark ? "rgba(255,255,255,0.05)" : "#f1f5f9", border: `1px solid ${bdr}`, color: text1, padding: "10px 14px", borderRadius: "8px", fontSize: "14px", outline: "none", fontFamily: "'Lexend',sans-serif" }} 
+            style={{ background: inputBg, border: `1px solid ${inputBorder}`, color: text1, padding: "10px 14px", borderRadius: "8px", fontSize: "14px", outline: "none", fontFamily: "'Lexend',sans-serif" }} 
           />
         </div>
         <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
@@ -1181,13 +1186,13 @@ export default function AdminPage() {
             value={instSettings.branches} 
             onChange={e => setInstSettings({...instSettings, branches: e.target.value})} 
             placeholder="e.g. IT,CS,EXTC" 
-            style={{ background: isDark ? "rgba(255,255,255,0.05)" : "#f1f5f9", border: `1px solid ${bdr}`, color: text1, padding: "10px 14px", borderRadius: "8px", fontSize: "14px", outline: "none", fontFamily: "'Lexend',sans-serif" }} 
+            style={{ background: inputBg, border: `1px solid ${inputBorder}`, color: text1, padding: "10px 14px", borderRadius: "8px", fontSize: "14px", outline: "none", fontFamily: "'Lexend',sans-serif" }} 
           />
         </div>
         <p style={{ fontSize: "12px", color: text2, lineHeight: 1.5 }}>
           If Total Semesters is set to {instSettings.totalSems || 8}, any student promoted past Semester {instSettings.totalSems || 8} will be marked as "Alumni".
         </p>
-        <button type="submit" disabled={settingsSaving} style={{ background: "rgba(0,255,0,0.1)", color: "#00DD00", border: "1px solid rgba(0,255,0,0.2)", padding: "10px 16px", borderRadius: "8px", fontSize: "14px", fontWeight: 700, cursor: "pointer", transition: "all 0.2s", alignSelf: "flex-start", marginTop: "8px" }}>
+        <button type="submit" disabled={settingsSaving} style={{ background: "rgba(0,255,0,0.12)", color: "#00DD00", border: "1px solid rgba(0,255,0,0.25)", padding: "10px 16px", borderRadius: "8px", fontSize: "14px", fontWeight: 700, cursor: "pointer", transition: "all 0.2s", alignSelf: "flex-start", marginTop: "8px" }}>
           {settingsSaving ? "Saving..." : "Save Settings"}
         </button>
         {settingsMessage && <div style={{ fontSize: "13px", color: settingsMessage.includes("Error") ? "#ef4444" : "#00FF00", fontWeight: 600 }}>{settingsMessage}</div>}
@@ -1205,24 +1210,26 @@ export default function AdminPage() {
         body{font-family:'Lexend',sans-serif;background:${bg};color:${text1};overflow:hidden;}
         .ms{font-family:'Material Symbols Outlined'!important;font-weight:normal;font-style:normal;line-height:1;display:inline-block;}
         .sb-root{display:flex;height:100vh;overflow:hidden;}
-        .sb-sidebar{width:260px;min-width:260px;height:100vh;background:${sidebarBg};backdrop-filter:blur(12px);border-right:1px solid ${bdr};display:flex;flex-direction:column;padding:24px 20px;z-index:20;}
+        .sb-sidebar{width:260px;min-width:260px;height:100vh;background:${sidebarBg};backdrop-filter:blur(16px);border-right:1px solid ${bdrSubtle};display:flex;flex-direction:column;padding:24px 20px;z-index:20;}
         .nav-link{display:flex;align-items:center;gap:12px;padding:12px 14px;border-radius:9999px;font-size:13px;font-weight:600;color:${text2};transition:all 0.2s;cursor:pointer;border:none;background:none;width:100%;text-align:left;font-family:'Lexend',sans-serif;}
-        .nav-link:hover{background:rgba(0,200,0,0.08);color:${text1};}
-        .nav-link.active{background:#00FF00;color:#0f172a;box-shadow:0 6px 20px rgba(0,255,0,0.28);}
+        .nav-link:hover{background:${isDark ? "rgba(255,255,255,0.06)" : "rgba(0,200,0,0.08)"};color:${text1};}
+        .nav-link.active{background:#00FF00;color:#0f172a;box-shadow:0 6px 20px rgba(0,255,0,0.28);font-weight:700;}
         .sb-main{flex:1;display:flex;flex-direction:column;height:100vh;overflow:hidden;}
-        .sb-header{height:72px;background:${headerBg};backdrop-filter:blur(12px);border-bottom:1px solid ${bdr};padding:0 32px;display:flex;align-items:center;justify-content:space-between;flex-shrink:0;}
+        .sb-header{height:72px;background:${headerBg};backdrop-filter:blur(16px);border-bottom:1px solid ${bdrSubtle};padding:0 32px;display:flex;align-items:center;justify-content:space-between;flex-shrink:0;}
         .sb-scroll{flex:1;overflow-y:auto;padding:36px;display:flex;flex-direction:column;gap:28px;}
-        .sb-scroll::-webkit-scrollbar{width:4px;}
-        .sb-scroll::-webkit-scrollbar-thumb{background:rgba(0,200,0,0.2);border-radius:2px;}
-        .admin-card{background:${card};border:1px solid ${bdr};border-radius:24px;padding:32px;display:flex;flex-direction:column;gap:22px;}
-        .student-row{display:flex;align-items:center;justify-content:space-between;padding:16px;border-bottom:1px solid ${bdr};}
+        .sb-scroll::-webkit-scrollbar{width:5px;}
+        .sb-scroll::-webkit-scrollbar-thumb{background:${isDark ? "rgba(255,255,255,0.15)" : "rgba(0,200,0,0.2)"};border-radius:3px;}
+        .admin-card{background:${card};border:1px solid ${bdrSubtle};border-radius:24px;padding:32px;display:flex;flex-direction:column;gap:22px;box-shadow:${isDark ? "0 4px 24px rgba(0,0,0,0.3)" : "0 4px 20px rgba(0,0,0,0.04)"};}
+        .student-row{display:flex;align-items:center;justify-content:space-between;padding:16px;border-bottom:1px solid ${bdrSubtle};transition:background 0.15s ease;}
+        .student-row:hover{background:${isDark ? "rgba(255,255,255,0.02)" : "rgba(0,0,0,0.015)"};border-radius:12px;}
         .student-row:last-child{border-bottom:none;}
-        .btn-promote{background:rgba(0,255,0,0.1);color:#00DD00;border:1px solid rgba(0,255,0,0.2);padding:6px 12px;border-radius:8px;font-size:12px;font-weight:700;cursor:pointer;transition:all 0.2s;display:flex;align-items:center;gap:6px;}
-        .btn-promote:hover{background:rgba(0,255,0,0.2);}
-        .btn-promote:disabled{opacity:0.5;cursor:not-allowed;}
-        .btn-delete{background:rgba(239,68,68,0.1);color:#ef4444;border:1px solid rgba(239,68,68,0.2);padding:6px 12px;border-radius:8px;font-size:12px;font-weight:700;cursor:pointer;transition:all 0.2s;display:flex;align-items:center;gap:6px;}
-        .btn-delete:hover{background:rgba(239,68,68,0.2);}
-        .btn-delete:disabled{opacity:0.5;cursor:not-allowed;}
+        .btn-promote{background:rgba(0,255,0,0.12);color:#00DD00;border:1px solid rgba(0,255,0,0.25);padding:6px 12px;border-radius:8px;font-size:12px;font-weight:700;cursor:pointer;transition:all 0.2s;display:flex;align-items:center;gap:6px;}
+        .btn-promote:hover{background:rgba(0,255,0,0.22);}
+        .btn-promote:disabled{opacity:0.4;cursor:not-allowed;}
+        .btn-delete{background:rgba(239,68,68,0.12);color:#ef4444;border:1px solid rgba(239,68,68,0.25);padding:6px 12px;border-radius:8px;font-size:12px;font-weight:700;cursor:pointer;transition:all 0.2s;display:flex;align-items:center;gap:6px;}
+        .btn-delete:hover{background:rgba(239,68,68,0.22);}
+        .btn-delete:disabled{opacity:0.4;cursor:not-allowed;}
+        select option{background:${isDark ? "#0f172a" : "#ffffff"};color:${text1};}
         @media(max-width:768px){.sb-sidebar{position:fixed;left:0;top:0;transform:translateX(-100%);transition:transform 0.3s;}
         .sb-sidebar.open{transform:translateX(0);}.sb-scroll{padding:20px 16px 80px;}}
       `}</style>
@@ -1230,7 +1237,7 @@ export default function AdminPage() {
       <div className="sb-root">
         {mobileMenuOpen && (
           <div 
-            style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.5)", zIndex: 10 }}
+            style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.6)", backdropFilter: "blur(4px)", zIndex: 10 }}
             onClick={() => setMobileMenuOpen(false)}
           />
         )}
@@ -1303,7 +1310,7 @@ export default function AdminPage() {
                 <div style={{ position: "relative" }}>
                   <div 
                     onClick={() => setShowProfileMenu(!showProfileMenu)}
-                    style={{ cursor: "pointer", width: "40px", height: "40px", borderRadius: "50%", overflow: "hidden", background: "#e2e8f0", border: `2px solid ${bdr}`, transition: "transform 0.2s" }}
+                    style={{ cursor: "pointer", width: "42px", height: "42px", borderRadius: "50%", overflow: "hidden", background: avatarBg, border: `2px solid ${bdrSubtle}`, transition: "transform 0.2s" }}
                     onMouseEnter={e => e.currentTarget.style.transform = "scale(1.05)"}
                     onMouseLeave={e => e.currentTarget.style.transform = "scale(1)"}
                   >
@@ -1317,8 +1324,8 @@ export default function AdminPage() {
                   </div>
                   
                   {showProfileMenu && (
-                    <div style={{ position: "absolute", top: "100%", right: "0", marginTop: "12px", background: card, border: `1px solid ${bdr}`, borderRadius: "16px", padding: "12px", minWidth: "220px", boxShadow: "0 10px 30px rgba(0,0,0,0.2)", zIndex: 50 }}>
-                      <div style={{ display: "flex", alignItems: "center", gap: "8px", padding: "8px", borderBottom: `1px solid ${bdr}`, marginBottom: "8px" }}>
+                    <div style={{ position: "absolute", top: "100%", right: "0", marginTop: "12px", background: card, border: `1px solid ${bdrSubtle}`, borderRadius: "16px", padding: "12px", minWidth: "220px", boxShadow: "0 10px 30px rgba(0,0,0,0.3)", zIndex: 50 }}>
+                      <div style={{ display: "flex", alignItems: "center", gap: "8px", padding: "8px", borderBottom: `1px solid ${bdrSubtle}`, marginBottom: "8px" }}>
                         <div style={{ display: "flex", flexDirection: "column" }}>
                           <div style={{ display: "flex", alignItems: "center", gap: "4px" }}>
                             <span style={{ fontSize: "14px", fontWeight: 700, color: text1 }}>{userData.fullName || "Admin"}</span>
@@ -1332,9 +1339,9 @@ export default function AdminPage() {
                           setShowProfileMenu(false);
                           setShowLogoutModal(true);
                         }}
-                        style={{ width: "100%", display: "flex", alignItems: "center", gap: "8px", padding: "10px", background: "rgba(239,68,68,0.1)", color: "#ef4444", border: "none", borderRadius: "8px", cursor: "pointer", fontSize: "13px", fontWeight: 600, transition: "background 0.2s" }}
-                        onMouseEnter={e => e.currentTarget.style.background = "rgba(239,68,68,0.2)"}
-                        onMouseLeave={e => e.currentTarget.style.background = "rgba(239,68,68,0.1)"}
+                        style={{ width: "100%", display: "flex", alignItems: "center", gap: "8px", padding: "10px", background: "rgba(239,68,68,0.12)", color: "#ef4444", border: "1px solid rgba(239,68,68,0.2)", borderRadius: "8px", cursor: "pointer", fontSize: "13px", fontWeight: 600, transition: "background 0.2s" }}
+                        onMouseEnter={e => e.currentTarget.style.background = "rgba(239,68,68,0.22)"}
+                        onMouseLeave={e => e.currentTarget.style.background = "rgba(239,68,68,0.12)"}
                       >
                         <span className="ms" style={{ fontSize: "18px" }}>logout</span>
                         Sign Out
@@ -1360,8 +1367,8 @@ export default function AdminPage() {
       
       {/* Rename Modal */}
       {renameModal.isOpen && (
-        <div style={{ position: "fixed", top: 0, left: 0, width: "100%", height: "100%", background: "rgba(0,0,0,0.5)", backdropFilter: "blur(4px)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 100 }}>
-          <div style={{ background: card, padding: "32px", borderRadius: "24px", width: "400px", maxWidth: "90%", boxShadow: "0 25px 50px -12px rgba(0,0,0,0.25)", border: `1px solid ${bdr}` }}>
+        <div style={{ position: "fixed", top: 0, left: 0, width: "100%", height: "100%", background: "rgba(0,0,0,0.6)", backdropFilter: "blur(6px)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 100 }}>
+          <div style={{ background: card, padding: "32px", borderRadius: "24px", width: "400px", maxWidth: "90%", boxShadow: "0 25px 50px -12px rgba(0,0,0,0.4)", border: `1px solid ${bdrSubtle}` }}>
             <h3 style={{ fontSize: "20px", fontWeight: 700, color: text1, marginBottom: "20px" }}>Rename Note</h3>
             
             <div style={{ display: "flex", flexDirection: "column", gap: "6px", marginBottom: "32px" }}>
@@ -1370,14 +1377,14 @@ export default function AdminPage() {
                 type="text" 
                 value={renameModal.newName} 
                 onChange={e => setRenameModal({...renameModal, newName: e.target.value})} 
-                style={{ background: isDark ? "rgba(255,255,255,0.05)" : "#f1f5f9", border: `1px solid ${bdr}`, color: text1, padding: "10px 14px", borderRadius: "8px", fontSize: "14px", outline: "none", fontFamily: "'Lexend',sans-serif" }} 
+                style={{ background: inputBg, border: `1px solid ${inputBorder}`, color: text1, padding: "10px 14px", borderRadius: "8px", fontSize: "14px", outline: "none", fontFamily: "'Lexend',sans-serif" }} 
               />
             </div>
 
             <div style={{ display: "flex", gap: "12px", justifyContent: "flex-end" }}>
               <button 
                 onClick={() => setRenameModal({ isOpen: false, oldName: "", newName: "", pathArr: [] })} 
-                style={{ padding: "10px 20px", borderRadius: "12px", border: "none", background: isDark ? "rgba(255,255,255,0.05)" : "#f1f5f9", color: text1, fontWeight: 600, cursor: "pointer", transition: "background 0.2s" }}
+                style={{ padding: "10px 20px", borderRadius: "12px", border: `1px solid ${inputBorder}`, background: inputBg, color: text1, fontWeight: 600, cursor: "pointer", transition: "background 0.2s" }}
               >
                 Cancel
               </button>
@@ -1394,10 +1401,10 @@ export default function AdminPage() {
 
       {/* Delete Modal */}
       {deleteModal.isOpen && (
-        <div style={{ position: "fixed", top: 0, left: 0, width: "100%", height: "100%", background: "rgba(0,0,0,0.5)", backdropFilter: "blur(4px)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 100 }}>
-          <div style={{ background: card, padding: "32px", borderRadius: "24px", width: "400px", maxWidth: "90%", boxShadow: "0 25px 50px -12px rgba(0,0,0,0.25)", border: `1px solid ${bdr}` }}>
+        <div style={{ position: "fixed", top: 0, left: 0, width: "100%", height: "100%", background: "rgba(0,0,0,0.6)", backdropFilter: "blur(6px)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 100 }}>
+          <div style={{ background: card, padding: "32px", borderRadius: "24px", width: "400px", maxWidth: "90%", boxShadow: "0 25px 50px -12px rgba(0,0,0,0.4)", border: `1px solid ${bdrSubtle}` }}>
             <div style={{ display: "flex", alignItems: "center", gap: "12px", marginBottom: "16px" }}>
-              <div style={{ width: "40px", height: "40px", borderRadius: "12px", background: "rgba(239,68,68,0.1)", display: "flex", alignItems: "center", justifyContent: "center" }}>
+              <div style={{ width: "40px", height: "40px", borderRadius: "12px", background: "rgba(239,68,68,0.15)", display: "flex", alignItems: "center", justifyContent: "center" }}>
                 <span className="ms" style={{ color: "#ef4444", fontSize: "24px" }}>delete</span>
               </div>
               <h3 style={{ fontSize: "20px", fontWeight: 700, color: text1, margin: 0 }}>Delete Note</h3>
@@ -1406,7 +1413,7 @@ export default function AdminPage() {
             <div style={{ display: "flex", gap: "12px", justifyContent: "flex-end" }}>
               <button 
                 onClick={() => setDeleteModal({ isOpen: false, branch: "", sem: "", subject: "", moduleKey: "", fileUrl: "" })} 
-                style={{ padding: "10px 20px", borderRadius: "12px", border: "none", background: isDark ? "rgba(255,255,255,0.05)" : "#f1f5f9", color: text1, fontWeight: 600, cursor: "pointer", transition: "background 0.2s" }}
+                style={{ padding: "10px 20px", borderRadius: "12px", border: `1px solid ${inputBorder}`, background: inputBg, color: text1, fontWeight: 600, cursor: "pointer", transition: "background 0.2s" }}
               >
                 Cancel
               </button>
@@ -1423,8 +1430,8 @@ export default function AdminPage() {
 
       {/* Edit Student Modal */}
       {editingStudent && (
-        <div style={{ position: "fixed", top: 0, left: 0, width: "100%", height: "100%", background: "rgba(0,0,0,0.5)", backdropFilter: "blur(4px)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 100 }}>
-          <div style={{ background: card, padding: "32px", borderRadius: "24px", width: "400px", maxWidth: "90%", boxShadow: "0 25px 50px -12px rgba(0,0,0,0.25)", border: `1px solid ${bdr}` }}>
+        <div style={{ position: "fixed", top: 0, left: 0, width: "100%", height: "100%", background: "rgba(0,0,0,0.6)", backdropFilter: "blur(6px)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 100 }}>
+          <div style={{ background: card, padding: "32px", borderRadius: "24px", width: "400px", maxWidth: "90%", boxShadow: "0 25px 50px -12px rgba(0,0,0,0.4)", border: `1px solid ${bdrSubtle}` }}>
             <h3 style={{ fontSize: "20px", fontWeight: 700, color: text1, marginBottom: "20px" }}>Edit Student</h3>
             
             <div style={{ display: "flex", flexDirection: "column", gap: "16px", marginBottom: "32px" }}>
@@ -1434,7 +1441,7 @@ export default function AdminPage() {
                   type="text" 
                   value={editForm.fullName} 
                   onChange={e => setEditForm({...editForm, fullName: e.target.value})} 
-                  style={{ background: isDark ? "rgba(255,255,255,0.05)" : "#f1f5f9", border: `1px solid ${bdr}`, color: text1, padding: "10px 14px", borderRadius: "8px", fontSize: "14px", outline: "none", fontFamily: "'Lexend',sans-serif" }} 
+                  style={{ background: inputBg, border: `1px solid ${inputBorder}`, color: text1, padding: "10px 14px", borderRadius: "8px", fontSize: "14px", outline: "none", fontFamily: "'Lexend',sans-serif" }} 
                 />
               </div>
               <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
@@ -1442,7 +1449,7 @@ export default function AdminPage() {
                 <select 
                   value={editForm.branch} 
                   onChange={e => setEditForm({...editForm, branch: e.target.value})} 
-                  style={{ background: isDark ? "rgba(255,255,255,0.05)" : "#f1f5f9", border: `1px solid ${bdr}`, color: text1, padding: "10px 14px", borderRadius: "8px", fontSize: "14px", outline: "none", fontFamily: "'Lexend',sans-serif", cursor: "pointer" }}
+                  style={{ background: inputBg, border: `1px solid ${inputBorder}`, color: text1, padding: "10px 14px", borderRadius: "8px", fontSize: "14px", outline: "none", fontFamily: "'Lexend',sans-serif", cursor: "pointer" }}
                 >
                   <option value="">Select Branch</option>
                   <option value="IT">IT</option>
@@ -1460,7 +1467,7 @@ export default function AdminPage() {
                 <select 
                   value={editForm.sem} 
                   onChange={e => setEditForm({...editForm, sem: e.target.value})} 
-                  style={{ background: isDark ? "rgba(255,255,255,0.05)" : "#f1f5f9", border: `1px solid ${bdr}`, color: text1, padding: "10px 14px", borderRadius: "8px", fontSize: "14px", outline: "none", fontFamily: "'Lexend',sans-serif", cursor: "pointer" }}
+                  style={{ background: inputBg, border: `1px solid ${inputBorder}`, color: text1, padding: "10px 14px", borderRadius: "8px", fontSize: "14px", outline: "none", fontFamily: "'Lexend',sans-serif", cursor: "pointer" }}
                 >
                   <option value="">Select Semester</option>
                   {[1,2,3,4,5,6,7,8].map(s => <option key={s} value={s}>Sem {s}</option>)}
@@ -1472,7 +1479,7 @@ export default function AdminPage() {
             <div style={{ display: "flex", gap: "12px", justifyContent: "flex-end" }}>
               <button 
                 onClick={() => setEditingStudent(null)} 
-                style={{ padding: "10px 20px", borderRadius: "12px", border: "none", background: isDark ? "rgba(255,255,255,0.05)" : "#f1f5f9", color: text1, fontWeight: 600, cursor: "pointer", transition: "background 0.2s" }}
+                style={{ padding: "10px 20px", borderRadius: "12px", border: `1px solid ${inputBorder}`, background: inputBg, color: text1, fontWeight: 600, cursor: "pointer", transition: "background 0.2s" }}
               >
                 Cancel
               </button>
@@ -1489,10 +1496,10 @@ export default function AdminPage() {
 
       {/* Custom Logout Modal */}
       {showLogoutModal && (
-        <div style={{ position: "fixed", top: 0, left: 0, width: "100%", height: "100%", background: "rgba(0,0,0,0.5)", backdropFilter: "blur(4px)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 100 }}>
-          <div style={{ background: card, padding: "32px", borderRadius: "24px", width: "400px", maxWidth: "90%", boxShadow: "0 25px 50px -12px rgba(0,0,0,0.25)", border: `1px solid ${bdr}` }}>
+        <div style={{ position: "fixed", top: 0, left: 0, width: "100%", height: "100%", background: "rgba(0,0,0,0.6)", backdropFilter: "blur(6px)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 100 }}>
+          <div style={{ background: card, padding: "32px", borderRadius: "24px", width: "400px", maxWidth: "90%", boxShadow: "0 25px 50px -12px rgba(0,0,0,0.4)", border: `1px solid ${bdrSubtle}` }}>
             <div style={{ display: "flex", alignItems: "center", gap: "12px", marginBottom: "16px" }}>
-              <div style={{ width: "40px", height: "40px", borderRadius: "12px", background: "rgba(239,68,68,0.1)", display: "flex", alignItems: "center", justifyContent: "center" }}>
+              <div style={{ width: "40px", height: "40px", borderRadius: "12px", background: "rgba(239,68,68,0.15)", display: "flex", alignItems: "center", justifyContent: "center" }}>
                 <span className="ms" style={{ color: "#ef4444", fontSize: "24px" }}>logout</span>
               </div>
               <h3 style={{ fontSize: "20px", fontWeight: 700, color: text1, margin: 0 }}>Sign Out</h3>
@@ -1501,9 +1508,9 @@ export default function AdminPage() {
             <div style={{ display: "flex", gap: "12px", justifyContent: "flex-end" }}>
               <button 
                 onClick={() => setShowLogoutModal(false)} 
-                style={{ padding: "10px 20px", borderRadius: "12px", border: "none", background: isDark ? "rgba(255,255,255,0.05)" : "#f1f5f9", color: text1, fontWeight: 600, cursor: "pointer", transition: "background 0.2s" }}
-                onMouseEnter={e => e.currentTarget.style.background = isDark ? "rgba(255,255,255,0.1)" : "#e2e8f0"}
-                onMouseLeave={e => e.currentTarget.style.background = isDark ? "rgba(255,255,255,0.05)" : "#f1f5f9"}
+                style={{ padding: "10px 20px", borderRadius: "12px", border: `1px solid ${inputBorder}`, background: inputBg, color: text1, fontWeight: 600, cursor: "pointer", transition: "background 0.2s" }}
+                onMouseEnter={e => e.currentTarget.style.background = isDark ? "rgba(255,255,255,0.12)" : "#e2e8f0"}
+                onMouseLeave={e => e.currentTarget.style.background = inputBg}
               >
                 Cancel
               </button>

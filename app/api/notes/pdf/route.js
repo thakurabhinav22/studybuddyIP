@@ -6,7 +6,7 @@ const redis = new Redis({
 });
 
 const FB      = "https://studybuddytcet-default-rtdb.firebaseio.com";
-const PDF_TTL = 60 * 60 * 24 * 10;
+const PDF_TTL = 60 * 60 * 24 * 10; // 10 days
 const PDF_CHUNK_BASE64_SIZE = 500 * 1024;
 const PDF_CHUNK_BYTE_SIZE = (PDF_CHUNK_BASE64_SIZE / 4) * 3;
 
@@ -18,33 +18,6 @@ function normalizeSem(raw) {
   return n ? `Sem:${n}` : s;
 }
 
-async function getOrFetchMeta(basePath, metaKey) {
-  try {
-    const cached = await redis.get(metaKey);
-    if (cached !== null && cached !== undefined) {
-      console.log(`[pdf] ✅ META from REDIS — key: ${metaKey}`);
-      return { data: cached, source: "redis" };
-    }
-  } catch (e) {
-    console.warn("[pdf] Redis read meta error:", e.message);
-  }
-
-  console.log(`[pdf] 🔴 META from FIREBASE — key: ${metaKey}`);
-  const res = await fetch(`${FB}/${basePath}/pdfMeta.json`);
-  if (!res.ok) throw new Error(`Firebase meta ${res.status}`);
-  const data = await res.json();
-  if (!data) return { data: null, source: "firebase" };
-
-  try {
-    await redis.set(metaKey, data, { ex: PDF_TTL });
-    console.log(`[pdf] Redis SET meta: ${metaKey}`);
-  } catch (e) {
-    console.warn("[pdf] Redis set meta failed:", e.message);
-  }
-
-  return { data, source: "firebase" };
-}
-
 function decodeBase64Chunk(chunk) {
   if (!chunk) return new Uint8Array(0);
   const bin = atob(chunk);
@@ -53,162 +26,103 @@ function decodeBase64Chunk(chunk) {
   return bytes;
 }
 
-async function getOrFetchChunk(basePath, baseChunksKey, index) {
-  const chunkKey = `${baseChunksKey}:${index}`;
+/**
+ * Single-call Document loader:
+ * 1. Checks Redis for `docKey` in a single command.
+ * 2. On miss, fetches the module from Firebase in 1 single HTTP call.
+ * 3. Assembles chunks and caches the entire `{ meta, chunks }` in Redis in 1 single command.
+ */
+async function getOrFetchDoc(basePath, docKey, metaKey) {
+  // ── Step 1: 1 Single Redis call for the entire document ──
   try {
-    const cached = await redis.get(chunkKey);
-    if (cached !== null && cached !== undefined) {
-      console.log(`[pdf] ✅ Redis HIT chunk ${index}: ${chunkKey}`);
-      return { data: cached, source: "redis" };
+    const cachedDoc = await redis.get(docKey);
+    if (cachedDoc && typeof cachedDoc === "object" && cachedDoc.meta) {
+      const chunks = Array.isArray(cachedDoc.chunks) ? cachedDoc.chunks : [];
+      console.log(`[pdf] ✅ ⚡ 1-CALL REDIS HIT — docKey: ${docKey} (chunks: ${chunks.length})`);
+      return { meta: cachedDoc.meta, chunks, source: "redis" };
     }
   } catch (e) {
-    console.warn(`[pdf] Redis read chunk ${index} error:`, e.message);
+    console.warn(`[pdf] Redis read doc error (${docKey}):`, e.message);
   }
 
+  // Fallback check for separate metaKey if previously set
+  let fallbackMeta = null;
   try {
-    const res = await fetch(`${FB}/${basePath}/pdfChunks/chunk_${index}.json`);
-    if (!res.ok) throw new Error(`Firebase chunk ${res.status}`);
-    const data = await res.json();
-    if (!data) return { data: null, source: "firebase" };
+    fallbackMeta = await redis.get(metaKey);
+  } catch {}
+
+  // ── Step 2: 1 Single Firebase RTDB call for the entire module ──
+  console.log(`[pdf] 🔴 REDIS MISS — Fetching module from Firebase in 1 call: ${basePath}`);
+  const res = await fetch(`${FB}/${basePath}.json`);
+  if (!res.ok) throw new Error(`Firebase module error ${res.status}`);
+  const moduleData = await res.json();
+  if (!moduleData) return { meta: null, chunks: [], source: "firebase" };
+
+  const meta = moduleData.pdfMeta || fallbackMeta || null;
+  const rawChunks = moduleData.pdfChunks || {};
+
+  const totalChunks = meta?.totalChunks || Object.keys(rawChunks).length;
+  const chunks = [];
+  for (let i = 0; i < totalChunks; i++) {
+    const chunkVal = rawChunks[`chunk_${i}`] || rawChunks[i] || "";
+    if (chunkVal) chunks.push(chunkVal);
+  }
+
+  // ── Step 3: Cache doc and meta in Redis in 1 call (with pipeline) ──
+  if (meta && chunks.length > 0) {
     try {
-      await redis.set(chunkKey, data, { ex: PDF_TTL });
-      console.log(`[pdf] Redis SET chunk ${index}: ${chunkKey}`);
+      const p = redis.pipeline();
+      const docPayload = JSON.stringify({ meta, chunks });
+      p.set(docKey, docPayload, { ex: PDF_TTL });
+      p.set(metaKey, JSON.stringify(meta), { ex: PDF_TTL });
+      await p.exec();
+      console.log(`[pdf] ✅ Redis CACHED doc in 1 pipeline call (${chunks.length} chunks)`);
     } catch (e) {
-      console.warn(`[pdf] Redis set chunk ${index} failed:`, e.message);
+      console.warn(`[pdf] Redis set doc failed:`, e.message);
     }
-    console.log(`[pdf] 🔴 Fetched chunk ${index} from FIREBASE`);
-    return { data, source: "firebase" };
-  } catch (e) {
-    console.warn(`[pdf] Firebase chunk ${index} error:`, e.message);
-    return { data: null, source: "firebase" };
   }
+
+  return { meta, chunks, source: "firebase" };
 }
 
-async function getOrFetchChunks(basePath, baseChunksKey, metaKey) {
-  // ── Step 1: Get meta ──
-  const { data: meta } = await getOrFetchMeta(basePath, metaKey);
-  if (!meta) return { data: null };
-
-  const { totalChunks } = meta;
-  if (!totalChunks) throw new Error("totalChunks missing in meta");
-
-  // ── Step 2: Check for OLD bloated key and migrate ──
-  const oldKey = baseChunksKey.replace("sb:pdf:chunk:", "sb:pdf:chunks:");
+/**
+ * Loads metadata:
+ * Checks Redis metaKey first. If not found, uses getOrFetchDoc which loads and caches everything.
+ */
+async function getOrFetchMeta(basePath, docKey, metaKey) {
   try {
-    const oldCached = await redis.get(oldKey);
-    if (oldCached !== null && oldCached !== undefined) {
-      console.log(`[pdf] Redis HIT (old key): ${oldKey} — migrating to per-chunk keys`);
-      const chunks = Array.isArray(oldCached) ? oldCached : [];
-      await Promise.all(
-        chunks.map(async (chunk, i) => {
-          const chunkKey = `${baseChunksKey}:${i}`;
-          try {
-            await redis.set(chunkKey, chunk, { ex: PDF_TTL });
-          } catch (e) {
-            console.warn(`[pdf] Migration set chunk ${i} failed:`, e.message);
-          }
-        })
-      );
-      redis.del(oldKey).catch(() => {});
-      console.log(`[pdf] ✅ Migrated ${chunks.length} chunks from old key, served from REDIS`);
-      return { data: chunks, source: "redis" };
+    const cachedMeta = await redis.get(metaKey);
+    if (cachedMeta && typeof cachedMeta === "object") {
+      console.log(`[pdf] ✅ META from REDIS (1 call) — key: ${metaKey}`);
+      return { data: cachedMeta, source: "redis" };
     }
   } catch (e) {
-    console.warn("[pdf] Old key check failed:", e.message);
+    console.warn("[pdf] Redis read meta error:", e.message);
   }
 
-  // ── Step 3: Try per-chunk Redis keys, collect misses ──
-  const chunkResults = await Promise.all(
-    Array.from({ length: totalChunks }, async (_, i) => {
-      const chunkKey = `${baseChunksKey}:${i}`;
-      try {
-        const cached = await redis.get(chunkKey);
-        if (cached !== null && cached !== undefined) {
-          console.log(`[pdf] ✅ Redis HIT chunk ${i}: ${chunkKey}`);
-          return { index: i, data: cached, fromRedis: true };
-        }
-      } catch (e) {
-        console.warn(`[pdf] Redis read chunk ${i} error:`, e.message);
-      }
-      console.log(`[pdf] ❌ Redis MISS chunk ${i}: ${chunkKey}`);
-      return { index: i, data: null, fromRedis: false };
-    })
-  );
-
-  // ── Step 4: Only fetch MISSING chunks from Firebase ──
-  const missingIndices = chunkResults
-    .filter(r => !r.fromRedis)
-    .map(r => r.index);
-
-  if (missingIndices.length === 0) {
-    console.log(`[pdf] ✅ ALL ${totalChunks}/${totalChunks} chunks served from REDIS`);
-    return { data: chunkResults.map(r => r.data), source: "redis" };
-  }
-
-  const redisHits = totalChunks - missingIndices.length;
-
-  if (missingIndices.length === totalChunks) {
-    console.log(`[pdf] 🔴 ALL ${totalChunks}/${totalChunks} chunks served from FIREBASE (cold cache)`);
-  } else {
-    console.log(`[pdf] 🔀 MIXED — ${redisHits}/${totalChunks} from REDIS, ${missingIndices.length}/${totalChunks} from FIREBASE (missing indices: [${missingIndices.join(", ")}])`);
-  }
-
-  const fetchedChunks = await Promise.all(
-    missingIndices.map(async (i) => {
-      const res = await fetch(`${FB}/${basePath}/pdfChunks/chunk_${i}.json`);
-      const data = await res.json();
-      console.log(`[pdf] 🔴 Fetched chunk ${i} from FIREBASE`);
-      return { index: i, data };
-    })
-  );
-
-  // ── Step 5: Cache newly fetched chunks in Redis ──
-  await Promise.all(
-    fetchedChunks.map(async ({ index: i, data: chunk }) => {
-      if (!chunk) return;
-      const chunkKey = `${baseChunksKey}:${i}`;
-      try {
-        await redis.set(chunkKey, chunk, { ex: PDF_TTL });
-        console.log(`[pdf] Redis SET chunk ${i}: ${chunkKey}`);
-      } catch (e) {
-        console.warn(`[pdf] Redis set chunk ${i} failed:`, e.message);
-      }
-    })
-  );
-
-  // ── Step 6: Merge Redis + Firebase results in order ──
-  const fetchedMap = new Map(fetchedChunks.map(({ index, data }) => [index, data]));
-  const allChunks = chunkResults
-    .map(r => r.fromRedis ? r.data : fetchedMap.get(r.index))
-    .filter(Boolean);
-
-  const source = missingIndices.length === totalChunks ? "firebase" : "mixed";
-  console.log(`[pdf] 📦 Final response — source: ${source.toUpperCase()}, total chunks returned: ${allChunks.length}/${totalChunks}`);
-  return { data: allChunks, source };
+  // If meta wasn't cached separately, getOrFetchDoc will fetch and cache both doc & meta in 1 pass
+  const { meta, source } = await getOrFetchDoc(basePath, docKey, metaKey);
+  return { data: meta, source };
 }
 
-async function getPdfRange(basePath, baseChunksKey, metaKey, start, end) {
-  const { data: meta } = await getOrFetchMeta(basePath, metaKey);
-  if (!meta) return { data: null, totalBytes: 0, source: "firebase" };
+async function getPdfRange(basePath, docKey, metaKey, start, end) {
+  const { meta, chunks, source } = await getOrFetchDoc(basePath, docKey, metaKey);
+  if (!meta || !chunks.length) return { data: null, totalBytes: 0, source };
 
-  const totalBytes = Number(meta.fileSize) || (Number(meta.totalChunks) || 0) * PDF_CHUNK_BYTE_SIZE;
-  if (!totalBytes) throw new Error("fileSize missing in meta");
-
+  const totalBytes = Number(meta.fileSize) || chunks.length * PDF_CHUNK_BYTE_SIZE;
   const safeStart = Math.max(0, Number(start) || 0);
   const safeEnd = Math.min(totalBytes - 1, Number.isFinite(Number(end)) ? Number(end) : safeStart + PDF_CHUNK_BYTE_SIZE - 1);
   if (safeStart > safeEnd || safeStart >= totalBytes) {
-    return { data: new Uint8Array(0), totalBytes, source: "redis" };
+    return { data: new Uint8Array(0), totalBytes, source };
   }
 
   const startChunk = Math.floor(safeStart / PDF_CHUNK_BYTE_SIZE);
-  const endChunk = Math.floor(safeEnd / PDF_CHUNK_BYTE_SIZE);
+  const endChunk = Math.min(chunks.length - 1, Math.floor(safeEnd / PDF_CHUNK_BYTE_SIZE));
   const parts = [];
-  let source = "redis";
 
   for (let i = startChunk; i <= endChunk; i++) {
-    const { data: chunk, source: chunkSource } = await getOrFetchChunk(basePath, baseChunksKey, i);
+    const chunk = chunks[i];
     if (!chunk) throw new Error(`Missing chunk ${i}`);
-    if (chunkSource !== "redis") source = source === "redis" ? chunkSource : "mixed";
     parts.push(decodeBase64Chunk(chunk));
   }
 
@@ -225,12 +139,9 @@ async function getPdfRange(basePath, baseChunksKey, metaKey, start, end) {
   return { data: slice, totalBytes, source, contentType: meta.contentType || "application/pdf" };
 }
 
-async function getPdfFullFile(basePath, baseChunksKey, metaKey) {
-  const { data: meta } = await getOrFetchMeta(basePath, metaKey);
-  if (!meta) return { data: null, totalBytes: 0, source: "firebase" };
-
-  const { data: chunks, source } = await getOrFetchChunks(basePath, baseChunksKey, metaKey);
-  if (!chunks?.length) return { data: null, totalBytes: 0, source };
+async function getPdfFullFile(basePath, docKey, metaKey) {
+  const { meta, chunks, source } = await getOrFetchDoc(basePath, docKey, metaKey);
+  if (!meta || !chunks.length) return { data: null, totalBytes: 0, source };
 
   const parts = chunks.map(decodeBase64Chunk);
   const totalLength = parts.reduce((sum, part) => sum + part.length, 0);
@@ -249,10 +160,10 @@ async function getPdfFullFile(basePath, baseChunksKey, metaKey) {
   };
 }
 
-async function buildPdfFileResponse(basePath, baseChunksKey, metaKey, request) {
+async function buildPdfFileResponse(basePath, docKey, metaKey, request) {
   const rangeHeader = request.headers.get("range") || request.headers.get("Range");
   if (!rangeHeader) {
-    const { data, totalBytes, source, contentType } = await getPdfFullFile(basePath, baseChunksKey, metaKey);
+    const { data, totalBytes, source, contentType } = await getPdfFullFile(basePath, docKey, metaKey);
     if (!data) return Response.json({ error: "PDF data not found" }, { status: 404 });
 
     return new Response(data, {
@@ -261,7 +172,7 @@ async function buildPdfFileResponse(basePath, baseChunksKey, metaKey, request) {
         "Content-Type": contentType,
         "Content-Length": String(data.length),
         "Accept-Ranges": "bytes",
-        "Cache-Control": "no-store",
+        "Cache-Control": "public, max-age=86400, stale-while-revalidate=604800",
         "X-PDF-Source": source,
         "X-PDF-Total-Bytes": String(totalBytes),
       },
@@ -274,7 +185,7 @@ async function buildPdfFileResponse(basePath, baseChunksKey, metaKey, request) {
   const start = Number(match[1]);
   const end = match[2] ? Number(match[2]) : null;
 
-  const { data, totalBytes, source, contentType } = await getPdfRange(basePath, baseChunksKey, metaKey, start, end);
+  const { data, totalBytes, source, contentType } = await getPdfRange(basePath, docKey, metaKey, start, end);
   if (!data) return Response.json({ error: "PDF data not found" }, { status: 404 });
 
   const actualEnd = start + data.length - 1;
@@ -285,19 +196,10 @@ async function buildPdfFileResponse(basePath, baseChunksKey, metaKey, request) {
       "Content-Length": String(data.length),
       "Content-Range": `bytes ${start}-${actualEnd}/${totalBytes}`,
       "Accept-Ranges": "bytes",
-      "Cache-Control": "no-store",
+      "Cache-Control": "public, max-age=86400, stale-while-revalidate=604800",
       "X-PDF-Source": source,
     },
   });
-}
-
-async function primePdfCache(branch, sem, subject, module) {
-  const metaKey = `sb:pdf:meta:${branch}:${sem}:${subject}:${module}`;
-  const baseChunksKey = `sb:pdf:chunk:${branch}:${sem}:${subject}:${module}`;
-  const basePath = `notes/${encodeURIComponent(branch)}/${encodeURIComponent(sem)}/subjects/${encodeURIComponent(subject)}/modules/${encodeURIComponent(module)}`;
-
-  const { data: chunks, source } = await getOrFetchChunks(basePath, baseChunksKey, metaKey);
-  return { data: chunks, source };
 }
 
 export async function GET(request) {
@@ -315,20 +217,21 @@ export async function GET(request) {
     return Response.json({ error: "Invalid type" }, { status: 400 });
   }
 
-  const metaKey       = `sb:pdf:meta:${branch}:${sem}:${subject}:${module}`;
-  const baseChunksKey = `sb:pdf:chunk:${branch}:${sem}:${subject}:${module}`;
-  const basePath      = `notes/${encodeURIComponent(branch)}/${encodeURIComponent(sem)}/subjects/${encodeURIComponent(subject)}/modules/${encodeURIComponent(module)}`;
+  const metaKey = `sb:pdf:meta:${branch}:${sem}:${subject}:${module}`;
+  const docKey  = `sb:pdf:doc:${branch}:${sem}:${subject}:${module}`;
+  const basePath = `notes/${encodeURIComponent(branch)}/${encodeURIComponent(sem)}/subjects/${encodeURIComponent(subject)}/modules/${encodeURIComponent(module)}`;
 
   try {
     if (type === "meta") {
-      const { data, source } = await getOrFetchMeta(basePath, metaKey);
+      const { data, source } = await getOrFetchMeta(basePath, docKey, metaKey);
       return Response.json({ data, source });
     } else if (type === "file") {
-      return await buildPdfFileResponse(basePath, baseChunksKey, metaKey, request);
+      return await buildPdfFileResponse(basePath, docKey, metaKey, request);
     } else {
-      const { data, source } = await getOrFetchChunks(basePath, baseChunksKey, metaKey);
-      if (!data) return Response.json({ data: null });
-      return Response.json({ data, source });
+      // type === "chunks"
+      const { chunks, source } = await getOrFetchDoc(basePath, docKey, metaKey);
+      if (!chunks || chunks.length === 0) return Response.json({ data: null, source });
+      return Response.json({ data: chunks, source });
     }
   } catch (err) {
     console.error("[pdf] ❌ Route error:", err);
@@ -348,8 +251,12 @@ export async function POST(request) {
       return Response.json({ error: "Missing params" }, { status: 400 });
     }
 
-    const { data, source } = await primePdfCache(branch, sem, subject, module);
-    return Response.json({ data: !!data, source });
+    const metaKey = `sb:pdf:meta:${branch}:${sem}:${subject}:${module}`;
+    const docKey  = `sb:pdf:doc:${branch}:${sem}:${subject}:${module}`;
+    const basePath = `notes/${encodeURIComponent(branch)}/${encodeURIComponent(sem)}/subjects/${encodeURIComponent(subject)}/modules/${encodeURIComponent(module)}`;
+
+    const { meta, chunks, source } = await getOrFetchDoc(basePath, docKey, metaKey);
+    return Response.json({ data: !!(meta && chunks.length), source });
   } catch (err) {
     console.error("[pdf] ❌ Prime route error:", err);
     return Response.json({ error: err.message }, { status: 500 });
