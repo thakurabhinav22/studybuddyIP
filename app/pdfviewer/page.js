@@ -2746,6 +2746,57 @@ function PDFViewerInner() {
     isPanningPdfRef.current = false;
   };
 
+  // Zoom indicator toast state
+  const [zoomToast, setZoomToast] = useState("");
+  const zoomToastTimeoutRef = useRef(null);
+
+  const triggerZoomToast = useCallback((pct) => {
+    setZoomToast(`${pct}%`);
+    if (zoomToastTimeoutRef.current) clearTimeout(zoomToastTimeoutRef.current);
+    zoomToastTimeoutRef.current = setTimeout(() => setZoomToast(""), 1100);
+  }, []);
+
+  // Professional Mouse Wheel / Pinch Zoom centered on mouse pointer (Ctrl + Wheel or Pinch)
+  useEffect(() => {
+    const el = containerRef.current;
+    if (!el) return;
+
+    const onWheel = (e) => {
+      // Zoom if Ctrl key is held or trackpad pinch (which sets ctrlKey=true)
+      if (e.ctrlKey || e.metaKey) {
+        e.preventDefault();
+        setAutoFitWidth(false);
+
+        const rect = el.getBoundingClientRect();
+        const mouseX = e.clientX - rect.left;
+        const mouseY = e.clientY - rect.top;
+
+        const contentX = el.scrollLeft + mouseX;
+        const contentY = el.scrollTop + mouseY;
+
+        const zoomDelta = -e.deltaY;
+        const factor = zoomDelta > 0 ? 1.08 : 0.92;
+
+        setScale((prevScale) => {
+          const nextScale = Math.max(0.4, Math.min(3.5, +(prevScale * factor).toFixed(2)));
+          if (nextScale === prevScale) return prevScale;
+
+          const scaleRatio = nextScale / prevScale;
+          requestAnimationFrame(() => {
+            el.scrollLeft = contentX * scaleRatio - mouseX;
+            el.scrollTop = contentY * scaleRatio - mouseY;
+          });
+
+          triggerZoomToast(Math.round(nextScale * 100));
+          return nextScale;
+        });
+      }
+    };
+
+    el.addEventListener("wheel", onWheel, { passive: false });
+    return () => el.removeEventListener("wheel", onWheel);
+  }, [triggerZoomToast]);
+
   /* ── Random Page Jump ── */
   const goToRandomPage = () => {
     if (totalPages <= 1) return;
@@ -3254,6 +3305,36 @@ function PDFViewerInner() {
                     />
                   </div>
                 )}
+              </div>
+            )}
+
+            {/* Floating Zoom Toast Badge */}
+            {zoomToast && (
+              <div
+                style={{
+                  position: "fixed",
+                  top: "84px",
+                  left: "50%",
+                  transform: "translateX(-50%)",
+                  zIndex: 80,
+                  background: isDark ? "rgba(15,23,42,0.92)" : "rgba(15,23,42,0.85)",
+                  color: "#00FF00",
+                  padding: "8px 18px",
+                  borderRadius: "9999px",
+                  fontSize: "13px",
+                  fontWeight: 700,
+                  boxShadow: "0 8px 24px rgba(0,0,0,0.3)",
+                  backdropFilter: "blur(10px)",
+                  border: "1px solid rgba(0,255,0,0.3)",
+                  display: "flex",
+                  alignItems: "center",
+                  gap: "6px",
+                  pointerEvents: "none",
+                  animation: "fadeUp 0.15s ease both",
+                }}
+              >
+                <span className="ms" style={{ fontSize: "16px" }}>zoom_in</span>
+                {zoomToast}
               </div>
             )}
 
