@@ -326,17 +326,10 @@ function buildPdfStreamUrl(branch, sem, subject, moduleKey) {
 async function validateAccess(db, uid, reqBranch, reqSem, reqSubject, reqModule) {
   const snap = await get(dbRef(db, `users/${uid}`));
   if (!snap.exists()) return { allowed: false, reason: "User not found." };
-  const { branch, sem, isAdmin } = snap.val();
-  if (isAdmin === true) {
-    const m = await get(dbRef(db, `notes/${reqBranch}/${reqSem}/subjects/${reqSubject}/modules/${reqModule}`));
-    if (!m.exists()) return { allowed: false, reason: "Module does not exist." };
-    return { allowed: true };
-  }
   const ns = (r) => { if (!r) return ""; const s = r.toString().trim(); if (/^Sem:\d+$/.test(s)) return s; const n = s.replace(/[^0-9]/g, ""); return n ? `Sem:${n}` : s; };
-  if (branch?.toLowerCase() !== reqBranch?.toLowerCase() || ns(sem) !== ns(reqSem))
-    return { allowed: false, reason: "You can only view resources for your own branch and semester." };
-  const m = await get(dbRef(db, `notes/${reqBranch}/${ns(reqSem)}/subjects/${reqSubject}/modules/${reqModule}`));
-  if (!m.exists()) return { allowed: false, reason: "That module doesn't exist in your course." };
+  const semKey = ns(reqSem) || reqSem;
+  const m = await get(dbRef(db, `notes/${reqBranch}/${semKey}/subjects/${reqSubject}/modules/${reqModule}`));
+  if (!m.exists()) return { allowed: false, reason: "Module does not exist." };
   return { allowed: true };
 }
 
